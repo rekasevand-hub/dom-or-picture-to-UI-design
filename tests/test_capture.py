@@ -2,6 +2,9 @@
 """capture 模块离线测试（integration 需要网络/Chromium，默认跳过）。"""
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from src.app.services.structure.capture import DOM_JS, _ax_bounds
@@ -27,3 +30,6 @@ def test_capture_live(tmp_path):
     from src.app.services.structure.capture import capture_page
     r = capture_page("https://example.com", load_config(), str(tmp_path))
     assert r["image"] and r["dom"]
+    nodes = json.loads(Path(r["ax"]).read_text(encoding="utf-8"))
+    assert any(any(p.get("name") == "bounds" for p in node.get("properties", []))
+               for node in nodes)
