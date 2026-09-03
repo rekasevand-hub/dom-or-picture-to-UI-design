@@ -99,7 +99,9 @@ def capture_page(url: str, cfg: "Config", output_dir: str) -> dict:
             page.goto(url, wait_until="networkidle", timeout=cfg.wait_networkidle_timeout)
             page.add_style_tag(content="*,*::before,*::after{transition:none!important;animation:none!important}")
             page.wait_for_timeout(500)
-            page.screenshot(path=str(image_p))
+            # 整页截图：DOM_JS / AX bounds 坐标为整文档几何，画布必须覆盖整页
+            # （否则视口以下区域的 bbox 会落在截图画布之外，SoM 框在图上消失）。
+            page.screenshot(path=str(image_p), full_page=True)
             nodes = page.evaluate(DOM_JS)
             dom_p.write_text(json.dumps(nodes, ensure_ascii=False), encoding="utf-8")
             client = page.context.new_cdp_session(page)

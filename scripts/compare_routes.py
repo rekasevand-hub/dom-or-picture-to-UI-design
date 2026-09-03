@@ -15,8 +15,9 @@ from src.app.services.structure.metrics import summarize
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--url", default=None)
-    ap.add_argument("--image", default=None)
+    src = ap.add_mutually_exclusive_group(required=True)
+    src.add_argument("--url", default=None, help="网页 URL")
+    src.add_argument("--image", default=None, help="本地截图路径")
     ap.add_argument("--routes", default="dom,grounding,cv")
     ap.add_argument("--base-out", default="output/compare")
     args = ap.parse_args()

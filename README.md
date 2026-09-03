@@ -232,7 +232,7 @@ python -m src.main --image uploads/shot.png --route cv --tool svg --enrich
 | `--route` | 结构来源路线：`auto` / `dom` / `a11y` / `grounding` / `cv`。显式路线失败会直接报错，不静默换路 |
 | `--enrich` | 视觉补充开关，默认关闭 |
 
-- `--route auto`：`--url` 且拿到 DOM 时回退链为 `dom → grounding → cv`；图片输入为 `grounding → cv`，逐条记录在 `provenance.fallbacks`。
+- `--route auto`：`--url` 且拿到 DOM 时回退链为 `dom → grounding → cv`；图片输入为 `grounding → cv`（未配置 VISION_API_KEY 时仅 cv），逐条记录在 `provenance.fallbacks`。
 - 产物写入输出目录：`10_pagegraph.json`、`11_som.png`、`11_som.json`、`12_design.json`、`prototype.svg`、`manifest.json`。
 
 ### PreciseAgent Python API

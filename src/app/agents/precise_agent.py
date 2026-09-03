@@ -34,6 +34,11 @@ class PreciseAgent:
         out.mkdir(parents=True, exist_ok=True)
         t0 = time.time()
 
+        # DesignSpec 阶段固定走多模态 VLM（call_vlm），无论何路线都需要密钥；
+        # 提前校验，避免跑到末尾才失败并留下半套产物。
+        if not self.config.vision_api_key:
+            raise ValueError("VISION_API_KEY 未配置，DesignSpec 生成需要多模态模型密钥")
+
         if url:
             from src.app.services.structure.capture import capture_page
             cap = capture_page(url, self.config, str(out))

@@ -55,14 +55,14 @@ def main(argv: list[str] | None = None) -> int:
     if not args.url and not args.image:
         parser.error("必须提供 --url 或 --image")
 
-    if args.url or args.route:
-        from src.app.agents.precise_agent import PreciseAgent
-        agent = PreciseAgent(config)
-        agent.run(url=args.url, image=args.image, route=args.route or "auto",
-                  tool=tool, enrich=args.enrich)
-        return 0
-
     try:
+        if args.url or args.route:
+            from src.app.agents.precise_agent import PreciseAgent
+            agent = PreciseAgent(config)
+            agent.run(url=args.url, image=args.image, route=args.route or "auto",
+                      tool=tool, enrich=args.enrich)
+            return 0
+
         agent = ReconstructAgent(config)
         agent.run(
             image_path=args.image,

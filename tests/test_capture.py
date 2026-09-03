@@ -33,3 +33,36 @@ def test_capture_live(tmp_path):
     nodes = json.loads(Path(r["ax"]).read_text(encoding="utf-8"))
     assert any(any(p.get("name") == "bounds" for p in node.get("properties", []))
                for node in nodes)
+
+
+@pytest.mark.integration
+def test_capture_full_page_tall_page(tmp_path):
+    """整页截图：超视口高度的文档，折叠线下方的 DOM bbox 必须落在画布内。"""
+    from dataclasses import replace
+    from PIL import Image
+    from src.config import load_config
+    from src.app.services.structure.capture import capture_page
+
+    cfg = replace(load_config(), playwright_viewport_width=800,
+                  playwright_viewport_height=600, device_scale_factor=1)
+    html = tmp_path / "tall.html"
+    html.write_text(
+        "<!doctype html><html><head><style>html,body{margin:0;padding:0}"
+        "body{background:#ffffff}</style></head><body>"
+        "<div style=\"height:2000px\"></div>"
+        "<div style=\"width:80px;height:80px;background:#cc0000;margin:100px 0 0 0\">"
+        "BELOWFOLD</div></body></html>",
+        encoding="utf-8")
+    r = capture_page(html.as_uri(), cfg, str(tmp_path))
+
+    with Image.open(r["image"]) as im:
+        png_w, png_h = im.size
+    assert r["height"] == png_h
+    assert r["height"] > cfg.playwright_viewport_height
+    assert png_h > cfg.playwright_viewport_height
+
+    dom = json.loads(Path(r["dom"]).read_text(encoding="utf-8"))
+    markers = [n for n in dom if n.get("text", "").strip() == "BELOWFOLD"]
+    assert len(markers) == 1
+    y = markers[0]["y"]
+    assert cfg.playwright_viewport_height < y < r["height"]

@@ -41,7 +41,7 @@ agent.run(
 | `--route` | `auto` / `dom` / `a11y` / `grounding` / `cv`；显式路线失败直接报错，不静默换路 |
 | `--enrich` | 视觉补充开关（默认关） |
 
-- `--route auto` 回退链：`--url` 且拿到 DOM 时为 `dom → grounding → cv`；图片输入为 `grounding → cv`，逐条写入 `provenance.fallbacks`。
+- `--route auto` 回退链：`--url` 且拿到 DOM 时为 `dom → grounding → cv`；图片输入为 `grounding → cv`（未配置 VISION_API_KEY 时仅 cv），逐条写入 `provenance.fallbacks`。
 - 前置条件：URL 输入需要 Playwright Chromium，先执行 `python -m playwright install chromium`。
 
 ```bash
