@@ -5,5 +5,6 @@ from __future__ import annotations
 from src.app.services.structure.providers.base import ProviderContext, BaseProvider
 from src.app.services.structure.providers.dom import DomProvider
 from src.app.services.structure.providers.a11y import A11yProvider
+from src.app.services.structure.providers.grounding import GroundingProvider
 
-__all__ = ["ProviderContext", "BaseProvider", "DomProvider", "A11yProvider"]
+__all__ = ["ProviderContext", "BaseProvider", "DomProvider", "A11yProvider", "GroundingProvider"]
