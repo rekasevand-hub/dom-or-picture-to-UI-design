@@ -24,3 +24,5 @@ tesseract>=0.1.3            # pytesseract 包装器，需额外安装 Tesseract-
 # --- 工具/配置 ---
 python-dotenv>=1.0.0        # .env 文件加载（也可使用内置解析）
 json_repair>=0.30.0         # LLM 输出 JSON 兜底修复（可选但推荐）
+
+playwright>=1.40.0              # 浏览器自动化（精准复刻 Agent / DOM 路由）

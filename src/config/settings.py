@@ -26,6 +26,24 @@ class Config:
     llm_max_tokens: int = field(default_factory=lambda: int(os.getenv("LLM_MAX_TOKENS", "4096")))
     llm_timeout: int = field(default_factory=lambda: int(os.getenv("LLM_TIMEOUT", "120")))
 
+    # --- 新流程视觉/文本模型（acctoken 网关，OpenAI 兼容） ---
+    vision_base_url: str = field(default_factory=lambda: os.getenv("VISION_BASE_URL", "https://www.acctoken.com/v1"))
+    vision_api_key: str | None = field(default_factory=lambda: os.getenv("VISION_API_KEY"))
+    vision_model: str = field(default_factory=lambda: os.getenv("VISION_MODEL", "qwen3-vl-plus"))
+    vision_native_grounding: bool = field(default_factory=lambda: os.getenv("VISION_NATIVE_GROUNDING", "false").lower() in ("1", "true", "yes"))
+    text_base_url: str = field(default_factory=lambda: os.getenv("TEXT_BASE_URL", "https://www.acctoken.com/v1"))
+    text_api_key: str | None = field(default_factory=lambda: os.getenv("TEXT_API_KEY"))
+    text_model: str = field(default_factory=lambda: os.getenv("TEXT_MODEL", "deepseek-v4-flash"))
+
+    # --- 新流程路由与抓取 ---
+    route_default: str = field(default_factory=lambda: os.getenv("ROUTE", "auto"))
+    playwright_viewport_width: int = field(default_factory=lambda: int(os.getenv("PLAYWRIGHT_VIEWPORT_WIDTH", "1440")))
+    playwright_viewport_height: int = field(default_factory=lambda: int(os.getenv("PLAYWRIGHT_VIEWPORT_HEIGHT", "900")))
+    playwright_headless: bool = field(default_factory=lambda: os.getenv("PLAYWRIGHT_HEADLESS", "true").lower() in ("1", "true", "yes"))
+    device_scale_factor: int = field(default_factory=lambda: int(os.getenv("DEVICE_SCALE_FACTOR", "1")))
+    enrich_visual: bool = field(default_factory=lambda: os.getenv("ENRICH_VISUAL", "false").lower() in ("1", "true", "yes"))
+    wait_networkidle_timeout: int = field(default_factory=lambda: int(os.getenv("WAIT_NETWORKIDLE_TIMEOUT", "30000")))
+
     # --- 视觉提取 ---
     cv_resize_long_edge: int = field(default_factory=lambda: int(os.getenv("CV_RESIZE_LONG_EDGE", "1280")))
     cv_min_component_area: int = field(default_factory=lambda: int(os.getenv("CV_MIN_COMPONENT_AREA", "80")))
