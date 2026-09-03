@@ -94,3 +94,22 @@ python scripts/compare_routes.py --image uploads/shot.png --routes grounding,cv 
 
 - `--routes`：逗号分隔路线，默认 `dom,grounding,cv`。
 - `--base-out`：输出根目录（默认 `output/compare`），每条路线写入 `base-out/<route>/`，两两 `metrics.summarize` 结果写入 `base-out/summary.json`。
+
+
+### 交互式选择入口
+
+```bash
+python -m src.main --interactive
+```
+
+引导依次选择：1) URL / 本地截图 → 2) 路线 auto / dom / a11y / grounding / cv → 3) 工具 svg / figma / jsdesign / mockingbot；回车取 `[默认]`。等价非交互参数：
+
+```bash
+python -m src.main --url https://example.com --route a11y --tool svg
+python -m src.main --image uploads/shot.png --route cv --tool svg
+```
+
+- URL 输入可选全部路线；本地截图仅 `auto/grounding/cv`（未配置 `VISION_API_KEY` 时去掉 `grounding`）。
+- 未显式传 `--route` 时默认路线取 `ROUTE` 环境变量（默认 `auto`），`config.route_default` 已由 `main` 消费。
+- 无参数且不加 `--interactive` 时仍按 argparse 报错退出（不会静默进入向导）。
+

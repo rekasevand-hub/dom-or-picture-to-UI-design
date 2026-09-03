@@ -30,6 +30,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ocr-engine", default=None, choices=["none", "easyocr", "tesseract"], help="OCR 引擎")
     parser.add_argument("--output-dir", default=None, help="中间产物输出目录")
     parser.add_argument("--direct-render", action="store_true", help="跳过 LLM，直接把检测组件渲染到原型工具")
+    parser.add_argument("--interactive", action="store_true",
+                        help="交互式选择入口：引导选择 URL/截图 与 处理路线")
     parser.add_argument("--debug", action="store_true", help="打印更多日志")
     return parser
 
@@ -52,6 +54,18 @@ def main(argv: list[str] | None = None) -> int:
     tool = args.tool or config.prototype_tool
     ocr_engine = args.ocr_engine or config.ocr_engine
 
+    if args.interactive:
+        from src.app.agents.route_select import select_interactive
+        sel = select_interactive(
+            config, prefill={"url": args.url, "image": args.image,
+                             "route": args.route, "tool": tool})
+        args.url, args.image = sel["url"], sel["image"]
+        args.route = sel["route"]
+        tool = sel["tool"]
+        # 交互模式下无输入视为用户放弃 -> 退出码 1（不静默跑旧流程）
+        if not args.url and not args.image:
+            parser.error("交互选择未给出 URL/截图")
+
     if not args.url and not args.image:
         parser.error("必须提供 --url 或 --image")
 
@@ -59,8 +73,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.url or args.route:
             from src.app.agents.precise_agent import PreciseAgent
             agent = PreciseAgent(config)
-            agent.run(url=args.url, image=args.image, route=args.route or "auto",
-                      tool=tool, enrich=args.enrich)
+            route = args.route or config.route_default   # ROUTE 环境变量，默认 auto
+            agent.run(url=args.url, image=args.image, route=route, tool=tool, enrich=args.enrich)
             return 0
 
         agent = ReconstructAgent(config)

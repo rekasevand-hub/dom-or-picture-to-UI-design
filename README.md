@@ -274,6 +274,30 @@ python scripts/compare_routes.py \
 - 每条路线在 `base-out/<route>/` 下独立产出全套中间产物。
 - 两两路线调用 `metrics.summarize`，结果写入 `base-out/summary.json`（容器 IoU 矩阵、文本包含率、容器两两平均最佳 IoU）。
 
+### 交互式选择入口
+
+不想记参数时，用引导式向导选择输入来源与处理路线：
+
+```bash
+python -m src.main --interactive
+```
+
+依次选择：1) 输入来源（网页 URL / 本地截图）→ 2) 处理路线（auto / dom / a11y / grounding / cv，按输入来源过滤）→ 3) 输出工具（svg / figma / jsdesign / mockingbot）。直接回车使用 `[默认]` 项。
+
+非交互等价参数（与向导同一套配置）：
+
+```bash
+# URL 输入
+python -m src.main --url https://example.com --route a11y --tool svg
+
+# 本地截图输入（截图只提供 auto/grounding/cv）
+python -m src.main --image uploads/shot.png --route cv --tool svg
+```
+
+- URL 输入可选全部路线；本地截图仅 `auto/grounding/cv`，且未配置 `VISION_API_KEY` 时不提供 `grounding`。
+- `ROUTE` 环境变量（默认 `auto`）为 CLI 未显式指定 `--route` 时的默认路线；`config.route_default` 已由 `main` 消费。
+- 无任何参数且不加 `--interactive` 时仍按 argparse 报错退出（不会静默进入向导）。
+
 ## 许可证
 
 MIT
