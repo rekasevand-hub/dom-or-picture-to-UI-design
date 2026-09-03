@@ -1,0 +1,195 @@
+# UI 自动还原 Agent
+
+基于屏幕截图/用户上传图片，自动提取视觉特征并调用多模态 LLM，生成结构化设计描述，最终驱动 Figma / 即时设计 / 墨刀 / SVG 还原出 UI 原型。
+
+> 当前目标：先把“位置、尺寸、颜色、文字”四要素画对，元素之间保持独立，暂不建立 Auto Layout、Frame 嵌套或组件变体。
+
+## 目录结构
+
+```
+.
+├── src/                          # 项目源码
+│   ├── main.py                   # CLI 入口
+│   ├── app/
+│   │   ├── agents/               # 工作流编排
+│   │   ├── controllers/          # 提取/渲染控制器
+│   │   ├── models/               # Component、DesignSpec 模型
+│   │   ├── services/
+│   │   │   ├── detection/        # 红框/容器/组件检测 + OmniParser 客户端
+│   │   │   ├── ocr/              # EasyOCR / Tesseract OCR 引擎
+│   │   │   ├── rendering/        # Figma / SVG / 即时设计 / 墨刀适配器
+│   │   │   ├── llm/              # 多模态 LLM 调用
+│   │   │   └── omniparser/       # OmniParser HTTP 包装服务
+│   │   └── utils/                # 图像、颜色、几何、日志工具
+│   └── config/                   # 配置读取
+├── figma_bridge/                 # Figma 插件
+├── tests/                        # 测试
+├── docs/                         # 文档
+├── scripts/                      # 可执行脚本
+├── .env.example                  # 环境变量模板
+├── requirements.txt              # 核心依赖
+├── requirements-easyocr.txt      # 可选 OCR 依赖
+├── DESIGN.md                     # 架构设计
+└── PLAN.md                       # 优化计划
+```
+
+## 安装
+
+```bash
+# 1. 创建并激活 conda 环境（Python 3.11 推荐）
+conda create -n omni python=3.11 -y
+conda activate omni
+
+# 2. 安装核心依赖
+pip install -r requirements.txt
+
+# 3. 如需使用 EasyOCR（高精度中文 OCR）
+pip install -r requirements-easyocr.txt
+
+# 4. 如需使用 Tesseract OCR，需额外安装 Tesseract-OCR 引擎
+# Windows 下载地址：https://github.com/UB-Mannheim/tesseract/wiki
+```
+
+## 配置
+
+复制 `.env.example` 为 `.env`，填入你的配置：
+
+```bash
+cp .env.example .env
+```
+
+关键配置项：
+
+| 变量 | 说明 |
+|---|---|
+| `LLM_BASE_URL` | OpenAI 兼容接口地址 |
+| `LLM_API_KEY` | API Key |
+| `LLM_MODEL` | 模型名，如 `gpt-4o` |
+| `OCR_ENGINE` | `none` / `tesseract` / `easyocr` |
+| `TESSERACT_CMD` | Tesseract 可执行文件路径 |
+| `PROTOTYPE_TOOL` | `svg` / `figma` / `jsdesign` / `mockingbot` |
+
+## 使用
+
+### SVG 兜底渲染（无需 LLM 以外的外部工具）
+
+```bash
+python -m src.main \
+  --image uploads/your_screenshot.png \
+  --tool svg \
+  --ocr-engine easyocr \
+  --output-dir ./output
+```
+
+运行后 `output/` 会生成：
+
+- `01_original.png`：原始图片
+- `02_overlay.png`：检测框可视化
+- `03_features.json`：提取的结构化特征
+- `04_llm_raw.json`：LLM 原始输出
+- `05_design.json`：解析后的 DesignSpec
+- `prototype.svg`：最终还原的 SVG
+
+### Figma 自动绘制
+
+1. 启动桥接服务器：
+
+```bash
+python -m src.app.services.bridge_server
+```
+
+2. 在 Figma 中导入开发插件 `figma_bridge/`：
+   - Figma 桌面端 → Plugins → Development → Import plugin from manifest
+   - 选择 `figma_bridge/manifest.json`
+   - 运行插件
+
+3. 运行 Agent：
+
+```bash
+python -m src.main \
+  --image uploads/your_screenshot.png \
+  --tool figma \
+  --ocr-engine easyocr
+```
+
+### OmniParser 本地服务（可选）
+
+如需使用 OmniParser 作为检测后端：
+
+```bash
+python -m src.app.services.omniparser.omniparser_server \
+  --omniparser-root OmniParser/OmniParser-master \
+  --som-model-path OmniParser/OmniParser-master/weights/icon_detect/model.pt \
+  --caption-model-path OmniParser/OmniParser-master/weights/icon_caption_florence \
+  --device cuda
+```
+
+然后在 `.env` 中启用：
+
+```env
+OMNIPARSER_ENABLED=true
+OMNIPARSER_URL=http://127.0.0.1:8000
+```
+
+### 红框标注图片区（可选）
+
+如果你希望某些区域被当作图片保留、不参与 OpenCV 组件提取，可以在上传前用**红色矩形框**圈出这些区域：
+
+- 框线建议用纯红（`#FF0000`）、线宽 2px 以上；
+- 被红框圈住的区域会生成一个 `type: "image"` 的组件；
+- 红框内部不再进行轮廓/颜色/文本检测，避免把图片内容拆碎；
+- 通过环境变量控制灵敏度，详见 `.env.example` 中 `RED_BOX_*` 配置。
+
+```bash
+python -m src.main \
+  --image uploads/screenshot_with_red_boxes.png \
+  --tool svg
+```
+
+## 架构流程
+
+```
+用户上传图片
+   │
+   ▼
+image_utils.load_image() → OpenCV BGR ndarray
+   │
+   ▼
+detection.detect_components() → 组件位置/尺寸/颜色/形状/层级
+ocr.extract_text_with_ocr() → 文字识别
+   │
+   ▼
+llm.build_prompt() → base64 图片 + 特征 JSON
+llm.call_vision_llm() → 原始文本
+llm.parse_design_json() → DesignSpec JSON
+   │
+   ▼
+rendering.build_adapter() → Figma / SVG / 即时设计 / 墨刀
+adapter.render_design() → 自动绘制
+```
+
+## 精度优化方向
+
+1. **字体**：当前使用默认字体（Figma 用 Inter），后续可接入字体识别或本地字体库比对。
+2. **间距**：后处理把坐标/尺寸按 4px/8px 网格取整，减少错位。
+3. **交互状态**：LLM 可根据颜色深浅推断 hover/disabled，输出 `states` 字段保留数据。
+4. **嵌套合并**：合并同色同类型的嵌套轮廓，减少误检的 `container`。
+
+## 各原型工具接入状态
+
+| 工具 | 状态 | 说明 |
+|---|---|---|
+| SVG | ✅ 可用 | 无需外部工具，用于快速验证 |
+| Figma | ✅ 可用 | 需启动 bridge_server 并导入插件 |
+| 即时设计 | 🦴 桩 | 待接入官方 Plugin/REST API |
+| 墨刀 | 🦴 桩 | 待接入官方 API/SDK |
+
+## 注意事项
+
+- LLM 调用会产生费用，测试前请确认 API Key 和模型选择。
+- Figma 插件必须在 Figma 桌面端或浏览器中保持运行状态。
+- 截图功能为可选，当前主流程基于用户上传图片。
+
+## 许可证
+
+MIT

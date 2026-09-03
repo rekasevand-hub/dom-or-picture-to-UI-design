@@ -1,0 +1,8 @@
+# 可选：使用 EasyOCR 进行中文/英文屏幕文字识别
+# 会安装 PyTorch，体积较大，建议在显卡/CPU 均可运行
+
+pip install easyocr>=1.7.0
+
+# 首次运行时会在 ~/.EasyOCR 自动下载模型（ch_sim + english）
+# 如网络受限，可手动下载模型放到该目录：
+# https://www.jaided.ai/easyocr/

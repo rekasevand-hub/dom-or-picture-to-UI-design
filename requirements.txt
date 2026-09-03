@@ -1,0 +1,26 @@
+# UI 自动还原 Agent 核心依赖
+# 建议在已激活的 conda 环境 ui_reconstruct_py311 中执行：
+# pip install -r requirements.txt
+
+# --- 图像/屏幕 ---
+opencv-python>=4.8.0        # 轮廓检测、颜色提取、边缘检测
+mss>=9.0.0                  # 高性能截图（优先使用）
+PyAutoGUI>=0.9.54           # 截图/交互兜底
+Pillow>=10.0.0              # 图像格式转换、base64 编码
+numpy>=1.24.0               # 数组运算
+
+# --- LLM 调用 ---
+openai>=1.30.0              # 兼容 OpenAI / 国内兼容接口 (base_url 可替换)
+requests>=2.31.0            # HTTP 兜底 / 原型 REST API
+
+# --- 原型工具桥接 ---
+websocket-client>=1.7.0     # Figma Plugin WebSocket 桥接客户端
+websockets>=12.0            # 本地 WebSocket 桥接服务端
+
+# --- 文本识别（二选一即可，easyocr 更准确但体积大） ---
+# easyocr>=1.7.0            # 多语言 OCR，会顺带安装 torch
+tesseract>=0.1.3            # pytesseract 包装器，需额外安装 Tesseract-OCR 引擎
+
+# --- 工具/配置 ---
+python-dotenv>=1.0.0        # .env 文件加载（也可使用内置解析）
+json_repair>=0.30.0         # LLM 输出 JSON 兜底修复（可选但推荐）
