@@ -190,6 +190,90 @@ adapter.render_design() → 自动绘制
 - Figma 插件必须在 Figma 桌面端或浏览器中保持运行状态。
 - 截图功能为可选，当前主流程基于用户上传图片。
 
+## 新流程：PreciseAgent 多路线结构提取
+
+新流程以 `src/main.py` 的 `--url` / `--route` 分支进入 `PreciseAgent`：网页截图或上传图片 → 结构提供器产出 PageGraph → SoM 标注 → VLM 生成 DesignSpec → 渲染到原型工具。旧流程（`ReconstructAgent` + `--direct-render`）不受影响。
+
+### 前置条件
+
+`--url` 走 Playwright 截图，需要先安装 Chromium：
+
+```bash
+python -m playwright install chromium
+```
+
+### 视觉 / 文本模型网关
+
+新流程视觉与文本模型共用 acctoken OpenAI 兼容网关，默认地址 `https://www.acctoken.com/v1`。在 `.env` 中配置：
+
+```env
+VISION_BASE_URL=https://www.acctoken.com/v1
+VISION_API_KEY=
+VISION_MODEL=qwen3-vl-plus
+TEXT_BASE_URL=https://www.acctoken.com/v1
+TEXT_API_KEY=
+TEXT_MODEL=deepseek-v4-flash
+```
+
+- 视觉模型默认 `qwen3-vl-plus`（`VISION_MODEL`），负责 grounding / CV 结构提取与 DesignSpec 生成。
+- 文本模型默认 `deepseek-v4-flash`（`TEXT_MODEL`），负责纯文本侧调用。
+- 两者使用同一网关、同一 `api_key`（`VISION_API_KEY` 与 `TEXT_API_KEY` 填同一个值即可；key 只写入 `.env`，不入库）。
+
+### CLI 参数
+
+```bash
+python -m src.main --url https://example.com --route auto --tool svg
+python -m src.main --image uploads/shot.png --route cv --tool svg --enrich
+```
+
+| 参数 | 说明 |
+|---|---|
+| `--url` | 网页 URL（新流程入口，配合 `--route` 使用） |
+| `--route` | 结构来源路线：`auto` / `dom` / `a11y` / `grounding` / `cv`。显式路线失败会直接报错，不静默换路 |
+| `--enrich` | 视觉补充开关，默认关闭 |
+
+- `--route auto`：`--url` 且拿到 DOM 时回退链为 `dom → grounding → cv`；图片输入为 `grounding → cv`，逐条记录在 `provenance.fallbacks`。
+- 产物写入输出目录：`10_pagegraph.json`、`11_som.png`、`11_som.json`、`12_design.json`、`prototype.svg`、`manifest.json`。
+
+### PreciseAgent Python API
+
+```python
+from dataclasses import replace
+from pathlib import Path
+
+from src.app.agents.precise_agent import PreciseAgent
+from src.config import load_config
+
+cfg = replace(load_config(), output_dir=Path("output/precise"))
+graph = PreciseAgent(cfg).run(
+    url="https://example.com",
+    route="auto",      # 或 dom / a11y / grounding / cv
+    tool="svg",        # svg | figma | jsdesign | mockingbot
+    enrich=False,      # 视觉补充，默认关
+)
+# graph 为 PageGraph dict；10_pagegraph.json 已写入 output_dir
+```
+
+### 三路对比工具
+
+同一 URL / 截图分别跑多条结构路线，并输出两两对比小结：
+
+```bash
+python scripts/compare_routes.py \
+  --url https://example.com \
+  --routes dom,grounding,cv \
+  --base-out output/compare
+
+# 图片输入同理：
+python scripts/compare_routes.py \
+  --image uploads/shot.png \
+  --routes grounding,cv \
+  --base-out output/compare
+```
+
+- 每条路线在 `base-out/<route>/` 下独立产出全套中间产物。
+- 两两路线调用 `metrics.summarize`，结果写入 `base-out/summary.json`（容器 IoU 矩阵、文本包含率、容器两两平均最佳 IoU）。
+
 ## 许可证
 
 MIT
