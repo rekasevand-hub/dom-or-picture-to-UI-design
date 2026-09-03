@@ -146,3 +146,53 @@ def parse_design_json(raw: str) -> dict[str, Any]:
         logger.warning(f"json_repair 修复失败: {exc}")
 
     raise ValueError(f"无法解析 LLM 输出为 JSON: {raw[:200]}")
+
+
+def build_som_prompt(som_json: dict, image_b64: str) -> list[dict]:
+    """把 SoM 标注图 + SoM JSON 一起交给 VLM，要求输出现有 DesignSpec schema。"""
+    system = (
+        "你是 UI 还原专家。输入是 Set-of-Mark 标注图与配套 JSON：容器 id 形如 C1，"
+        "元素 id 为整数，JSON 已给出每个 id 的 bbox/type/text。任务：输出 DesignSpec JSON。"
+        "规则：1) 只输出合法 JSON；2) 元素保持独立、不许合并与丢组件；3) 容器画成背景矩形"
+        "(type=container)；4) 坐标尺寸基于 JSON 的 bbox 且按 4px 网格取整，不得随意移动；"
+        "5) 颜色/字号/圆角参照标注图推断。schema："
+        '{"canvas": {"width": int, "height": int}, "elements": ['
+        '{"id": str, "type": "rectangle|text|button|input|image|avatar|divider|container",'
+        ' "x": int, "y": int, "width": int, "height": int, "text": str,'
+        ' "style": {"fillColor": "#RRGGBB", "textColor": "#RRGGBB", "fontSize": int,'
+        ' "fontWeight": str, "borderRadius": int, "borderWidth": int, "borderColor": "#RRGGBB"}}]}'
+    )
+    import json as _json
+    user = [
+        {"type": "text",
+         "text": "画布尺寸 %dx%d。\nSoM JSON：\n%s\n请输出 DesignSpec JSON。" % (
+             som_json["size"][0], som_json["size"][1],
+             _json.dumps(som_json, ensure_ascii=False, indent=1))},
+        {"type": "image_url",
+         "image_url": {"url": "data:image/png;base64," + image_b64}},
+    ]
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
+def call_vlm(messages: list[dict], cfg) -> str:
+    """用 VISION_* 配置调用多模态模型。cfg 为 src.config.Config。"""
+    if not cfg.vision_api_key:
+        raise ValueError("VISION_API_KEY 未配置，无法调用多模态模型")
+    import openai
+    client = openai.OpenAI(base_url=cfg.vision_base_url, api_key=cfg.vision_api_key,
+                           timeout=cfg.llm_timeout)
+    resp = client.chat.completions.create(model=cfg.vision_model, messages=messages,
+                                          temperature=0.1, max_tokens=cfg.llm_max_tokens)
+    return resp.choices[0].message.content or ""
+
+
+def call_text_llm(messages: list[dict], cfg) -> str:
+    """用 TEXT_* 配置调用纯文本模型（可选任务用）。"""
+    if not cfg.text_api_key:
+        raise ValueError("TEXT_API_KEY 未配置")
+    import openai
+    client = openai.OpenAI(base_url=cfg.text_base_url, api_key=cfg.text_api_key,
+                           timeout=cfg.llm_timeout)
+    resp = client.chat.completions.create(model=cfg.text_model, messages=messages,
+                                          temperature=0.2, max_tokens=cfg.llm_max_tokens)
+    return resp.choices[0].message.content or ""
