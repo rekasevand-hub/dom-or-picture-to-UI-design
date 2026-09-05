@@ -6,11 +6,11 @@ from src.app.services.structure.backends.grounding_vlm import parse_vlm_json
 
 
 def test_parse_vlm_json_clamps():
-    # bbox 语义为角坐标 [x,y,x2,y2]（与 PROMPT/parse 实现一致）：画布 100x80，
-    # 容器左出界(-5) 且右/下出界(2000,100) -> 裁剪为 [0,0,100,80]；
+    # bbox 语义为 0~1 归一化角坐标 [x,y,x2,y2]（与 PROMPT/parse 实现一致）：画布 100x80，
+    # 容器归一化坐标出界(<0 或 >1) -> clamp 回 [0,1] 后还原整图 [0,0,100,80]；
     # 元素完全在画布内 -> 转 (x,y,w,h) 后原样 [10,10,50,20]。
-    raw = ('{"containers": [{"bbox": [-5, 0, 2000, 100]}], '
-           '"elements": [{"bbox": [10, 10, 60, 30], "type": "button", "text": "hi"}]}')
+    raw = ('{"containers": [{"bbox": [-0.05, -0.1, 2.0, 1.0]}], '
+           '"elements": [{"bbox": [0.1, 0.125, 0.6, 0.375], "type": "button", "text": "hi"}]}')
     out = parse_vlm_json(raw, 100, 80)
     assert out["containers"][0]["bbox"] == [0, 0, 100, 80]
     assert out["elements"][0]["bbox"] == [10, 10, 50, 20]

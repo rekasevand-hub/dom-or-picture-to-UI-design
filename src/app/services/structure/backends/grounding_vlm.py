@@ -17,6 +17,22 @@ if TYPE_CHECKING:
 ALLOWED_TYPES = {"button", "input", "text", "link", "image"}
 
 
+def _norm_box(b, image_w, image_h):
+    try:
+        f = [float(v) for v in b]
+    except (TypeError, ValueError):
+        return None
+    if len(f) != 4:
+        return None
+    x0 = max(0.0, min(f[0], 1.0)); y0 = max(0.0, min(f[1], 1.0))
+    x1 = max(0.0, min(f[2], 1.0)); y1 = max(0.0, min(f[3], 1.0))
+    px0, py0 = int(round(x0 * image_w)), int(round(y0 * image_h))
+    px1, py1 = int(round(x1 * image_w)), int(round(y1 * image_h))
+    if px1 - px0 < 2 or py1 - py0 < 2:
+        return None
+    return [px0, py0, px1 - px0, py1 - py0]
+
+
 def parse_vlm_json(raw: str, image_w: int, image_h: int) -> dict:
     m = re.search(r"\{[\s\S]*\}", raw)
     if not m:
@@ -24,23 +40,18 @@ def parse_vlm_json(raw: str, image_w: int, image_h: int) -> dict:
     data = json.loads(m.group(0))
     out = {"containers": [], "elements": []}
     for c in data.get("containers", []):
-        b = c.get("bbox")
-        if not b or len(b) != 4:
+        box = _norm_box(c.get("bbox"), image_w, image_h)
+        if box is None:
             continue
-        x0 = max(0, min(int(b[0]), image_w)); y0 = max(0, min(int(b[1]), image_h))
-        x1 = max(0, min(int(b[2]), image_w)); y1 = max(0, min(int(b[3]), image_h))
-        if x1 - x0 < 2 or y1 - y0 < 2:
-            continue
-        out["containers"].append({"bbox": [x0, y0, x1 - x0, y1 - y0], "role": str(c.get("role", ""))})
+        out["containers"].append({"bbox": box, "role": str(c.get("role", ""))})
     for e in data.get("elements", []):
-        b = e.get("bbox"); t = str(e.get("type", "rectangle"))
-        if not b or len(b) != 4 or t not in ALLOWED_TYPES:
+        t = str(e.get("type", "rectangle"))
+        if t not in ALLOWED_TYPES:
             continue
-        x0 = max(0, min(int(b[0]), image_w)); y0 = max(0, min(int(b[1]), image_h))
-        x1 = max(0, min(int(b[2]), image_w)); y1 = max(0, min(int(b[3]), image_h))
-        if x1 - x0 < 2 or y1 - y0 < 2:
+        box = _norm_box(e.get("bbox"), image_w, image_h)
+        if box is None:
             continue
-        out["elements"].append({"bbox": [x0, y0, x1 - x0, y1 - y0], "type": t,
+        out["elements"].append({"bbox": box, "type": t,
                                 "text": str(e.get("text", ""))})
     return out
 
@@ -49,8 +60,10 @@ PROMPT = ("你是 UI 结构标注器。给定网页截图，输出 JSON："
           '{"containers": [{"bbox": [x,y,x2,y2], "role": "banner|nav|card|panel"}], '
           '"elements": [{"bbox": [x,y,x2,y2], "type": "button|input|text|link|image", '
           '"text": "可见文字"}]}。'
-          "bbox 用原图像素绝对坐标（左上原点）；容器是布局区块（顶栏/侧边栏/卡片/面板），"
-          "元素是容器内可交互控件或独立文字。只输出合法 JSON。")
+          "bbox 用 0~1 归一化比例坐标（左上原点），禁止使用像素绝对值；"
+          "容器是布局区块（顶栏/侧边栏/卡片/面板），"
+          "元素是容器内可交互控件或独立文字。只输出合法 JSON。"
+          "bbox 坐标是 0~1 的归一化比例（相对你实际看到的那张图），禁止使用像素绝对值；左上原点。")
 
 
 class GroundingVLM(GroundingBackend):
