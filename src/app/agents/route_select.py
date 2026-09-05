@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""三源路由的“选择交互入口”：引导选 URL/截图 与 dom/a11y/grounding/cv 路线，再交给 PreciseAgent。"""
+"""三源路由的“选择交互入口”：引导选 URL/截图 与 dom/grounding/cv 路线，再交给 PreciseAgent。"""
 from __future__ import annotations
 
 import sys
@@ -9,15 +9,14 @@ from typing import TYPE_CHECKING, Callable
 if TYPE_CHECKING:
     from src.config import Config
 
-ALL_ROUTES = ("auto", "dom", "a11y", "grounding", "cv")
+ALL_ROUTES = ("auto", "dom", "grounding", "cv")
 TOOLS = ("svg", "figma", "jsdesign", "mockingbot")
 
 ROUTE_HINTS = {
     "auto":      "自动：URL 优先 DOM，失败逐级回退 grounding/cv",
     "dom":       "网页真实 DOM（几何+样式，坐标最准）—— 仅 URL",
-    "a11y":      "无障碍语义树（角色+bounds）—— 仅 URL",
     "grounding": "多模态模型直接看图出容器/元素 bbox（需 VISION_API_KEY）",
-    "cv":        "CV 管线兜底：v2.4 掩膜容器 + 格式塔 + OmniParser + easyocr",
+    "cv":        "纯像素 CV 管线（OmniParser）—— 可直接作为主处理方向",
 }
 TOOL_HINTS = {
     "svg":       "离线验证，输出 prototype.svg（推荐先跑这个）",
@@ -30,7 +29,10 @@ TOOL_HINTS = {
 def route_options(input_kind: str, cfg: "Config") -> list[str]:
     opts = ["auto"]
     if input_kind == "url":
-        opts += ["dom", "a11y", "grounding", "cv"]
+        opts += ["dom"]
+        if cfg.vision_api_key:
+            opts.append("grounding")
+        opts.append("cv")
     else:
         if cfg.vision_api_key:
             opts.append("grounding")
@@ -59,9 +61,9 @@ def select_interactive(cfg: "Config", *, ask: Callable[[str], str] = input,
         input_kind = "url" if prefill.get("url") else "image"
         url, image = prefill.get("url"), prefill.get("image")
     else:
-        src = prompt_choice("输入来源？", ["网页 URL（可 dom/a11y）", "本地截图（grounding/cv）"],
+        src = prompt_choice("输入来源？", ["网页 URL（可 dom）", "本地截图（grounding/cv）"],
                             default=1, ask=ask)
-        if src == "网页 URL（可 dom/a11y）":
+        if src == "网页 URL（可 dom）":
             while True:
                 url = (ask("网页地址 (https://...)：") or "").strip()
                 if url.lower().startswith(("http://", "https://")):

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""dom/a11y 样式直出 DesignSpec 离线测试：style 透传、SoM 带样式、规则拼装、路由门控。"""
+"""dom 样式直出 DesignSpec 离线测试：style 透传、SoM 带样式、规则拼装、路由门控。"""
 from __future__ import annotations
 
 import json
@@ -9,7 +9,6 @@ from src.app.services.som.annotate import annotate_som
 from src.app.services.som.direct_design import (build_direct_design,
                                                 try_build_direct_design)
 from src.app.services.structure.graph import add_container, add_element, new_graph
-from src.app.services.structure.providers.a11y import A11yProvider
 from src.app.services.structure.providers.base import ProviderContext
 from src.app.services.structure.providers.dom import DomProvider
 from src.app.services.rendering.adapter_base import PrototypeAdapter
@@ -28,29 +27,6 @@ def _dom_nodes():
          "bg": "rgba(0, 0, 0, 0)", "pageBg": "rgb(255, 255, 255)",
          "color": "rgb(255, 255, 255)", "fontSize": "16px", "fontWeight": "700",
          "borderRadius": "4px"},
-    ]
-
-
-def _ax_nodes():
-    return [
-        {"ignored": False, "backendDOMNodeId": 1, "role": {"value": "banner"},
-         "name": {"value": ""},
-         "properties": [
-             {"name": "bounds",
-              "value": {"value": {"x": 0, "y": 0, "width": 800, "height": 60}}},
-             {"name": "style", "value": {"value": {
-                 "bg": "rgb(20, 30, 40)", "pageBg": "rgb(255, 255, 255)",
-                 "color": "rgb(0, 0, 0)", "fontSize": "14px",
-                 "fontWeight": "400", "borderRadius": "0px"}}}]},
-        {"ignored": False, "backendDOMNodeId": 2, "role": {"value": "heading"},
-         "name": {"value": "首页"},
-         "properties": [
-             {"name": "bounds",
-              "value": {"value": {"x": 8, "y": 10, "width": 60, "height": 20}}},
-             {"name": "style", "value": {"value": {
-                 "bg": "rgba(0, 0, 0, 0)", "pageBg": "rgb(255, 255, 255)",
-                 "color": "rgb(255, 255, 255)", "fontSize": "16px",
-                 "fontWeight": "700", "borderRadius": "4px"}}}]},
     ]
 
 
@@ -95,7 +71,7 @@ def test_dom_provider_passthrough_style(tmp_path):
     dom_p.write_text(json.dumps(_dom_nodes()), encoding="utf-8")
     ctx = ProviderContext(image_path=str(tmp_path / "shot.png"), image_w=800,
                           image_h=600, route="dom", output_dir=str(tmp_path),
-                          dom_path=str(dom_p), ax_path=None)
+                          dom_path=str(dom_p))
     g = DomProvider().run(ctx)
 
     assert any(c.get("style", {}).get("fillColor") == "#141e28"
@@ -108,26 +84,6 @@ def test_dom_provider_passthrough_style(tmp_path):
     assert st["fontWeight"] == "bold"
     assert st["borderRadius"] == 4
     assert "fillColor" not in st  # 透明背景不写 fill
-
-
-def test_a11y_provider_passthrough_style(tmp_path):
-    ax_p = tmp_path / "ax.json"
-    ax_p.write_text(json.dumps(_ax_nodes()), encoding="utf-8")
-    ctx = ProviderContext(image_path=str(tmp_path / "shot.png"), image_w=800,
-                          image_h=600, route="a11y", output_dir=str(tmp_path),
-                          dom_path=None, ax_path=str(ax_p))
-    g = A11yProvider().run(ctx)
-
-    assert any(c.get("style", {}).get("fillColor") == "#141e28"
-               for c in g["containers"])
-    heads = [e for e in g["elements"] if e.get("text") == "首页"]
-    assert heads
-    st = heads[0]["style"]
-    assert st["textColor"] == "#ffffff"
-    assert st["fontSize"] == 16
-    assert st["fontWeight"] == "bold"
-    assert st["borderRadius"] == 4
-    assert "fillColor" not in st
 
 
 def test_annotate_som_carries_style(tmp_path):
@@ -197,7 +153,6 @@ def test_build_direct_design_rule():
 def test_try_direct_design_route_gate():
     dom_cfg = replace(load_config(), dom_direct_design=True)
     assert try_build_direct_design(_direct_som("dom"), dom_cfg) is not None
-    assert try_build_direct_design(_direct_som("a11y"), dom_cfg) is not None
 
     non_style_route = {**_direct_som(), "provenance": {"route": "grounding"}}
     assert try_build_direct_design(non_style_route, dom_cfg) is None
@@ -211,12 +166,6 @@ def test_try_direct_design_route_gate():
     sparse["elements"] = [{"id": 1, "bbox": [8, 10, 60, 20], "type": "text",
                            "text": "首页", "container": "C1", "style": {}}]
     assert try_build_direct_design(sparse, dom_cfg) is None
-
-
-def test_build_direct_design_a11y_mode():
-    d = build_direct_design(_direct_som("a11y"))
-    assert d["_meta"]["mode"] == "a11y-direct"
-    assert {e["id"] for e in d["elements"]} >= {"C1", "1", "2"}
 
 
 def test_build_style_border_fields():
@@ -243,7 +192,7 @@ def test_dom_provider_passes_border(tmp_path):
     dom_p.write_text(json.dumps(nodes), encoding="utf-8")
     ctx = ProviderContext(image_path=str(tmp_path / "shot.png"), image_w=800,
                           image_h=600, route="dom", output_dir=str(tmp_path),
-                          dom_path=str(dom_p), ax_path=None)
+                          dom_path=str(dom_p))
     g = DomProvider().run(ctx)
     cont = next(c for c in g["containers"])
     assert cont["style"]["borderColor"] == "#dddddd"
@@ -267,7 +216,7 @@ def test_dom_provider_filters_icon_glyph_text(tmp_path):
     dom_p.write_text(json.dumps(nodes), encoding="utf-8")
     ctx = ProviderContext(image_path=str(tmp_path / "shot.png"), image_w=800,
                           image_h=600, route="dom", output_dir=str(tmp_path),
-                          dom_path=str(dom_p), ax_path=None)
+                          dom_path=str(dom_p))
     g = DomProvider().run(ctx)
     texts = [e["text"] for e in g["elements"] if e.get("text")]
     assert "首页" in texts
@@ -298,7 +247,7 @@ def test_dom_provider_clips_to_canvas(tmp_path):
     dom_p.write_text(json.dumps(nodes), encoding="utf-8")
     ctx = ProviderContext(image_path=str(tmp_path / "shot.png"), image_w=800,
                           image_h=600, route="dom", output_dir=str(tmp_path),
-                          dom_path=str(dom_p), ax_path=None)
+                          dom_path=str(dom_p))
     g = DomProvider().run(ctx)
 
     assert not any(c.get("bbox") == [900, 0, 200, 60] for c in g["containers"])
@@ -375,7 +324,7 @@ def test_dom_provider_marks_fixed_column_overlay(tmp_path):
     dom_p.write_text(json.dumps(nodes), encoding="utf-8")
     ctx = ProviderContext(image_path=str(tmp_path / "shot.png"), image_w=800,
                           image_h=600, route="dom", output_dir=str(tmp_path),
-                          dom_path=str(dom_p), ax_path=None)
+                          dom_path=str(dom_p))
     g = DomProvider().run(ctx)
 
     overlays = [e for e in g["elements"] if e.get("overlay")]
@@ -403,7 +352,7 @@ def test_dom_provider_no_false_overlay_for_isolated_absolute(tmp_path):
     dom_p.write_text(json.dumps(nodes), encoding="utf-8")
     ctx = ProviderContext(image_path=str(tmp_path / "shot.png"), image_w=800,
                           image_h=600, route="dom", output_dir=str(tmp_path),
-                          dom_path=str(dom_p), ax_path=None)
+                          dom_path=str(dom_p))
     g = DomProvider().run(ctx)
 
     assert not any(e.get("overlay") for e in g["elements"])

@@ -7,7 +7,7 @@ def _fake_capture(url, cfg, out_dir):
     (out / "00_screenshot.png").write_bytes(b"PNG")
     (out / "00_dom.json").write_text("[]", encoding="utf-8")
     return {"image": str(out / "00_screenshot.png"), "width": 100, "height": 100,
-            "dom": str(out / "00_dom.json"), "ax": None}
+            "dom": str(out / "00_dom.json")}
 
 def test_route_order_cv_image_no_key():
     from dataclasses import replace
@@ -27,13 +27,13 @@ def test_run_fallback_recording_offline(tmp_path, monkeypatch):
     from src.config import load_config
     from src.app.agents.precise_agent import PreciseAgent
 
-    def fake_capture(url, cfg, out_dir, **kwargs):
+    def fake_capture(url, cfg, out_dir):
         out = Path(out_dir); out.mkdir(parents=True, exist_ok=True)
         cv2.imwrite(str(out / "00_screenshot.png"),
                     np.zeros((100, 100, 3), dtype=np.uint8))
         (out / "00_dom.json").write_text("[]", encoding="utf-8")
         return {"image": str(out / "00_screenshot.png"), "width": 100, "height": 100,
-                "dom": str(out / "00_dom.json"), "ax": None}
+                "dom": str(out / "00_dom.json")}
 
     class _BoomProvider:
         def run(self, ctx):
@@ -96,7 +96,7 @@ def test_capture_receives_storage_state_from_config(tmp_path, monkeypatch):
                     np.zeros((100, 100, 3), dtype=np.uint8))
         (out / "00_dom.json").write_text("[]", encoding="utf-8")
         return {"image": str(out / "00_screenshot.png"), "width": 100, "height": 100,
-                "dom": str(out / "00_dom.json"), "ax": None}
+                "dom": str(out / "00_dom.json")}
 
     class _OkProvider:
         def run(self, ctx):
@@ -132,7 +132,7 @@ def test_capture_receives_storage_state_from_config(tmp_path, monkeypatch):
     PreciseAgent(cfg).run(url="https://example.invalid", route="grounding", tool="svg")
     assert seen["cfg"] is cfg
     assert seen["cfg"].playwright_storage_state == "state.json"
-    assert seen["kwargs"] == {"ax_style": False}  # 非 a11y 路线不补采 AX 样式
+    assert seen["kwargs"] == {}  # capture_page 不再接收额外关键字参数
 
 @pytest.mark.integration
 def test_run_url_auto_svg(tmp_path):

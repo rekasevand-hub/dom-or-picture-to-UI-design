@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""结构路线（dom/a11y）样式直出 DesignSpec：用 computed style 确定性拼装，跳过 VLM。
+"""结构路线（dom）样式直出 DesignSpec：用 computed style 确定性拼装，跳过 VLM。
 
 前提：SoM JSON 的 containers/elements 带 style 字段——dom 由 DOM_JS 采集，
-a11y 由 capture 阶段经 CDP 补采；两路都拿到样式后走同一条直出规则。
+由 capture 阶段直接落盘，样式齐备后走同一条直出规则。
 image/avatar 元素会按 SoM bbox 从整页截图裁真实像素回填（imageBase64），
 避免直出稿里所有图片都变成占位灰块。
 """
@@ -14,7 +14,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-_DIRECT_ROUTES = ("dom", "a11y")
+_DIRECT_ROUTES = ("dom",)
 
 
 def _snap4(value: int) -> int:
@@ -67,7 +67,7 @@ def build_direct_design(som_json: dict) -> dict:
 
     容器只要“有非透明背景色”或“带真实边框（color+width 成对）”就画出；
     透明且无边框才跳过，避免凭空造框（计数写入 _meta.skipped_transparent_containers）。
-    元素按 DOM/a11y type/text/computed style 拼装；image/avatar 回填原图裁剪。
+    元素按 DOM type/text/computed style 拼装；image/avatar 回填原图裁剪。
     颜色/字号以浏览器计算结果为准，比让 VLM 看图猜测更准、更快。
     几何一律按 SoM bbox 4px 网格取整。
     """
@@ -182,7 +182,7 @@ def build_direct_design(som_json: dict) -> dict:
 
 
 def try_build_direct_design(som_json: dict, cfg) -> dict | None:
-    """dom/a11y 路线且有足够 computed style 时直出 DesignSpec，否则返回 None 让上层走 VLM。"""
+    """dom 路线且有足够 computed style 时直出 DesignSpec，否则返回 None 让上层走 VLM。"""
     provenance = som_json.get("provenance") or {}
     if provenance.get("route") not in _DIRECT_ROUTES:
         return None

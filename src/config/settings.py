@@ -52,7 +52,7 @@ class Config:
     som_batch_min_coverage: float = field(default_factory=lambda: float(os.getenv("SOM_BATCH_MIN_COVERAGE", "0.9")))
     # 像素级颜色校正（预留接口，默认关；实现见 llm_service.backfill_colors_from_screenshot）
     som_color_backfill: bool = field(default_factory=lambda: os.getenv("SOM_COLOR_BACKFILL", "false").lower() in ("1", "true", "yes"))
-    # dom/a11y 路线用 computed style 拼 DesignSpec（跳过 VLM，秒级完成；字段名兼容旧配置）
+    # dom 路线用 computed style 拼 DesignSpec（跳过 VLM，秒级完成；字段名兼容旧配置）
     dom_direct_design: bool = field(default_factory=lambda: os.getenv("DOM_DIRECT_DESIGN", "true").lower() in ("1", "true", "yes"))
 
     # --- 新流程路由与抓取 ---

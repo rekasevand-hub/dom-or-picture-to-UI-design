@@ -5,9 +5,13 @@ from src.app.agents.route_select import route_options, select_interactive
 def _no_key_cfg():
     return replace(load_config(), vision_api_key=None)
 
-def test_route_options_url_includes_all():
+def test_route_options_url_with_key():
+    opts = route_options("url", replace(load_config(), vision_api_key="sk-test"))
+    assert opts == ["auto", "dom", "grounding", "cv"]
+
+def test_route_options_url_no_key():
     opts = route_options("url", _no_key_cfg())
-    assert opts == ["auto", "dom", "a11y", "grounding", "cv"]
+    assert opts == ["auto", "dom", "cv"]
 
 def test_route_options_image_no_key():
     opts = route_options("image", _no_key_cfg())
@@ -28,12 +32,11 @@ def _ask_sequence(answers):
         return next(it)
     return ask
 
-def test_select_url_a11y(tmp_path, monkeypatch):
-    cfg = _no_key_cfg()
-    # 来源 1=URL；URL 文本；路线菜单 3=a11y；工具菜单 1=svg
+def test_select_url_grounding(tmp_path, monkeypatch):
+    cfg = replace(load_config(), vision_api_key="sk-test")
     req = select_interactive(cfg, ask=_ask_sequence(["1", "https://example.com", "3", "1"]))
-    assert req["url"] == "https://example.com" and req["image"] is None
-    assert req["route"] == "a11y" and req["tool"] == "svg"
+    assert req["url"] == "https://example.com"
+    assert req["route"] == "grounding" and req["tool"] == "svg"
 
 def test_select_image_cv_calls_runner(tmp_path, monkeypatch):
     cfg = _no_key_cfg()

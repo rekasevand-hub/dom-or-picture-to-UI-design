@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""computed style → DesignSpec 样式字段的解析/归一（dom 与 a11y 共享）。"""
+"""computed style → DesignSpec 样式字段的解析/归一。"""
 from __future__ import annotations
 
 import re

@@ -14,7 +14,7 @@ class ProviderContext:
     route: str = ""
     output_dir: str = ""
     dom_path: str | None = None
-    ax_path: str | None = None
+    url: str | None = None
 
 
 class BaseProvider(ABC):

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Playwright 抓取：同一次会话产出截图 + DOM JSON（+ CDP AX JSON），dsf=1 保证坐标对齐。"""
+"""Playwright 抓取：同一次会话产出截图 + DOM JSON，dsf=1 保证坐标对齐。"""
 from __future__ import annotations
 import json
 import logging
@@ -43,86 +43,6 @@ DOM_JS = r"""
   return out;
 }
 """
-
-def _ax_bounds(props: list) -> list[int] | None:
-    for p in props:
-        if p.get("name") == "bounds":
-            v = p.get("value", {}).get("value")
-            if isinstance(v, dict):
-                try:
-                    return [round(v["x"]), round(v["y"]), round(v["width"]), round(v["height"])]
-                except (KeyError, TypeError):
-                    return None
-    return None
-
-def _read_ax_style(client, backend_id: int, page_bg: str | None) -> dict | None:
-    """用 CDP 读取 AX 节点的 computed style（原始 CSS 值，供 a11y 直出 DesignSpec）。"""
-    try:
-        resolved = client.send("DOM.resolveNode", {"backendNodeId": backend_id})
-        object_id = (resolved or {}).get("object", {}).get("objectId")
-        if not object_id:
-            return None
-        res = client.send("Runtime.callFunctionOn", {
-            "objectId": object_id,
-            "functionDeclaration": (
-                "function(){const cs=getComputedStyle(this);return {"
-                "bg:cs.backgroundColor,color:cs.color,fontSize:cs.fontSize,"
-                "fontWeight:cs.fontWeight,borderRadius:cs.borderRadius};}"
-            ),
-            "returnByValue": True,
-        })
-        style = ((res or {}).get("result", {}) or {}).get("value")
-        if isinstance(style, dict):
-            style.setdefault("pageBg", page_bg)
-            return style
-    except Exception:
-        pass
-    return None
-
-
-def _inject_ax_bounds(client, nodes: list, page_bg: str | None = None,
-                      need_style: bool = False) -> None:
-    """通过 DOM.getBoxModel 为可见 AX 节点补充 bounds 属性；need_style=True 时再补 style。"""
-    for node in nodes:
-        if node.get("ignored"):
-            continue
-        backend_id = node.get("backendDOMNodeId")
-        if backend_id is None:
-            continue
-        try:
-            box = client.send("DOM.getBoxModel", {"backendNodeId": backend_id})
-        except Exception:
-            continue
-        model = (box or {}).get("model", {})
-        content = model.get("content")
-        if not isinstance(content, list) or len(content) < 8:
-            continue
-        xs = [float(v) for v in content[0::2]]
-        ys = [float(v) for v in content[1::2]]
-        try:
-            if model.get("width") is not None:
-                width = float(model["width"])
-            else:
-                width = max(xs) - min(xs)
-            if model.get("height") is not None:
-                height = float(model["height"])
-            else:
-                height = max(ys) - min(ys)
-        except (TypeError, ValueError):
-            continue
-        x, y = round(min(xs)), round(min(ys))
-        w, h = round(width), round(height)
-        if w < 1 or h < 1:
-            continue
-        props = node.setdefault("properties", [])
-        if not isinstance(props, list):
-            props = node["properties"] = []
-        props.append({"name": "bounds",
-                      "value": {"value": {"x": x, "y": y, "width": w, "height": h}}})
-        if need_style:
-            style = _read_ax_style(client, backend_id, page_bg)
-            if style:
-                props.append({"name": "style", "value": {"value": style}})
 
 def _resolve_storage_state(path_value: str | None) -> str | None:
     """校验 Playwright storageState JSON；文件缺失时提前报错，避免启动浏览器后才发现。"""
@@ -180,13 +100,11 @@ def export_login_state(url: str, output_path: str, cfg: "Config",
     return str(out)
 
 
-def capture_page(url: str, cfg: "Config", output_dir: str,
-                 ax_style: bool = False) -> dict:
+def capture_page(url: str, cfg: "Config", output_dir: str) -> dict:
     from playwright.sync_api import sync_playwright
     out = Path(output_dir); out.mkdir(parents=True, exist_ok=True)
     image_p = out / "00_screenshot.png"
     dom_p = out / "00_dom.json"
-    ax_p = out / "00_ax.json"
     storage_state = _resolve_storage_state(cfg.playwright_storage_state)
     context_opts = {}
     if storage_state:
@@ -203,22 +121,14 @@ def capture_page(url: str, cfg: "Config", output_dir: str,
             page.wait_for_timeout(500)
             if _page_has_password_input(page):
                 logger.warning("检测到密码输入框：当前页面疑似仍停在登录页，storage_state 可能无效或已过期")
-            # 整页截图：DOM_JS / AX bounds 坐标为整文档几何，画布必须覆盖整页
+            # 整页截图：DOM_JS 坐标为整文档几何，画布必须覆盖整页
             # （否则视口以下区域的 bbox 会落在截图画布之外，SoM 框在图上消失）。
             page.screenshot(path=str(image_p), full_page=True)
             nodes = page.evaluate(DOM_JS)
             dom_p.write_text(json.dumps(nodes, ensure_ascii=False), encoding="utf-8")
-            page_bg = page.evaluate("getComputedStyle(document.body).backgroundColor")
-            client = page.context.new_cdp_session(page)
-            tree = client.send("Accessibility.getFullAXTree")
-            ax_nodes = tree.get("nodes", [])
-            _inject_ax_bounds(client, ax_nodes, page_bg=page_bg,
-                              need_style=ax_style)
-            ax_p.write_text(json.dumps(ax_nodes, ensure_ascii=False), encoding="utf-8")
         finally:
             browser.close()
     from PIL import Image
     with Image.open(image_p) as im:
         w, h = im.size
-    return {"image": str(image_p), "width": w, "height": h,
-            "dom": str(dom_p), "ax": str(ax_p)}
+    return {"image": str(image_p), "width": w, "height": h, "dom": str(dom_p)}

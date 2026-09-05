@@ -23,8 +23,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="UI 自动还原 Agent")
     parser.add_argument("--image", default=None, help="输入图片路径（新流程可省略）")
     parser.add_argument("--url", default=None, help="网页 URL（新流程）")
-    parser.add_argument("--route", default=None, choices=["auto", "dom", "a11y", "grounding", "cv"],
+    parser.add_argument("--route", default=None, choices=["auto", "dom", "grounding", "cv"],
                         help="结构来源路线")
+    parser.add_argument("--fast", action="store_true",
+                        help="（实验）DOM 路线用 computed style 几何直出 DesignSpec，跳过 VLM 语义生成")
     parser.add_argument("--enrich", action="store_true", help="视觉补充（默认关）")
     parser.add_argument("--storage-state", default=None,
                         help="Playwright 登录态 JSON：URL 抓取时复用已登录 cookie/localStorage（登录保护页面用）")

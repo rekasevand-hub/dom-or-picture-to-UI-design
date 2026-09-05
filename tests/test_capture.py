@@ -7,24 +7,13 @@ from pathlib import Path
 
 import pytest
 
-from src.app.services.structure.capture import DOM_JS, _ax_bounds
+from src.app.services.structure.capture import DOM_JS
 
 
 def test_dom_js_present():
     assert "getBoundingClientRect" in DOM_JS
     assert "position: cs.position" in DOM_JS
     assert "zIndex: parseInt(cs.zIndex" in DOM_JS
-
-
-def test_ax_bounds_present():
-    props = [{"name": "internal::role", "value": {"value": "button"}},
-             {"name": "bounds", "value": {"value": {"x": 1.0, "y": 2.0, "width": 30.0, "height": 20.0}}}]
-    assert _ax_bounds(props) == [1, 2, 30, 20]
-
-
-def test_ax_bounds_missing():
-    assert _ax_bounds([{"name": "internal::role", "value": {"value": "button"}}]) is None
-
 
 def test_storage_state_missing_file_raises(tmp_path):
     """storage_state 指向不存在文件时必须在启动浏览器前报错。"""
@@ -43,9 +32,6 @@ def test_capture_live(tmp_path):
     from src.app.services.structure.capture import capture_page
     r = capture_page("https://example.com", load_config(), str(tmp_path))
     assert r["image"] and r["dom"]
-    nodes = json.loads(Path(r["ax"]).read_text(encoding="utf-8"))
-    assert any(any(p.get("name") == "bounds" for p in node.get("properties", []))
-               for node in nodes)
 
 
 @pytest.mark.integration

@@ -6,13 +6,13 @@ if TYPE_CHECKING:
     from src.config import Config
 
 def route_order(input_kind: str, requested: str | None, cfg: "Config", have_dom: bool) -> list[str]:
-    valid = {"dom", "a11y", "grounding", "cv"}
+    valid = {"dom", "grounding", "cv"}
     if requested and requested not in valid:
         raise ValueError(f"未知路线: {requested}")
     dom_ok = (input_kind == "url") and have_dom
     if requested:
-        if requested in ("dom", "a11y") and not dom_ok:
-            raise ValueError(f"路线 {requested} 需要网页 DOM/AX 数据；当前输入为 {input_kind}，请改用 --url 或选 grounding/cv")
+        if requested in ("dom",) and not dom_ok:
+            raise ValueError(f"路线 {requested} 需要网页 DOM 数据；当前输入为 {input_kind}，请改用 --url 或选 grounding/cv")
         return [requested]
     if input_kind == "url" and have_dom:
         chain = ["dom", "grounding", "cv"]

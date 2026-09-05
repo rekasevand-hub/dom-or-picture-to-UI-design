@@ -12,14 +12,11 @@ from src.app.services.som.annotate import annotate_som
 
 def _build_provider(cfg, route):
     from src.app.services.structure.providers.dom import DomProvider
-    from src.app.services.structure.providers.a11y import A11yProvider
     from src.app.services.structure.providers.grounding import GroundingProvider
     from src.app.services.structure.providers.cv import CVProvider
-    # dom/a11y 无参构造；grounding/cv 需要 cfg
+    # dom 无参构造；grounding/cv 需要 cfg
     if route == "dom":
         return DomProvider()
-    if route == "a11y":
-        return A11yProvider()
     if route == "grounding":
         return GroundingProvider(cfg)
     return CVProvider(cfg)
@@ -41,13 +38,11 @@ class PreciseAgent:
 
         if url:
             from src.app.services.structure.capture import capture_page
-            # 只有显式 a11y 路线才需要 AX 样式（dom 等路线别为它多付 CDP 开销）
-            cap = capture_page(url, self.config, str(out),
-                               ax_style=(route == "a11y"))
+            cap = capture_page(url, self.config, str(out))
             image, w, h = cap["image"], cap["width"], cap["height"]
             ctx = ProviderContext(image_path=image, image_w=w, image_h=h,
                                   route="", output_dir=str(out),
-                                  dom_path=cap["dom"], ax_path=cap["ax"])
+                                  dom_path=cap["dom"], url=url)
             input_kind = "url"
         else:
             from src.app.utils.image_utils import load_image
@@ -85,7 +80,7 @@ class PreciseAgent:
         from src.app.services.llm.llm_service import generate_som_design
         from src.app.services.som.direct_design import try_build_direct_design
         som_json = json.loads((out / "11_som.json").read_text(encoding="utf-8"))
-        # dom/a11y 路线：computed style 已随结构落盘，直接拼 DesignSpec，不必再让 VLM 看图猜色
+        # dom 路线：computed style 已随结构落盘，直接拼 DesignSpec，不必再让 VLM 看图猜色
         design = try_build_direct_design(som_json, self.config)
         if design is None:
             from src.app.utils.image_utils import encode_image_base64
