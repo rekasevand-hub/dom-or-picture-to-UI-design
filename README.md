@@ -224,15 +224,18 @@ TEXT_MODEL=deepseek-v4-flash
 ```bash
 python -m src.main --url https://example.com --route auto --tool svg
 python -m src.main --image uploads/shot.png --route cv --tool svg --enrich
+python -m src.main --url https://example.com --route dom --fast --tool svg   # 实验：computed style 几何直出，跳过 VLM
 ```
 
 | 参数 | 说明 |
 |---|---|
 | `--url` | 网页 URL（新流程入口，配合 `--route` 使用） |
-| `--route` | 结构来源路线：`auto` / `dom` / `a11y` / `grounding` / `cv`。显式路线失败会直接报错，不静默换路 |
+| `--route` | 结构来源路线：`auto` / `dom` / `grounding` / `cv`。显式路线失败会直接报错，不静默换路 |
+| `--fast` | （实验）DOM 路线退回 computed style 几何直出 DesignSpec，跳过 VLM 语义生成 |
 | `--enrich` | 视觉补充开关，默认关闭 |
 
 - `--route auto`：`--url` 且拿到 DOM 时回退链为 `dom → grounding → cv`；图片输入为 `grounding → cv`（未配置 VISION_API_KEY 时仅 cv），逐条记录在 `provenance.fallbacks`。
+- DOM 路线默认走 Interpreter（VLM 语义生成）；`--fast` 退回 computed style 几何直出，仅 DOM 路线、无语义推断。
 - 产物写入输出目录：`10_pagegraph.json`、`11_som.png`、`11_som.json`、`12_design.json`、`prototype.svg`、`manifest.json`。
 
 ### PreciseAgent Python API
@@ -247,7 +250,7 @@ from src.config import load_config
 cfg = replace(load_config(), output_dir=Path("output/precise"))
 graph = PreciseAgent(cfg).run(
     url="https://example.com",
-    route="auto",      # 或 dom / a11y / grounding / cv
+    route="auto",      # 或 dom / grounding / cv
     tool="svg",        # svg | figma | jsdesign | mockingbot
     enrich=False,      # 视觉补充，默认关
 )
@@ -282,13 +285,13 @@ python scripts/compare_routes.py \
 python -m src.main --interactive
 ```
 
-依次选择：1) 输入来源（网页 URL / 本地截图）→ 2) 处理路线（auto / dom / a11y / grounding / cv，按输入来源过滤）→ 3) 输出工具（svg / figma / jsdesign / mockingbot）。直接回车使用 `[默认]` 项。
+依次选择：1) 输入来源（网页 URL / 本地截图）→ 2) 处理路线（auto / dom / grounding / cv，按输入来源过滤）→ 3) 输出工具（svg / figma / jsdesign / mockingbot）。直接回车使用 `[默认]` 项。
 
 非交互等价参数（与向导同一套配置）：
 
 ```bash
-# URL 输入
-python -m src.main --url https://example.com --route a11y --tool svg
+# URL 输入（dom 仅 URL 可用）
+python -m src.main --url https://example.com --route dom --tool svg
 
 # 本地截图输入（截图只提供 auto/grounding/cv）
 python -m src.main --image uploads/shot.png --route cv --tool svg
