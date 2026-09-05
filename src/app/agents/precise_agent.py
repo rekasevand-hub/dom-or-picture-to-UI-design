@@ -96,6 +96,9 @@ class PreciseAgent:
             from src.app.utils.image_utils import encode_image_base64
             b64 = encode_image_base64(_li(graph["image"]))
             design = generate_som_design(som_json, b64, cfg, output_dir=str(out))
+        from src.app.services.som.design_crops import backfill_design_image_crops
+        # 无论直出还是 VLM 生成，image/avatar 元素按原截图裁剪回填真实像素
+        backfill_design_image_crops(design, graph["image"])
         (out / "12_design.json").write_text(json.dumps(design, ensure_ascii=False, indent=1),
                                             encoding="utf-8")
 

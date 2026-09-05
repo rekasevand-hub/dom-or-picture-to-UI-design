@@ -197,3 +197,78 @@ def test_batch_empty_som(tmp_path, monkeypatch):
     design = generate_som_design(som, "B==", _cfg(tmp_path))
     assert design["elements"] == []
     assert design["canvas"] == {"width": 400, "height": 200}
+
+
+def _som_with_styles() -> dict:
+    """DOM 路线 SoM：容器/文本带浏览器 computed style，模拟页面真实配色。"""
+    return {
+        "image": "a.png", "size": [400, 200], "provenance": {"route": "dom"},
+        "containers": [
+            {"id": "C1", "bbox": [0, 0, 100, 40], "depth": 0,
+             "style": {"fillColor": "#1890ff", "textColor": "#ffffff",
+                       "borderRadius": 4, "borderColor": "#1890ff",
+                       "borderWidth": 1}},
+            {"id": "C2", "bbox": [0, 60, 100, 40], "depth": 0,
+             "style": {"fillColor": "#fafafa"}},
+        ],
+        "elements": [
+            {"id": 1, "bbox": [10, 8, 28, 20], "type": "text", "text": "\u641c\u7d22",
+             "container": "C1",
+             "style": {"textColor": "#ffffff", "fontSize": 14}},
+            {"id": 2, "bbox": [10, 68, 28, 20], "type": "text", "text": "\u666e\u901a",
+             "container": "C2", "style": {}},
+        ],
+    }
+
+
+def _styled_echo(ids) -> str:
+    """VLM \u5e38\u89c1\u8bef\u8bfb\uff1a\u767d\u5b57\u84dd\u5e95\u88ab\u53cd\u5199\u6210\u84dd\u5b57\u767d\u5e95\u3002"""
+    style = {
+        "C1": {"fillColor": "#FFFFFF", "textColor": "#1890ff",
+               "borderRadius": 0, "borderWidth": 1, "borderColor": "#000000"},
+        "C2": {"fillColor": "#F5F5F5", "textColor": "#000000"},
+        "1": {"fillColor": "#FFFFFF", "textColor": "#1890ff", "fontSize": 12},
+        "2": {"fillColor": "#FFFFFF", "textColor": "#333333", "fontSize": 14},
+    }
+    geo = {"C1": (0, 0, 100, 40), "C2": (0, 60, 100, 40),
+           "1": (10, 8, 28, 20), "2": (10, 68, 28, 20)}
+    elements = []
+    for i in ids:
+        x, y, w, h = geo[i]
+        elements.append({"id": i,
+                         "type": "container" if i.startswith("C") else "text",
+                         "x": x, "y": y, "width": w, "height": h,
+                         "text": "" if i.startswith("C") else "\u641c\u7d22",
+                         "style": style[i]})
+    return json.dumps({"canvas": {"width": 400, "height": 200}, "elements": elements},
+                      ensure_ascii=False)
+
+
+def test_reconcile_som_styles_pins_dom_computed_colors(tmp_path, monkeypatch):
+    """DOM \u8def\u7ebf\uff1aSoM \u5df2\u6709\u7684 computed style \u8986\u76d6\u6a21\u578b\u731c\u8272\uff0c
+    \u672a\u8bb0\u5f55\u7684\u5b57\u6bb5\u4fdd\u7559\u6a21\u578b\u8f93\u51fa\u3002"""
+    som = _som_with_styles()
+
+    def fake(messages, cfg):
+        return _styled_echo(_requested_ids(messages))
+
+    monkeypatch.setattr(llm_service, "call_vlm", fake)
+    design = generate_som_design(som, "B==", _cfg(tmp_path), batch_size=10)
+    by_id = {e["id"]: e for e in design["elements"]}
+
+    # C1/文本 1 \u88ab\u6a21\u578b\u53cd\u8f6c\u6210\u84dd\u5b57\u767d\u5e95\uff0c\u5e94\u56de\u586b\u767d\u5b57\u84dd\u5e95
+    assert by_id["C1"]["style"]["fillColor"] == "#1890ff"
+    assert by_id["C1"]["style"]["borderColor"] == "#1890ff"
+    assert by_id["1"]["style"]["textColor"] == "#ffffff"
+    assert by_id["1"]["style"]["fontSize"] == 14
+    # SoM \u65e0 textColor/fontSize \u8bb0\u5f55\u7684\u5143\u7d20 2 \u4fdd\u7559\u6a21\u578b\u8f93\u51fa
+    assert by_id["2"]["style"]["textColor"] == "#333333"
+    assert by_id["C2"]["style"]["fillColor"] == "#fafafa"
+    assert design["_meta"]["som_style_overrides"] > 0
+
+
+def test_som_batch_prompt_carries_computed_style():
+    som = _som_with_styles()
+    msgs = build_som_batch_prompt(som, "B64==", ["C1", "1"])
+    text = msgs[1]["content"][0]["text"]
+    assert '"style"' in text and "#1890ff" in text and "#ffffff" in text

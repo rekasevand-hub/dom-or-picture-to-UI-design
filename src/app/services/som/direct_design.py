@@ -8,9 +8,9 @@ image/avatar 元素会按 SoM bbox 从整页截图裁真实像素回填（imageB
 """
 from __future__ import annotations
 
-import base64
-import io
 import logging
+
+from src.app.services.som.design_crops import crop_image_b64 as _crop_image_b64
 
 logger = logging.getLogger(__name__)
 
@@ -36,30 +36,6 @@ def _border_fields(style: dict) -> dict:
     return {}
 
 
-def _crop_image_b64(image_path: str, x: int, y: int, w: int, h: int,
-                    canvas_w: int, canvas_h: int) -> str | None:
-    """按 bbox 从整页截图裁出图片真实像素并编码 PNG base64（越界自动 clamp）。
-
-    截图与 SoM bbox 同为整文档像素坐标，可 1:1 裁剪；缺图/越界/解码失败返回
-    None，由上层决定是否保留占位。
-    """
-    from PIL import Image
-    try:
-        x0, y0 = max(0, x), max(0, y)
-        x1, y1 = min(canvas_w, x + w), min(canvas_h, y + h)
-        if x1 <= x0 or y1 <= y0:
-            return None
-        with Image.open(image_path) as im:
-            if im.mode not in ("RGB", "RGBA"):
-                im = im.convert("RGBA")
-            region = im.crop((x0, y0, x1, y1))
-        buf = io.BytesIO()
-        region.save(buf, format="PNG")
-        return base64.b64encode(buf.getvalue()).decode("ascii")
-    except Exception as exc:
-        logger.warning("图片元素回填失败 %s @ (%d,%d,%d,%d): %s",
-                       image_path, x, y, w, h, exc)
-        return None
 
 
 def build_direct_design(som_json: dict) -> dict:

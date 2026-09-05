@@ -122,6 +122,9 @@ python -m src.main --url http://your-site/index --storage-state login_state.json
 - 每轮结束后做覆盖度自检：缺失的 id 下一轮只**定向补发缺失部分**，最多 `SOM_BATCH_MAX_ROUNDS` 轮；
 - 多轮后覆盖率仍低于 `SOM_BATCH_MIN_COVERAGE`（默认 90%）会**报错退出**，并把部分结果写入 `12_design_partial.json`，不再静默产出残缺 SVG；
 - 每次 VLM 原始返回保存在 `output_dir/13_vlm_raw/r<轮次>_b<批次>.txt`；合并结果带 `_meta`（calls/rounds/coverage/missing/duplicates/foreign/cross_batch），并汇总进 `manifest.json` 的 `design` 字段；
+- 排序条目携带 DOM computed style（DOM 路线时）：模型输出合并后按 SoM style 做确定性回填
+  （fillColor/textColor/fontSize/fontWeight/borderRadius/borderWidth/borderColor 凡 SoM 有记录的字段以浏览器计算值为准），避免 VLM 从标注图“猜色”把白字蓝底反写成蓝字白底、绿色状态列被写成黑字；
+  回填数记入 `_meta.som_style_overrides`；
 - 需要和旧的“单发整表”A/B 对比时，设 `SOM_BATCH_ENABLED=false` 即可退回单发。
 
 ### PreciseAgent Python API
