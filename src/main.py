@@ -95,7 +95,8 @@ def main(argv: list[str] | None = None) -> int:
             from src.app.agents.precise_agent import PreciseAgent
             agent = PreciseAgent(config)
             route = args.route or config.route_default   # ROUTE 环境变量，默认 auto
-            agent.run(url=args.url, image=args.image, route=route, tool=tool, enrich=args.enrich)
+            agent.run(url=args.url, image=args.image, route=route, tool=tool,
+                      enrich=args.enrich, fast=args.fast)
             return 0
 
         agent = ReconstructAgent(config)

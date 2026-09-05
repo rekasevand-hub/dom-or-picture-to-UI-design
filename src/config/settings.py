@@ -53,7 +53,7 @@ class Config:
     # 像素级颜色校正（预留接口，默认关；实现见 llm_service.backfill_colors_from_screenshot）
     som_color_backfill: bool = field(default_factory=lambda: os.getenv("SOM_COLOR_BACKFILL", "false").lower() in ("1", "true", "yes"))
     # dom 路线用 computed style 拼 DesignSpec（跳过 VLM，秒级完成；字段名兼容旧配置）
-    dom_direct_design: bool = field(default_factory=lambda: os.getenv("DOM_DIRECT_DESIGN", "true").lower() in ("1", "true", "yes"))
+    dom_direct_design: bool = field(default_factory=lambda: os.getenv("DOM_DIRECT_DESIGN", "false").lower() in ("1", "true", "yes"))
 
     # --- 新流程路由与抓取 ---
     route_default: str = field(default_factory=lambda: os.getenv("ROUTE", "auto"))

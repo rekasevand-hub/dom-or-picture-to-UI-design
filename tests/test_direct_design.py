@@ -432,3 +432,18 @@ def test_normalize_design_prefers_visible_text():
     model = {"id": "1", "text": "删除"}
     out = _normalize_design_element(model, entry)
     assert out["text"] == "确定"
+
+
+def _fast_cfg():
+    from dataclasses import replace
+    return replace(load_config(), dom_direct_design=True)
+
+
+def test_direct_design_gated_off_by_default():
+    from src.config import load_config
+    assert not load_config().dom_direct_design
+    assert try_build_direct_design(_direct_som("dom"), load_config()) is None
+
+
+def test_direct_design_enabled_via_flag_cfg():
+    assert try_build_direct_design(_direct_som("dom"), _fast_cfg()) is not None

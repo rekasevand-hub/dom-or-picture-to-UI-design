@@ -141,3 +141,40 @@ def test_run_url_auto_svg(tmp_path):
     cfg = replace(load_config(), output_dir=tmp_path)
     g = PreciseAgent(cfg).run(url="https://example.com", route="auto", tool="svg")
     assert (tmp_path / "11_som.json").exists() and (tmp_path / "prototype.svg").exists()
+
+
+def test_run_fast_flips_dom_direct_design(tmp_path, monkeypatch):
+    """--fast 语义：run 内 replace 出 dom_direct_design=True 的 cfg 并贯穿 try_build_direct_design。"""
+    from dataclasses import replace
+    import cv2, numpy as np
+    from pathlib import Path
+    from src.config import load_config
+    from src.app.agents.precise_agent import PreciseAgent
+
+    seen = {}
+    def fake_capture(url, cfg, out_dir):
+        out = Path(out_dir); out.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(out / "00_screenshot.png"), np.zeros((100, 100, 3), dtype=np.uint8))
+        (out / "00_dom.json").write_text("[]", encoding="utf-8")
+        return {"image": str(out / "00_screenshot.png"), "width": 100,
+                "height": 100, "dom": str(out / "00_dom.json")}
+    class _OkProvider:
+        def run(self, ctx):
+            from src.app.services.structure.graph import new_graph
+            return new_graph(ctx.image_path, ctx.image_w, ctx.image_h, "dom")
+    def fake_build(cfg, route):
+        assert route == "dom"
+        return _OkProvider()
+    def fake_try(som_json, cfg):
+        seen["direct_cfg"] = cfg
+        return {"canvas": {}, "elements": []}
+    class _NoopRenderer:
+        def __init__(self, cfg): pass
+        def render(self, design, tool): pass
+    monkeypatch.setattr("src.app.services.structure.capture.capture_page", fake_capture)
+    monkeypatch.setattr("src.app.agents.precise_agent._build_provider", fake_build)
+    monkeypatch.setattr("src.app.services.som.direct_design.try_build_direct_design", fake_try)
+    monkeypatch.setattr("src.app.controllers.rendering_controller.RenderingController", _NoopRenderer)
+    cfg = replace(load_config(), vision_api_key="sk-test", output_dir=tmp_path)
+    PreciseAgent(cfg).run(url="https://example.invalid", route="dom", tool="svg", fast=True)
+    assert seen["direct_cfg"].dom_direct_design is True

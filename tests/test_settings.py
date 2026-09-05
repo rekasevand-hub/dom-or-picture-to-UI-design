@@ -41,7 +41,7 @@ def test_config_new_fields_defaults():
     assert c.som_batch_max_rounds == 3
     assert c.som_batch_min_coverage == 0.9
     assert c.som_color_backfill is False
-    assert c.dom_direct_design is True
+    assert c.dom_direct_design is False
 
 def test_config_new_fields_env():
     import os

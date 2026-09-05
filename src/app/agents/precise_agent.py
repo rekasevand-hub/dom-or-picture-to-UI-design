@@ -3,6 +3,7 @@
 from __future__ import annotations
 import json, time
 from pathlib import Path
+from dataclasses import replace
 
 from src.app.services.structure.graph import assign_ids, assign_parent_depth, save_graph
 from src.app.services.structure.router import route_order
@@ -26,19 +27,22 @@ class PreciseAgent:
     def __init__(self, config) -> None:
         self.config = config
 
-    def run(self, *, url=None, image=None, route="auto", tool="svg", enrich=False) -> dict:
-        out = self.config.output_dir
+    def run(self, *, url=None, image=None, route="auto", tool="svg",
+            enrich=False, fast=False) -> dict:
+        cfg = (replace(self.config, dom_direct_design=True)
+               if (fast and route in ("auto", "dom")) else self.config)
+        out = cfg.output_dir
         out.mkdir(parents=True, exist_ok=True)
         t0 = time.time()
 
         # DesignSpec 阶段固定走多模态 VLM（call_vlm），无论何路线都需要密钥；
         # 提前校验，避免跑到末尾才失败并留下半套产物。
-        if not self.config.vision_api_key:
+        if not cfg.vision_api_key:
             raise ValueError("VISION_API_KEY 未配置，DesignSpec 生成需要多模态模型密钥")
 
         if url:
             from src.app.services.structure.capture import capture_page
-            cap = capture_page(url, self.config, str(out))
+            cap = capture_page(url, cfg, str(out))
             image, w, h = cap["image"], cap["width"], cap["height"]
             ctx = ProviderContext(image_path=image, image_w=w, image_h=h,
                                   route="", output_dir=str(out),
@@ -54,12 +58,12 @@ class PreciseAgent:
 
         have_dom = bool(ctx.dom_path)
         requested = route if route != "auto" else None
-        chain = route_order(input_kind, requested, self.config, have_dom)
+        chain = route_order(input_kind, requested, cfg, have_dom)
         fallbacks, graph = [], None
 
         for r in chain:
             try:
-                provider = _build_provider(self.config, r)
+                provider = _build_provider(cfg, r)
                 ctx.route = r
                 graph = provider.run(ctx)
                 break
@@ -81,16 +85,16 @@ class PreciseAgent:
         from src.app.services.som.direct_design import try_build_direct_design
         som_json = json.loads((out / "11_som.json").read_text(encoding="utf-8"))
         # dom 路线：computed style 已随结构落盘，直接拼 DesignSpec，不必再让 VLM 看图猜色
-        design = try_build_direct_design(som_json, self.config)
+        design = try_build_direct_design(som_json, cfg)
         if design is None:
             from src.app.utils.image_utils import encode_image_base64
             b64 = encode_image_base64(_li(graph["image"]))
-            design = generate_som_design(som_json, b64, self.config, output_dir=str(out))
+            design = generate_som_design(som_json, b64, cfg, output_dir=str(out))
         (out / "12_design.json").write_text(json.dumps(design, ensure_ascii=False, indent=1),
                                             encoding="utf-8")
 
         from src.app.controllers.rendering_controller import RenderingController
-        RenderingController(self.config).render(design, tool)
+        RenderingController(cfg).render(design, tool)
 
         meta = design.get("_meta") or {}
         manifest = {"route": graph["route"], "url": url, "image": image, "tool": tool,
