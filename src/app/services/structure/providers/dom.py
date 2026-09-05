@@ -114,14 +114,25 @@ def _box_intersection_area(a: list[int], b: list[int]) -> int:
     return iw * ih
 
 
-def _overlay_flags(nodes: list[dict], rects: list[list[int]]) -> list[bool]:
+def _overlay_flags(nodes: list[dict], rects: list[list[int]],
+                   params: dict | None = None) -> list[bool]:
+    """判定浮层候选；params 为站点 profile overlay 的可选参数覆盖。
+
+    覆盖键：min_area / min_overlap_px / min_overlap_w / min_overlap_h；
+    缺失的键沿用模块级默认，无 profile 时行为与原来一致。
+    """
+    p = params or {}
+    min_area = int(p.get("min_area", _OVERLAY_MIN_AREA))
+    min_overlap_px = int(p.get("min_overlap_px", _OVERLAY_MIN_OVERLAP_PX))
+    min_overlap_w = int(p.get("min_overlap_w", _OVERLAY_MIN_OVERLAP_W))
+    min_overlap_h = int(p.get("min_overlap_h", _OVERLAY_MIN_OVERLAP_H))
     flags = [False] * len(nodes)
     for i, node in enumerate(nodes):
         if not _is_overlay_positioned(node):
             continue
         a = rects[i]
         area = (a[2] * a[3]) if a else 0
-        if area < _OVERLAY_MIN_AREA:
+        if area < min_area:
             continue
         for j in range(i):   # 只与文档序在前的内容比“后画者压住先画者”
             b = rects[j]
@@ -131,10 +142,10 @@ def _overlay_flags(nodes: list[dict], rects: list[list[int]]) -> list[bool]:
                 continue  # 祖先/后代（含等大包夹）不算兄弟重叠
             ow = min(a[0] + a[2], b[0] + b[2]) - max(a[0], b[0])
             oh = min(a[1] + a[3], b[1] + b[3]) - max(a[1], b[1])
-            if ow < _OVERLAY_MIN_OVERLAP_W or oh < _OVERLAY_MIN_OVERLAP_H:
+            if ow < min_overlap_w or oh < min_overlap_h:
                 continue
             inter = ow * oh
-            if inter >= _OVERLAY_MIN_OVERLAP_PX and _node_z_index(nodes[j]) <= _node_z_index(node):
+            if inter >= min_overlap_px and _node_z_index(nodes[j]) <= _node_z_index(node):
                 flags[i] = True
                 break
     return flags
@@ -197,8 +208,12 @@ class DomProvider(BaseProvider):
             nodes = json.load(f)
         g = new_graph(ctx.image_path, ctx.image_w, ctx.image_h, "dom")
         rects = [_node_box(n, ctx.image_w, ctx.image_h) for n in nodes]
+        # 站点 profile 可覆盖 overlay 判定阈值；无 profile/无覆盖时沿用模块默认
+        from src.app.services.structure.site_profiles import load_profile
+        prof = load_profile(ctx.url)
+        ov = (prof.overlay or {}) if prof else None
         overlay_ctx = _overlay_context(nodes, rects,
-                                       _overlay_flags(nodes, rects))
+                                       _overlay_flags(nodes, rects, ov))
         # 容器候选：语义角色 / 明显背景块 / 大区块(>25% 高或宽 且面积>2000)
         for i, n in enumerate(nodes):
             if _normalize_role(n) in CONTAINER_ROLES or _distinct_bg(n) or (

@@ -84,6 +84,12 @@ class PreciseAgent:
         from src.app.services.llm.llm_service import generate_som_design
         from src.app.services.som.direct_design import try_build_direct_design
         som_json = json.loads((out / "11_som.json").read_text(encoding="utf-8"))
+        # url 命中站点 profile 时注入图标语义提示段（仅作提示词辅助，不进 PageGraph/DesignSpec）
+        if url:
+            from src.app.services.structure.site_profiles import load_profile
+            prof = load_profile(url)
+            if prof and prof.icon_aria_labels:
+                som_json["_profile_hints"] = prof.hint_text()
         # dom 路线：computed style 已随结构落盘，直接拼 DesignSpec，不必再让 VLM 看图猜色
         design = try_build_direct_design(som_json, cfg)
         if design is None:

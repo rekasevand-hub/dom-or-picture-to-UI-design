@@ -163,6 +163,9 @@ def build_som_prompt(som_json: dict, image_b64: str) -> list[dict]:
         ' "style": {"fillColor": "#RRGGBB", "textColor": "#RRGGBB", "fontSize": int,'
         ' "fontWeight": str, "borderRadius": int, "borderWidth": int, "borderColor": "#RRGGBB"}}]}'
     )
+    hints = som_json.get("_profile_hints")
+    if hints:
+        system = system + "\n站点提示（仅供参考，不得编造不在画面/列表中的内容）：\n" + hints
     import json as _json
     user = [
         {"type": "text",
@@ -280,7 +283,11 @@ def build_som_batch_prompt(som_json: dict, image_b64: str, ids: list[str]) -> li
         {"type": "image_url",
          "image_url": {"url": "data:image/png;base64," + image_b64}},
     ]
-    return [{"role": "system", "content": _SOM_BATCH_SYSTEM},
+    system = _SOM_BATCH_SYSTEM
+    hints = som_json.get("_profile_hints")
+    if hints:
+        system = system + "\n站点提示（仅供参考，不得编造不在画面/列表中的内容）：\n" + hints
+    return [{"role": "system", "content": system},
             {"role": "user", "content": user_content}]
 
 

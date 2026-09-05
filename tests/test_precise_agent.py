@@ -178,3 +178,63 @@ def test_run_fast_flips_dom_direct_design(tmp_path, monkeypatch):
     cfg = replace(load_config(), vision_api_key="sk-test", output_dir=tmp_path)
     PreciseAgent(cfg).run(url="https://example.invalid", route="dom", tool="svg", fast=True)
     assert seen["direct_cfg"].dom_direct_design is True
+
+
+def test_run_injects_profile_hints_before_design(tmp_path, monkeypatch):
+    """url 命中 site_profiles/<host>.json 时，som_json 在进入 design 前注入 _profile_hints。"""
+    from dataclasses import replace
+    import cv2, numpy as np
+    from src.config import load_config
+    from src.app.agents.precise_agent import PreciseAgent
+
+    seen = {}
+    def fake_capture(url, cfg, out_dir):
+        out = Path(out_dir); out.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(out / "00_screenshot.png"), np.zeros((100, 100, 3), dtype=np.uint8))
+        (out / "00_dom.json").write_text("[]", encoding="utf-8")
+        return {"image": str(out / "00_screenshot.png"), "width": 100,
+                "height": 100, "dom": str(out / "00_dom.json")}
+    class _OkProvider:
+        def run(self, ctx):
+            from src.app.services.structure.graph import new_graph, add_element
+            g = new_graph(ctx.image_path, ctx.image_w, ctx.image_h, "grounding")
+            add_element(g, [10, 10, 20, 20], type_="rectangle")
+            return g
+    def fake_build_provider(cfg, route):
+        return _OkProvider()
+    def fake_try(som_json, cfg):
+        seen["som"] = som_json
+        return {"canvas": {}, "elements": []}
+    class _NoopRenderer:
+        def __init__(self, cfg):
+            pass
+        def render(self, design, tool):
+            pass
+    monkeypatch.setattr("src.app.services.structure.capture.capture_page", fake_capture)
+    monkeypatch.setattr("src.app.agents.precise_agent._build_provider", fake_build_provider)
+    monkeypatch.setattr("src.app.services.som.direct_design.try_build_direct_design", fake_try)
+    monkeypatch.setattr("src.app.controllers.rendering_controller.RenderingController",
+                        _NoopRenderer)
+
+    cfg = replace(load_config(), vision_api_key="sk-test", output_dir=tmp_path)
+    PreciseAgent(cfg).run(url="http://flexweaver.rtdsoft.com:6016/index#/production/mfg_order_query",
+                          route="grounding", tool="svg")
+    hints = seen["som"].get("_profile_hints")
+    assert hints, "命中 profile 的 url 必须在 som_json 注入 _profile_hints"
+    assert "form" in hints and "编辑" in hints
+
+
+def test_som_build_prompts_append_profile_hints():
+    """som_json 带 _profile_hints 时，两个 llm build 函数在 system 后追加站点提示段。"""
+    from src.app.services.llm.llm_service import (
+        build_som_prompt, build_som_batch_prompt)
+    som = {"image": "a.png", "size": [100, 80], "containers": [], "elements": [],
+           "_profile_hints": "  form -> 编辑"}
+    marker = "站点提示（仅供参考，不得编造不在画面/列表中的内容）："
+    for msgs in (build_som_prompt(som, "BASE64=="),
+                 build_som_batch_prompt(som, "BASE64==", [])):
+        system = msgs[0]["content"]
+        assert marker in system and "form -> 编辑" in system
+    plain = build_som_prompt({"image": "a.png", "size": [100, 80],
+                              "containers": [], "elements": []}, "BASE64==")
+    assert "站点提示" not in plain[0]["content"]
