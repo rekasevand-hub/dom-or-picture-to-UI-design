@@ -39,6 +39,8 @@ def annotate_som(graph: dict, output_dir: str) -> dict:
                            "style": c.get("style") or {}}
                           for c in graph["containers"]],
            "elements": [{"id": e["id"], "bbox": e["bbox"], "text": e["text"],
+                         "ariaLabel": e.get("ariaLabel", ""),
+                         "title": e.get("title", ""),
                          "type": e["type"],
                          "interactable": e["type"] not in ("text", "image"),
                          "container": e["container"],

@@ -25,11 +25,12 @@ def add_container(graph: dict, bbox: list[int], role: str = "", source: str = ""
 def add_element(graph: dict, bbox: list[int], type_: str = "rectangle", text: str = "",
                 role: str = "", source: str = "", confidence: float = 1.0,
                 style: dict | None = None, overlay: bool = False,
-                z_index: int = 0) -> None:
+                z_index: int = 0, aria_label: str = "", title: str = "") -> None:
     graph["elements"].append({"id": None, "bbox": [int(v) for v in bbox], "type": type_,
                               "text": text or "", "role": role, "container": None,
                               "confidence": float(confidence), "source": source,
                               "overlay": bool(overlay), "zIndex": int(z_index or 0),
+                              "ariaLabel": aria_label or "", "title": title or "",
                               "style": dict(style) if style else {}})
 
 

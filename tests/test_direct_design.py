@@ -410,3 +410,25 @@ def test_render_design_paints_overlay_last():
 
     ids = [call[1].get("id") for call in adapter.calls]
     assert ids == [None, "t1", "b1", "i1", "b9"]
+
+
+def _som_with_aria_element():
+    return {"image": "x.png", "size": [800, 600], "containers": [],
+            "elements": [{"id": 1, "bbox": [100, 100, 60, 24], "type": "button",
+                          "text": "", "ariaLabel": "图标: form", "style": {}}],
+            "provenance": {"route": "dom"}}
+
+
+def test_som_entries_carry_aria_candidates():
+    from src.app.services.llm.llm_service import _som_entries
+    entries = _som_entries(_som_with_aria_element())
+    assert entries[0]["ariaLabel"] == "图标: form"
+
+
+def test_normalize_design_prefers_visible_text():
+    from src.app.services.llm.llm_service import _normalize_design_element
+    entry = {"id": "1", "group": "element", "bbox": [100, 100, 60, 24],
+             "type": "button", "text": "确定"}
+    model = {"id": "1", "text": "删除"}
+    out = _normalize_design_element(model, entry)
+    assert out["text"] == "确定"

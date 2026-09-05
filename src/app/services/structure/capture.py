@@ -29,6 +29,7 @@ DOM_JS = r"""
       tag: el.tagName.toLowerCase(),
       role: el.getAttribute('role') || '',
       ariaLabel: el.getAttribute('aria-label') || '',
+      title: el.getAttribute('title') || '',
       text: hasText ? (el.textContent || '').trim().slice(0, 200) : '',
       x: Math.round(r.x), y: Math.round(r.y),
       w: Math.round(r.width), h: Math.round(r.height),

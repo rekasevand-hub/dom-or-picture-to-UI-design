@@ -251,6 +251,10 @@ def _som_entries(som_json: dict) -> list[dict]:
             entry["text"] = str(e["text"])
         if e.get("container"):
             entry["container"] = str(e["container"])
+        if e.get("ariaLabel"):
+            entry["ariaLabel"] = str(e["ariaLabel"])
+        if e.get("title"):
+            entry["title"] = str(e["title"])
         entries.append(entry)
     return entries
 
@@ -281,7 +285,7 @@ def build_som_batch_prompt(som_json: dict, image_b64: str, ids: list[str]) -> li
 
 
 def _normalize_design_element(el: dict, entry: dict) -> dict:
-    """按 SoM 条目机械对齐 model 输出：id/bbox 以 SoM 为准，缺失 text 回填，防止模型移位。"""
+    """按 SoM 条目机械对齐 model 输出：id/bbox 以 SoM 为准，可见文本以条目为准，防模型移位/改写。"""
     out = dict(el)
     x, y, w, h = entry["bbox"]
     out["id"] = entry["id"]
@@ -289,8 +293,8 @@ def _normalize_design_element(el: dict, entry: dict) -> dict:
     out["y"] = max(0, _snap4(y))
     out["width"] = max(1, _snap4(w))
     out["height"] = max(1, _snap4(h))
-    if entry.get("text") and not str(out.get("text") or "").strip():
-        out["text"] = entry["text"]
+    if entry.get("text"):
+        out["text"] = entry["text"]          # DOM 可见文本为准，防模型改写
     if entry["group"] == "container":
         out["type"] = "container"
     elif not out.get("type"):

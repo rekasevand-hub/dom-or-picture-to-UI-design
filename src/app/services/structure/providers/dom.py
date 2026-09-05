@@ -71,8 +71,8 @@ def _canvas_bbox(node: dict, canvas_w: int, canvas_h: int) -> list[int] | None:
 
 # 浮层判定（定位 + 几何）：
 # - 候选只取 fixed/sticky 与 absolute（z≥0；负 z 是画在内容之下的装饰层），
-#   避免把普通流式布局/表格本身误判——antd 固定列正是 absolute z=1 的整列容器
-#   （老版）或单元格级 sticky（v5）；
+#   避免把普通流式布局/表格本身误判——absolute/sticky 浮层列、吸顶块是常见
+#   形态，因此按定位+重叠判定；
 # - 文档序在后的候选与“前面的兄弟内容”发生实质重叠才算盖在上面，且前面的
 #   节点 z 更高（吸顶/弹层先入 DOM）时不算；重叠要求像素量级（≥1500px² 且
 #   宽≥30/高≥15），避免 1px 边框/徽标贴边误判；
@@ -81,69 +81,6 @@ _OVERLAY_MIN_AREA = 800            # 太小的是图标/角标装饰，不进浮
 _OVERLAY_MIN_OVERLAP_PX = 1500     # 与前面兄弟内容的最小重叠像素面积
 _OVERLAY_MIN_OVERLAP_W = 30        # 重叠最小宽（px）
 _OVERLAY_MIN_OVERLAP_H = 15        # 重叠最小高（px）
-
-
-# 空交互按钮的语义回填：antd 系常把操作列做成 <a><i aria-label="图标: form"></i></a>，
-# <a> 没有任何可读正文（<i> 又是不产出文本的纯图标叶子），导致还原成空按钮。
-# aria 图标名 -> 常用按钮文案；箭头/翻页/排序类（caret-*、left/right/down…）不属于
-# 操作语义，保持空更安全（真实标题由列头/页码文本承担）。
-_ICON_ARIA_PREFIXES = ("图标:", "图标：", "icon:", "icon：")
-_ICON_ARIA_LABELS = {
-    "form": "编辑", "edit": "编辑", "delete": "删除", "search": "搜索",
-    "plus": "新增", "download": "下载", "upload": "上传",
-    "setting": "设置", "settings": "设置", "close": "关闭",
-    "eye": "查看", "eye-invisible": "隐藏",
-    "reload": "刷新", "refresh": "刷新", "redo": "重做",
-}
-
-
-def _icon_aria_text(aria: str) -> str:
-    """图标型 aria-label 转可读文案；无前缀（真实可读名）原样返回；不认识/结构图标返回空。"""
-    if not aria:
-        return ""
-    s = aria.strip()
-    for prefix in _ICON_ARIA_PREFIXES:
-        if s.startswith(prefix):
-            return _ICON_ARIA_LABELS.get(s[len(prefix):].strip().lower(), "")
-    return s
-
-
-def _empty_button_fallback_text(nodes, rects, i, bbox, text_leaves, aria_idxs):
-    """交互按钮无可读文字时，用自身/最内层子孙的图标 aria 语义回填按钮文案。
-
-    仅当该按钮整棵子树都不含可读正文叶子时回填（如 <a><i aria-label="图标: form"/>），
-    避免覆盖真实标题来自子 span 的排序/导航触发器——它们的文字已作为独立 text 元素
-    输出，按钮本身留空即可。
-    """
-    own = (nodes[i].get("ariaLabel") or "").strip()
-    if own:
-        txt = _icon_aria_text(own)
-        if txt:
-            return txt
-    bx0, by0, bw, bh = bbox
-    box_area = bw * bh
-    for j in text_leaves:
-        rj = rects[j]
-        if rj[2] * rj[3] >= box_area:
-            continue
-        if _box_covers(bbox, rj):
-            return ""   # 子树已有正文叶子：标题交给独立文字元素，不回填
-    best, best_area = "", None
-    for j in aria_idxs:
-        if j == i:
-            continue
-        rj = rects[j]
-        if rj[2] * rj[3] >= box_area:
-            continue
-        if not _box_covers(bbox, rj):
-            continue
-        txt = _icon_aria_text(nodes[j].get("ariaLabel", ""))
-        if not txt:
-            continue
-        area = rj[2] * rj[3]
-        if best_area is None or area < best_area:
-            best, best_area = txt, area
-    return best
 
 
 def _node_z_index(node: dict) -> int:
@@ -227,6 +164,31 @@ def _overlay_context(nodes: list[dict], rects: list[list[int]],
     return ctx
 
 
+def _contained_icon_aria(nodes: list[dict], rects: list[list[int]],
+                         i: int, bbox: list[int]) -> str:
+    """取按钮子树中最小图标节点的 aria-label 原样返回作语义候选。
+
+    图标按钮常是 <a><i aria-label="..."/></a>：aria 挂在不可交互的图标节点上，
+    这里只把它带出为候选字段，不映射成文案（text 仍只含 DOM 可见文本）。
+    """
+    bw, bh = bbox[2], bbox[3]
+    box_area = bw * bh
+    best, best_area = "", None
+    for j, node in enumerate(nodes):
+        if j == i:
+            continue
+        aria = (node.get("ariaLabel") or "").strip()
+        rj = rects[j]
+        if not aria or not rj:
+            continue
+        if rj[2] * rj[3] >= box_area or not _box_covers(bbox, rj):
+            continue
+        area = rj[2] * rj[3]
+        if best_area is None or area < best_area:
+            best, best_area = aria, area
+    return best
+
+
 class DomProvider(BaseProvider):
     name = "dom"
 
@@ -250,11 +212,6 @@ class DomProvider(BaseProvider):
                               source=f"dom:{n['tag']}", style=_style_from_node(n),
                               overlay=is_overlay, z_index=z_index)
         # 元素候选：交互 / 叶子文本 / 图片
-        # 预索引：可读正文叶子 / 带 aria 的节点，供空按钮语义回填做几何查找
-        text_leaves = [i for i, n in enumerate(nodes)
-                       if strip_icon_glyphs(n.get("text", "")) and rects[i]]
-        aria_idxs = [i for i, n in enumerate(nodes)
-                     if (n.get("ariaLabel") or "").strip() and rects[i]]
         for i, n in enumerate(nodes):
             is_image = n["tag"] in ("img", "svg")
             text = strip_icon_glyphs(n.get("text", ""))
@@ -268,13 +225,16 @@ class DomProvider(BaseProvider):
             etype = "button" if n["tag"] in ("button", "a", "select") else (
                 "input" if n["tag"] in ("input", "textarea") else (
                 "image" if is_image else "text"))
-            # 纯图标操作列按钮（<a><i aria-label="图标: form"/></a>）没有可读文字，
-            # 从自身/子孙 aria 图标名回填成“编辑/删除”等操作文案，避免空按钮
-            if not text and etype == "button" and n["tag"] in ("a", "button", "select"):
-                text = _empty_button_fallback_text(nodes, rects, i, bbox,
-                                                   text_leaves, aria_idxs)
+            aria_label = n.get("ariaLabel", "")
+            # 图标按钮自身无 aria 时，把子树图标节点的 aria-label 原样带出为
+            # 语义候选（不映射成文案，text 保持 DOM 可见文本）
+            if (not text and etype == "button"
+                    and not (aria_label or "").strip()
+                    and n["tag"] in ("a", "button")):
+                aria_label = _contained_icon_aria(nodes, rects, i, bbox)
             add_element(g, bbox, type_=etype,
                         text=text, role=_normalize_role(n),
                         source=f"dom:{n['tag']}", style=_style_from_node(n),
-                        overlay=is_overlay, z_index=z_index)
+                        overlay=is_overlay, z_index=z_index,
+                        aria_label=aria_label, title=n.get("title", ""))
         return g

@@ -51,25 +51,6 @@ def _a_button(x, y, w, h, aria=""):
             "pageBg": "rgb(255, 255, 255)", "interactive": True}
 
 
-def test_dom_provider_backfills_icon_aria_button_text(tmp_path):
-    """操作列纯图标 <a><i aria-label="图标: form"/></a>：按钮没有可见文字时，
-    从子树图标 aria 回填成“编辑/删除”，不再是空按钮。"""
-    nodes = [
-        _a_button(100, 200, 57, 19),
-        {"tag": "i", "role": "", "ariaLabel": "图标: form", "text": "",
-         "x": 100, "y": 203, "w": 14, "h": 14, "bg": "rgba(0, 0, 0, 0)",
-         "pageBg": "rgb(255, 255, 255)", "interactive": False},
-        _a_button(160, 200, 54, 19),
-        {"tag": "i", "role": "", "ariaLabel": "图标: delete", "text": "",
-         "x": 160, "y": 203, "w": 14, "h": 14, "bg": "rgba(0, 0, 0, 0)",
-         "pageBg": "rgb(255, 255, 255)", "interactive": False},
-    ]
-    g = _run_provider(tmp_path, nodes)
-    texts = {e["bbox"][0]: e["text"] for e in g["elements"] if e["type"] == "button"}
-    assert texts[100] == "编辑"
-    assert texts[160] == "删除"
-
-
 def test_dom_provider_does_not_backfill_visible_caption(tmp_path):
     """按钮真实标题来自子 span（如表头排序触发器）时，不拿图标 aria 覆盖；
     标题作为独立 text 元素保留，按钮保持空（现状不回填）。"""
@@ -89,8 +70,32 @@ def test_dom_provider_does_not_backfill_visible_caption(tmp_path):
 
 
 def test_dom_provider_uses_own_non_icon_aria(tmp_path):
-    """按钮自身带真实可读 aria（无“图标:”前缀）时原样作为文案。"""
+    """按钮自身带真实可读 aria（无“图标:”前缀）时原样作为 ariaLabel 候选。"""
     nodes = [_a_button(50, 50, 30, 24, aria="关闭")]
     g = _run_provider(tmp_path, nodes)
     btn = next(e for e in g["elements"] if e["type"] == "button")
-    assert btn["text"] == "关闭"
+    assert btn["text"] == "" and btn["ariaLabel"] == "关闭"
+
+
+def test_dom_provider_passes_aria_and_title_through(tmp_path):
+    nodes = [{"tag": "a", "role": "", "ariaLabel": "图标: form", "text": "",
+              "title": "编辑表单", "x": 100, "y": 200, "w": 57, "h": 19,
+              "bg": "rgba(0, 0, 0, 0)", "pageBg": "rgb(255,255,255)",
+              "interactive": True}]
+    g = _run_provider(tmp_path, nodes)
+    btn = next(e for e in g["elements"] if e["type"] == "button")
+    assert btn["text"] == ""                 # 核心不做语义回填
+    assert btn["ariaLabel"] == "图标: form"  # 候选原样透传
+    assert btn["title"] == "编辑表单"
+
+
+def test_dom_provider_text_never_inferred_from_aria(tmp_path):
+    nodes = [
+        _a_button(100, 200, 57, 19),
+        {"tag": "i", "role": "", "ariaLabel": "图标: form", "text": "",
+         "x": 100, "y": 203, "w": 14, "h": 14, "bg": "rgba(0, 0, 0, 0)",
+         "pageBg": "rgb(255, 255, 255)", "interactive": False},
+    ]
+    g = _run_provider(tmp_path, nodes)
+    btn = next(e for e in g["elements"] if e["type"] == "button")
+    assert btn["text"] == "" and btn["ariaLabel"] == "图标: form"
