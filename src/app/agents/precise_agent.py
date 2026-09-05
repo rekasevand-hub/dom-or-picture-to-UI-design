@@ -41,7 +41,9 @@ class PreciseAgent:
 
         if url:
             from src.app.services.structure.capture import capture_page
-            cap = capture_page(url, self.config, str(out))
+            # 只有显式 a11y 路线才需要 AX 样式（dom 等路线别为它多付 CDP 开销）
+            cap = capture_page(url, self.config, str(out),
+                               ax_style=(route == "a11y"))
             image, w, h = cap["image"], cap["width"], cap["height"]
             ctx = ProviderContext(image_path=image, image_w=w, image_h=h,
                                   route="", output_dir=str(out),
@@ -79,21 +81,33 @@ class PreciseAgent:
         save_graph(graph, str(out / "10_pagegraph.json"))
         annotate_som(graph, str(out))
 
-        from src.app.utils.image_utils import encode_image_base64, load_image as _li
-        from src.app.services.llm.llm_service import build_som_prompt, call_vlm, parse_design_json
+        from src.app.utils.image_utils import load_image as _li
+        from src.app.services.llm.llm_service import generate_som_design
+        from src.app.services.som.direct_design import try_build_direct_design
         som_json = json.loads((out / "11_som.json").read_text(encoding="utf-8"))
-        b64 = encode_image_base64(_li(graph["image"]))
-        design = parse_design_json(call_vlm(build_som_prompt(som_json, b64), self.config))
+        # dom/a11y 路线：computed style 已随结构落盘，直接拼 DesignSpec，不必再让 VLM 看图猜色
+        design = try_build_direct_design(som_json, self.config)
+        if design is None:
+            from src.app.utils.image_utils import encode_image_base64
+            b64 = encode_image_base64(_li(graph["image"]))
+            design = generate_som_design(som_json, b64, self.config, output_dir=str(out))
         (out / "12_design.json").write_text(json.dumps(design, ensure_ascii=False, indent=1),
                                             encoding="utf-8")
 
         from src.app.controllers.rendering_controller import RenderingController
         RenderingController(self.config).render(design, tool)
 
+        meta = design.get("_meta") or {}
         manifest = {"route": graph["route"], "url": url, "image": image, "tool": tool,
                     "seconds": round(time.time() - t0, 1), "fallbacks": fallbacks,
                     "counts": {"containers": len(graph["containers"]),
-                               "elements": len(graph["elements"])}}
+                               "elements": len(graph["elements"])},
+                    "design": {"mode": meta.get("mode", "single"),
+                               "calls": meta.get("calls", 1),
+                               "rounds": meta.get("rounds", 1),
+                               "coverage": meta.get("coverage", 1.0),
+                               "expected": meta.get("expected", 0),
+                               "returned": meta.get("returned", 0)}}
         (out / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=1),
                                            encoding="utf-8")
         return graph

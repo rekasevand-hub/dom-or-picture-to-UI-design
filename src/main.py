@@ -26,6 +26,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--route", default=None, choices=["auto", "dom", "a11y", "grounding", "cv"],
                         help="结构来源路线")
     parser.add_argument("--enrich", action="store_true", help="视觉补充（默认关）")
+    parser.add_argument("--storage-state", default=None,
+                        help="Playwright 登录态 JSON：URL 抓取时复用已登录 cookie/localStorage（登录保护页面用）")
+    parser.add_argument("--login-state", default=None,
+                        help="交互导出登录态：打开有头浏览器登录 --url，回车后保存到该 JSON（只导出，不跑管线）")
     parser.add_argument("--tool", default=None, choices=["svg", "figma", "jsdesign", "mockingbot"], help="原型工具")
     parser.add_argument("--ocr-engine", default=None, choices=["none", "easyocr", "tesseract"], help="OCR 引擎")
     parser.add_argument("--output-dir", default=None, help="中间产物输出目录")
@@ -49,6 +53,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.output_dir:
         from dataclasses import replace
         config = replace(config, output_dir=Path(args.output_dir))
+    if args.storage_state:
+        from dataclasses import replace
+        config = replace(config, playwright_storage_state=str(Path(args.storage_state)))
     config.ensure_dirs()
 
     tool = args.tool or config.prototype_tool
@@ -65,6 +72,18 @@ def main(argv: list[str] | None = None) -> int:
         # 交互模式下无输入视为用户放弃 -> 退出码 1（不静默跑旧流程）
         if not args.url and not args.image:
             parser.error("交互选择未给出 URL/截图")
+
+    if args.login_state:
+        if args.storage_state:
+            parser.error("--login-state 与 --storage-state 请分两步使用：先 --login-state 导出登录态，再用 --storage-state 运行")
+        if not args.url:
+            parser.error("--login-state 需要同时提供 --url（在浏览器里登录的目标页面）")
+        from src.app.services.structure.capture import export_login_state
+        path = export_login_state(args.url, args.login_state, config)
+        logger.info("登录态已导出：%s", path)
+        print(f"\n下一步：对同一 URL 加 --storage-state \"{path}\" 运行，例如：")
+        print(f'python -m src.main --url "{args.url}" --storage-state "{path}" --route auto --tool svg')
+        return 0
 
     if not args.url and not args.image:
         parser.error("必须提供 --url 或 --image")

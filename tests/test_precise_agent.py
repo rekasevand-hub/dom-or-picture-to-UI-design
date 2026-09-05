@@ -27,7 +27,7 @@ def test_run_fallback_recording_offline(tmp_path, monkeypatch):
     from src.config import load_config
     from src.app.agents.precise_agent import PreciseAgent
 
-    def fake_capture(url, cfg, out_dir):
+    def fake_capture(url, cfg, out_dir, **kwargs):
         out = Path(out_dir); out.mkdir(parents=True, exist_ok=True)
         cv2.imwrite(str(out / "00_screenshot.png"),
                     np.zeros((100, 100, 3), dtype=np.uint8))
@@ -53,8 +53,9 @@ def test_run_fallback_recording_offline(tmp_path, monkeypatch):
             return _OkProvider()
         raise AssertionError(f"不应走到路线: {route}")
 
-    def fake_call_vlm(messages, cfg):
-        return '{"canvas": {"width": 100, "height": 100}, "elements": []}'
+    def fake_generate(som_json, image_b64, cfg, output_dir=None, **kwargs):
+        return {"canvas": {"width": som_json["size"][0], "height": som_json["size"][1]},
+                "elements": []}
 
     class _NoopRenderer:
         def __init__(self, cfg):
@@ -64,7 +65,7 @@ def test_run_fallback_recording_offline(tmp_path, monkeypatch):
 
     monkeypatch.setattr("src.app.services.structure.capture.capture_page", fake_capture)
     monkeypatch.setattr("src.app.agents.precise_agent._build_provider", fake_build_provider)
-    monkeypatch.setattr("src.app.services.llm.llm_service.call_vlm", fake_call_vlm)
+    monkeypatch.setattr("src.app.services.llm.llm_service.generate_som_design", fake_generate)
     monkeypatch.setattr("src.app.controllers.rendering_controller.RenderingController",
                         _NoopRenderer)
 
@@ -75,6 +76,63 @@ def test_run_fallback_recording_offline(tmp_path, monkeypatch):
     assert g["route"] == "grounding"
     assert (tmp_path / "10_pagegraph.json").exists()
     assert (tmp_path / "manifest.json").exists()
+
+
+def test_capture_receives_storage_state_from_config(tmp_path, monkeypatch):
+    """Config.playwright_storage_state 必须传到 capture_page（登录态复用契约）。"""
+    import numpy as np
+    from dataclasses import replace
+    from src.config import load_config
+    from src.app.agents.precise_agent import PreciseAgent
+
+    seen = {}
+
+    def fake_capture(url, cfg, out_dir, **kwargs):
+        seen["cfg"] = cfg
+        seen["kwargs"] = kwargs
+        out = Path(out_dir); out.mkdir(parents=True, exist_ok=True)
+        import cv2
+        cv2.imwrite(str(out / "00_screenshot.png"),
+                    np.zeros((100, 100, 3), dtype=np.uint8))
+        (out / "00_dom.json").write_text("[]", encoding="utf-8")
+        return {"image": str(out / "00_screenshot.png"), "width": 100, "height": 100,
+                "dom": str(out / "00_dom.json"), "ax": None}
+
+    class _OkProvider:
+        def run(self, ctx):
+            from src.app.services.structure.graph import new_graph, add_element
+            g = new_graph(ctx.image_path, ctx.image_w, ctx.image_h, "grounding")
+            add_element(g, [10, 10, 20, 20], type_="rectangle")
+            return g
+
+    def fake_build_provider(cfg, route):
+        if route == "grounding":
+            return _OkProvider()
+        raise AssertionError(f"不应走到路线: {route}")
+
+    def fake_generate(som_json, image_b64, cfg, output_dir=None, **kwargs):
+        return {"canvas": {"width": som_json["size"][0], "height": som_json["size"][1]},
+                "elements": []}
+
+    class _NoopRenderer:
+        def __init__(self, cfg):
+            pass
+
+        def render(self, design, tool):
+            pass
+
+    monkeypatch.setattr("src.app.services.structure.capture.capture_page", fake_capture)
+    monkeypatch.setattr("src.app.agents.precise_agent._build_provider", fake_build_provider)
+    monkeypatch.setattr("src.app.services.llm.llm_service.generate_som_design", fake_generate)
+    monkeypatch.setattr("src.app.controllers.rendering_controller.RenderingController",
+                        _NoopRenderer)
+
+    cfg = replace(load_config(), vision_api_key="sk-test",
+                  playwright_storage_state="state.json", output_dir=tmp_path)
+    PreciseAgent(cfg).run(url="https://example.invalid", route="grounding", tool="svg")
+    assert seen["cfg"] is cfg
+    assert seen["cfg"].playwright_storage_state == "state.json"
+    assert seen["kwargs"] == {"ax_style": False}  # 非 a11y 路线不补采 AX 样式
 
 @pytest.mark.integration
 def test_run_url_auto_svg(tmp_path):

@@ -33,12 +33,18 @@ def annotate_som(graph: dict, output_dir: str) -> dict:
     cv2.imwrite(os.path.join(output_dir, "11_som.png"), board)
     som = {"image": graph["image"], "size": [graph["image_w"], graph["image_h"]],
            "containers": [{"id": c["id"], "bbox": c["bbox"], "depth": c["depth"],
-                           "parent": c["parent"], "elements": c["elements"]}
+                           "parent": c["parent"], "elements": c["elements"],
+                           "overlay": bool(c.get("overlay", False)),
+                           "zIndex": int(c.get("zIndex") or 0),
+                           "style": c.get("style") or {}}
                           for c in graph["containers"]],
            "elements": [{"id": e["id"], "bbox": e["bbox"], "text": e["text"],
                          "type": e["type"],
                          "interactable": e["type"] not in ("text", "image"),
-                         "container": e["container"]} for e in graph["elements"]],
+                         "container": e["container"],
+                         "overlay": bool(e.get("overlay", False)),
+                         "zIndex": int(e.get("zIndex") or 0),
+                         "style": e.get("style") or {}} for e in graph["elements"]],
            "provenance": graph.get("provenance", {})}
     with open(os.path.join(output_dir, "11_som.json"), "w", encoding="utf-8") as f:
         json.dump(som, f, ensure_ascii=False, indent=1)

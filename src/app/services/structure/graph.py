@@ -13,17 +13,24 @@ def new_graph(image: str, image_w: int, image_h: int, route: str,
 
 
 def add_container(graph: dict, bbox: list[int], role: str = "", source: str = "",
-                  confidence: float = 1.0) -> None:
+                  confidence: float = 1.0, style: dict | None = None,
+                  overlay: bool = False, z_index: int = 0) -> None:
     graph["containers"].append({"id": None, "bbox": [int(v) for v in bbox], "role": role,
                                 "depth": 0, "parent": None, "elements": [],
-                                "confidence": float(confidence), "source": source})
+                                "confidence": float(confidence), "source": source,
+                                "overlay": bool(overlay), "zIndex": int(z_index or 0),
+                                "style": dict(style) if style else {}})
 
 
 def add_element(graph: dict, bbox: list[int], type_: str = "rectangle", text: str = "",
-                role: str = "", source: str = "", confidence: float = 1.0) -> None:
+                role: str = "", source: str = "", confidence: float = 1.0,
+                style: dict | None = None, overlay: bool = False,
+                z_index: int = 0) -> None:
     graph["elements"].append({"id": None, "bbox": [int(v) for v in bbox], "type": type_,
                               "text": text or "", "role": role, "container": None,
-                              "confidence": float(confidence), "source": source})
+                              "confidence": float(confidence), "source": source,
+                              "overlay": bool(overlay), "zIndex": int(z_index or 0),
+                              "style": dict(style) if style else {}})
 
 
 def _cx(e: dict) -> tuple[float, float]:

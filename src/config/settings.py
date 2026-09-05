@@ -9,6 +9,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
+def _env_opt(name: str) -> str | None:
+    """读取可选字符串环境变量：未设置或空白一律返回 None。"""
+    value = os.getenv(name)
+    return value if value and value.strip() else None
+
+
 @dataclass(frozen=True)
 class Config:
     """运行时可配置的参数。"""
@@ -18,9 +24,9 @@ class Config:
     capture_region: str | None = field(default_factory=lambda: os.getenv("CAPTURE_REGION"))  # "x,y,w,h"
     screenshot_max_dim: int = field(default_factory=lambda: int(os.getenv("SCREENSHOT_MAX_DIM", "1600")))
 
-    # --- LLM ---
+    # --- LLM（仅旧流程 ReconstructAgent / call_vision_llm 使用） ---
     llm_base_url: str = field(default_factory=lambda: os.getenv("LLM_BASE_URL", "https://api.openai.com/v1"))
-    llm_api_key: str | None = field(default_factory=lambda: os.getenv("LLM_API_KEY"))
+    llm_api_key: str | None = field(default_factory=lambda: _env_opt("LLM_API_KEY"))
     llm_model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", "gpt-4o"))
     llm_temperature: float = field(default_factory=lambda: float(os.getenv("LLM_TEMPERATURE", "0.2")))
     llm_max_tokens: int = field(default_factory=lambda: int(os.getenv("LLM_MAX_TOKENS", "4096")))
@@ -28,18 +34,33 @@ class Config:
 
     # --- 新流程视觉/文本模型（acctoken 网关，OpenAI 兼容） ---
     vision_base_url: str = field(default_factory=lambda: os.getenv("VISION_BASE_URL", "https://www.acctoken.com/v1"))
-    vision_api_key: str | None = field(default_factory=lambda: os.getenv("VISION_API_KEY"))
+    vision_api_key: str | None = field(default_factory=lambda: _env_opt("VISION_API_KEY"))
     vision_model: str = field(default_factory=lambda: os.getenv("VISION_MODEL", "qwen3-vl-plus"))
     vision_native_grounding: bool = field(default_factory=lambda: os.getenv("VISION_NATIVE_GROUNDING", "false").lower() in ("1", "true", "yes"))
+    vision_max_tokens: int = field(default_factory=lambda: int(os.getenv("VISION_MAX_TOKENS", "16000")))
+    vision_timeout: int = field(default_factory=lambda: int(os.getenv("VISION_TIMEOUT", "120")))
     text_base_url: str = field(default_factory=lambda: os.getenv("TEXT_BASE_URL", "https://www.acctoken.com/v1"))
-    text_api_key: str | None = field(default_factory=lambda: os.getenv("TEXT_API_KEY"))
+    text_api_key: str | None = field(default_factory=lambda: _env_opt("TEXT_API_KEY"))
     text_model: str = field(default_factory=lambda: os.getenv("TEXT_MODEL", "deepseek-v4-flash"))
+    text_max_tokens: int = field(default_factory=lambda: int(os.getenv("TEXT_MAX_TOKENS", "16000")))
+    text_timeout: int = field(default_factory=lambda: int(os.getenv("TEXT_TIMEOUT", "120")))
+
+    # --- SoM -> DesignSpec 分批生成（长页面防截断；每批 60-100 个 id 推荐） ---
+    som_batch_enabled: bool = field(default_factory=lambda: os.getenv("SOM_BATCH_ENABLED", "true").lower() in ("1", "true", "yes"))
+    som_batch_size: int = field(default_factory=lambda: int(os.getenv("SOM_BATCH_SIZE", "80")))
+    som_batch_max_rounds: int = field(default_factory=lambda: int(os.getenv("SOM_BATCH_MAX_ROUNDS", "3")))
+    som_batch_min_coverage: float = field(default_factory=lambda: float(os.getenv("SOM_BATCH_MIN_COVERAGE", "0.9")))
+    # 像素级颜色校正（预留接口，默认关；实现见 llm_service.backfill_colors_from_screenshot）
+    som_color_backfill: bool = field(default_factory=lambda: os.getenv("SOM_COLOR_BACKFILL", "false").lower() in ("1", "true", "yes"))
+    # dom/a11y 路线用 computed style 拼 DesignSpec（跳过 VLM，秒级完成；字段名兼容旧配置）
+    dom_direct_design: bool = field(default_factory=lambda: os.getenv("DOM_DIRECT_DESIGN", "true").lower() in ("1", "true", "yes"))
 
     # --- 新流程路由与抓取 ---
     route_default: str = field(default_factory=lambda: os.getenv("ROUTE", "auto"))
     playwright_viewport_width: int = field(default_factory=lambda: int(os.getenv("PLAYWRIGHT_VIEWPORT_WIDTH", "1440")))
     playwright_viewport_height: int = field(default_factory=lambda: int(os.getenv("PLAYWRIGHT_VIEWPORT_HEIGHT", "900")))
     playwright_headless: bool = field(default_factory=lambda: os.getenv("PLAYWRIGHT_HEADLESS", "true").lower() in ("1", "true", "yes"))
+    playwright_storage_state: str | None = field(default_factory=lambda: _env_opt("PLAYWRIGHT_STORAGE_STATE"))
     device_scale_factor: int = field(default_factory=lambda: int(os.getenv("DEVICE_SCALE_FACTOR", "1")))
     enrich_visual: bool = field(default_factory=lambda: os.getenv("ENRICH_VISUAL", "false").lower() in ("1", "true", "yes"))
     wait_networkidle_timeout: int = field(default_factory=lambda: int(os.getenv("WAIT_NETWORKIDLE_TIMEOUT", "30000")))

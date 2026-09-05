@@ -301,3 +301,6 @@ python -m src.main --image uploads/shot.png --route cv --tool svg
 ## 许可证
 
 MIT
+
+## URL权限获取
+- python -m src.main --url 'http://flexweaver.rtdsoft.com:6016/index#/production/microflow/mfg_order/data/mfg_order_query@ui?title=%E7%94%9F%E4%BA%A7%E8%AE%A2%E5%8D%95' --login-state D:\LLM-Data\Figma_auto_agent\login_state.json

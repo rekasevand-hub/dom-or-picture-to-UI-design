@@ -56,7 +56,8 @@ PROMPT = ("你是 UI 结构标注器。给定网页截图，输出 JSON："
 class GroundingVLM(GroundingBackend):
     def __init__(self, cfg: "Config") -> None:
         self.cfg = cfg
-        self.client = OpenAI(base_url=cfg.vision_base_url, api_key=cfg.vision_api_key, timeout=120)
+        self.client = OpenAI(base_url=cfg.vision_base_url, api_key=cfg.vision_api_key,
+                             timeout=cfg.vision_timeout)
 
     def ground(self, image_path: str, image_w: int, image_h: int) -> dict:
         with open(image_path, "rb") as f:

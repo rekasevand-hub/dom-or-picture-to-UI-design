@@ -40,6 +40,8 @@ agent.run(
 | `--url` | 网页 URL（Playwright 截图后走结构提取） |
 | `--route` | `auto` / `dom` / `a11y` / `grounding` / `cv`；显式路线失败直接报错，不静默换路 |
 | `--enrich` | 视觉补充开关（默认关） |
+| `--storage-state` | Playwright 登录态 JSON：URL 抓取时复用已登录 cookie/localStorage（登录保护页面用） |
+| `--login-state` | 交互导出登录态：打开有头浏览器登录 `--url`，回车后保存为 JSON（只导出，不跑管线） |
 
 - `--route auto` 回退链：`--url` 且拿到 DOM 时为 `dom → grounding → cv`；图片输入为 `grounding → cv`（未配置 VISION_API_KEY 时仅 cv），逐条写入 `provenance.fallbacks`。
 - 前置条件：URL 输入需要 Playwright Chromium，先执行 `python -m playwright install chromium`。
@@ -51,6 +53,41 @@ python -m src.main --image uploads/shot.png --route cv --tool svg --enrich
 
 产物（`output_dir` 下）：`10_pagegraph.json`、`11_som.png`、`11_som.json`、`12_design.json`、`prototype.svg`、`manifest.json`。
 
+### dom / a11y 路线：样式直出 DesignSpec（不再慢等 VLM）
+
+两条结构路线的样式来源不同，但都会随结构写入 SoM JSON 的 `style`：
+- `dom`：抓取时 `DOM_JS` 直接采集每个节点的 computed style（`bg` / `color` / `fontSize` / `fontWeight` / `borderRadius` / `borderColor` / `borderWidth` / `position` / `zIndex`）；
+- `a11y`：抓取时通过 CDP 给可见 AX 节点补采同一组 computed style（`Runtime.callFunctionOn` + `getComputedStyle`）。
+
+当路线为 `dom` / `a11y` 且 `DOM_DIRECT_DESIGN=true`（默认）时：
+- DesignSpec 由 computed style **规则直出**，不调用多模态模型，耗时从“每批数分钟”降到秒级；
+- 容器只要“有非透明背景色”或“带真实边框（color+width 成对）”就画出；既透明又无边框才跳过（数量计入 `_meta.skipped_transparent_containers`）。透明底 + 描边的卡片/控件输出 `fillColor: "transparent"` 只画边框，不再被丢弃或垫成灰块；
+- 无自身背景且无真实边框的 button/input 用白底保守默认；有边框时保留透明背景 + 描边；
+- `image`/`avatar` 元素按 SoM bbox 从整页截图 1:1 裁真实像素，写入元素级 `imageBase64`（数量计入 `_meta.image_backfilled`），不再是一排 `#cccccc` 占位灰块；
+- DOM 路线的叶子文本会先剥离图标字体私有区字形（`E000-F8FF` 与补充私有区 `F0000-FFFFD` / `100000-10FFFD`），纯图标叶子（如 `<i class="iconfont">`）不生成正文元素，掺杂文本只剥离图标保留可读正文——避免还原稿出现乱码/豆腐块；
+- DOM 的容器/元素 bbox 一律裁剪到截图画布内：横向滚动容器里当前不可见的溢出列（截图里不存在的像素）会被丢弃，跨界节点按可视部分 clamp——诊断图越界框从 219 降到 0；
+- DOM 的 `fixed/sticky` 与 `absolute`（负 z-index 除外）且与“文档序在前”的兄弟内容发生像素级重叠（≥1500px² 且宽≥30/高≥15）的定位层会被标记为 `overlay`（如 antd 固定“操作”列——absolute z=1 的整列 wrapper，或单元格级 sticky 列）；其子元素沿文档序继承该标记与 `zIndex`，字段贯穿 PageGraph → SoM JSON → DesignSpec（`_meta.overlays` 计数）；
+- 透明无边框的 overlay 容器（fixed wrapper）直出时按 SoM bbox 从整页截图裁真实像素作底（`imageBase64`，同框克隆去重），避免被盖住的内容从透明层里“透出来”；
+- 渲染绘制序分两段：普通内容先画，`overlay` 元素顺延到最后并按 `zIndex` 升序绘制，让浮层真正盖在被它覆盖的列/内容之上，而不是平铺穿插（对 SVG 与 Figma 适配器同时生效）；
+- 若样式覆盖度过低（<50%）或显式设 `DOM_DIRECT_DESIGN=false`，自动回退到下方“分批生成”VLM 流程；
+- `manifest.json` 的 `design.mode` 会标记 `dom-direct` 或 `a11y-direct`，此时产物里没有 `13_vlm_raw/`。
+
+### 登录保护页面（storage_state）
+
+目标站需要登录时，先导出登录态，再用 `--storage-state` 复用（无需每次手动登录）：
+
+```bash
+# 1) 打开有头浏览器让你登录（完成后回终端按回车），登录态写入 login_state.json
+python -m src.main --url http://your-site/index --login-state login_state.json
+
+# 2) 复用该登录态跑还原（cookie/localStorage 会自动带上）
+python -m src.main --url http://your-site/index --storage-state login_state.json --route auto --tool svg
+```
+
+- `--login-state` 与 `--storage-state` 分两步使用，不要同时传。
+- 也可直接用环境变量 `PLAYWRIGHT_STORAGE_STATE=/abs/path/state.json` 代替 `--storage-state`。
+- 抓取后若日志出现“疑似仍停在登录页”告警，说明登录态失效，请重跑第 1 步。
+
 ### 模型网关
 
 新流程视觉与文本模型共用 acctoken OpenAI 兼容网关，默认 `https://www.acctoken.com/v1`，对应 `.env` 变量：
@@ -60,9 +97,32 @@ python -m src.main --image uploads/shot.png --route cv --tool svg --enrich
 | `VISION_BASE_URL` | `https://www.acctoken.com/v1` | 视觉模型网关 |
 | `VISION_API_KEY` | 空 | 视觉模型 key（与 `TEXT_API_KEY` 同一把，只写 `.env`） |
 | `VISION_MODEL` | `qwen3-vl-plus` | 视觉模型 |
+| `VISION_MAX_TOKENS` | `16000` | 视觉模型单次输出上限（大页面不够时调大或分批生成） |
+| `VISION_TIMEOUT` | `120` | 视觉模型调用超时（秒） |
 | `TEXT_BASE_URL` | `https://www.acctoken.com/v1` | 文本模型网关 |
 | `TEXT_API_KEY` | 空 | 文本模型 key（只写 `.env`） |
 | `TEXT_MODEL` | `deepseek-v4-flash` | 文本模型 |
+| `TEXT_MAX_TOKENS` | `16000` | 文本模型单次输出上限 |
+| `TEXT_TIMEOUT` | `120` | 文本模型调用超时（秒） |
+| `SOM_BATCH_ENABLED` | `true` | SoM→DesignSpec 是否分批生成（`false` 退回单发整表） |
+| `SOM_BATCH_SIZE` | `80` | 每批 id 数（长页面建议 60–100） |
+| `SOM_BATCH_MAX_ROUNDS` | `3` | 覆盖度自检最大轮数（含首轮） |
+| `SOM_BATCH_MIN_COVERAGE` | `0.9` | 多轮后覆盖率低于该值直接报错，不产出残缺 SVG |
+| `SOM_COLOR_BACKFILL` | `false` | 像素级颜色校正（预留开关，尚未实现） |
+| `DOM_DIRECT_DESIGN` | `true` | dom/a11y 路线用 computed style 规则直出 DesignSpec（不调 VLM） |
+
+> 说明：`LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` / `LLM_TEMPERATURE` / `LLM_MAX_TOKENS` / `LLM_TIMEOUT` 仅旧流程 `ReconstructAgent`（`call_vision_llm`）使用；新流程 `PreciseAgent` 的视觉调用读 `VISION_*`、文本调用读 `TEXT_*`（含各自的 `MAX_TOKENS` / `TIMEOUT`），不再复用 `LLM_*`。
+
+### SoM→DesignSpec 分批生成与覆盖度自检
+
+长页面（数百个 SoM 组件）单发输出会撞上视觉模型 `max_tokens` 上限（qwen3-vl-plus 最大 32768），此前会出现“JSON 解析失败 → json_repair 兜底 → 只剩少量元素”的残缺现象。**非 dom/a11y 路线**（grounding / cv / 图片输入）或样式不足回退时，新流程默认分批生成：
+
+- 按 id 分批（默认 `SOM_BATCH_SIZE=80`/批），**整张 SoM 标注图每批重复传入**，不裁图、不按区域分批；
+- 每批提示词只允许模型输出本批分配的 id，返回后**按 id 机械合并**（不做模型拼接），并按 SoM 原 bbox 对齐坐标（4px 网格），不信任模型的平移/缩放；
+- 每轮结束后做覆盖度自检：缺失的 id 下一轮只**定向补发缺失部分**，最多 `SOM_BATCH_MAX_ROUNDS` 轮；
+- 多轮后覆盖率仍低于 `SOM_BATCH_MIN_COVERAGE`（默认 90%）会**报错退出**，并把部分结果写入 `12_design_partial.json`，不再静默产出残缺 SVG；
+- 每次 VLM 原始返回保存在 `output_dir/13_vlm_raw/r<轮次>_b<批次>.txt`；合并结果带 `_meta`（calls/rounds/coverage/missing/duplicates/foreign/cross_batch），并汇总进 `manifest.json` 的 `design` 字段；
+- 需要和旧的“单发整表”A/B 对比时，设 `SOM_BATCH_ENABLED=false` 即可退回单发。
 
 ### PreciseAgent Python API
 
@@ -112,4 +172,3 @@ python -m src.main --image uploads/shot.png --route cv --tool svg
 - URL 输入可选全部路线；本地截图仅 `auto/grounding/cv`（未配置 `VISION_API_KEY` 时去掉 `grounding`）。
 - 未显式传 `--route` 时默认路线取 `ROUTE` 环境变量（默认 `auto`），`config.route_default` 已由 `main` 消费。
 - 无参数且不加 `--interactive` 时仍按 argparse 报错退出（不会静默进入向导）。
-

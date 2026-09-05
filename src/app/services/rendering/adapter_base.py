@@ -59,12 +59,25 @@ class PrototypeAdapter(ABC):
             "height": canvas.get("height", 600),
         })
 
-        for el in design.get("elements", []):
+        # 绘制序：普通内容先画，overlay（fixed/sticky/absolute 浮层，如表格固定
+        # 列/弹层）整体顺延到最后，同层内按 zIndex 升序再按原顺序——
+        # 让浮层真正盖在它覆盖的内容之上，而不是与内容平铺穿插。
+        elements = design.get("elements", [])
+        ordered = sorted(
+            enumerate(elements),
+            key=lambda pair: (1 if pair[1].get("overlay") else 0,
+                              int(pair[1].get("zIndex") or 0), pair[0]))
+
+        for _, el in ordered:
             el_type = el.get("type", "rectangle")
             style = el.get("style", {})
             spec = {**el, **style}
 
-            if el_type in ("button", "input", "rectangle", "container"):
+            if spec.get("imageBase64"):
+                # 透明浮层容器按原截图像素回填（如 fixed wrapper 的整列底），
+                # 以图片形式画，保证它盖在底下内容之上时观感与截图一致。
+                self.create_image(spec, parent_id=frame_id)
+            elif el_type in ("button", "input", "rectangle", "container"):
                 self.create_rectangle(spec, parent_id=frame_id)
             elif el_type in ("image", "avatar"):
                 self.create_image(spec, parent_id=frame_id)
