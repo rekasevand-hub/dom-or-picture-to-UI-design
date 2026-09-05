@@ -1,0 +1,5 @@
+{
+ "min_containers": 4,
+ "min_elements": 10,
+ "max_elements": 20
+}
