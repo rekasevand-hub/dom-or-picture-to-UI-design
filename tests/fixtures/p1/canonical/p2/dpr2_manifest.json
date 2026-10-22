@@ -1,0 +1,26 @@
+{
+  "schema_version": "p1-canonical-output-manifest/1.0",
+  "environment": {
+    "engine": "chromium",
+    "viewport": {
+      "width": 900,
+      "height": 700
+    },
+    "device_scale_factor": 2,
+    "locale": "zh-CN",
+    "timezone": "Asia/Shanghai"
+  },
+  "visual_policy_path": "tests/fixtures/p1/canonical/p2/visual_policy_dpr_aware.json",
+  "samples": [
+    {
+      "sample_id": "dpr2-text",
+      "source": "tests/fixtures/p1/canonical/holdout/text.html",
+      "truth": "tests/fixtures/p1/canonical/holdout/text.truth.json"
+    },
+    {
+      "sample_id": "dpr2-assets",
+      "source": "tests/fixtures/p1/canonical/holdout/assets.html",
+      "truth": "tests/fixtures/p1/canonical/holdout/assets.truth.json"
+    }
+  ]
+}

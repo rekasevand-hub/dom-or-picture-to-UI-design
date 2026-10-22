@@ -1,0 +1,36 @@
+{
+  "schema_version": "p1-canonical-output-truth/1.0",
+  "visual_class": "overlay",
+  "expected_texts": [
+    "Holdout overlay",
+    "This independent overlay holdout uses a different source aspect ratio, crop anchor and overlay opacity from the calibration fixture.",
+    "The visual policy must validate the result without hiding missing overlay or crop evidence."
+  ],
+  "critical_boxes": [
+    {
+      "text": "Holdout overlay",
+      "x": 82,
+      "y": 68,
+      "width": 70,
+      "height": 48,
+      "tolerance_px": 1
+    }
+  ],
+  "expected_asset_count": 1,
+  "expected_asset_regions": [
+    {
+      "name": "holdout-crop",
+      "x": 72,
+      "y": 48,
+      "width": 90,
+      "height": 90,
+      "tolerance_px": 1,
+      "require_local_bytes": true,
+      "expected_content_sha256": "4bda964153b2fada54a65fef5a1aafe3ae8540677b9e6b5c833f87afb080798e",
+      "expected_natural_size": [180.0, 90.0],
+      "expected_source_rect": [90.0, 0.0, 90.0, 90.0],
+      "expected_object_fit": "cover"
+    }
+  ],
+  "native_text_required": true
+}

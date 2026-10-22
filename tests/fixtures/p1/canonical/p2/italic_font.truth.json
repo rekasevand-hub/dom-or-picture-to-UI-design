@@ -1,0 +1,33 @@
+{
+  "schema_version": "p1-canonical-output-truth/1.0",
+  "visual_class": "mixed-font",
+  "expected_texts": [
+    "Italic font holdout",
+    "Regular ",
+    "Arial italic",
+    " 中文普通",
+    "Times bold italic remains editable"
+  ],
+  "critical_boxes": [
+    {
+      "text": "Italic font holdout",
+      "x": 32,
+      "y": 28,
+      "width": 760,
+      "height": 48,
+      "tolerance_px": 1
+    }
+  ],
+  "expected_font_markers": [
+    {
+      "text": "Arial italic",
+      "family_contains": "Arial"
+    },
+    {
+      "text": "Times bold italic remains editable",
+      "family_contains": "Times New Roman"
+    }
+  ],
+  "expected_asset_count": 0,
+  "native_text_required": true
+}

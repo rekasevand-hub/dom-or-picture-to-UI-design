@@ -1,10 +1,23 @@
 {
-  "domains": ["flexweaver.rtdsoft.com"],
+  "domains": [
+    "flexweaver.rtdsoft.com"
+  ],
   "icon_aria_labels": {
-    "form": "编辑", "edit": "编辑", "delete": "删除",
-    "search": "搜索", "plus": "新增", "download": "下载",
-    "upload": "上传", "setting": "设置", "close": "关闭"
+    "form": "编辑",
+    "edit": "编辑",
+    "delete": "删除",
+    "search": "搜索",
+    "plus": "新增",
+    "download": "下载",
+    "upload": "上传",
+    "setting": "设置",
+    "close": "关闭"
   },
-  "overlay": {"min_area": 800, "min_overlap_px": 1500,
-              "min_overlap_w": 30, "min_overlap_h": 15}
+  "dom": {
+    "overlay_min_area": 800,
+    "overlay_min_overlap_px": 1500,
+    "overlay_min_overlap_w": 30,
+    "overlay_min_overlap_h": 15,
+    "container_min_span_ratio": 0.25
+  }
 }

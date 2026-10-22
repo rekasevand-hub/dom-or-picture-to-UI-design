@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Canonical frame visual holdout</title>
+</head>
+<body style="margin:0">
+  <h1 style="margin:8px">Holdout frame sample</h1>
+  <p style="margin:8px">This independent frame holdout keeps one accessible child and one sandbox opaque boundary visible.</p>
+  <iframe style="width:320px;height:120px" srcdoc="<p style='margin:12px'>Holdout accessible child</p>"></iframe>
+  <iframe style="width:320px;height:120px" sandbox srcdoc="<p style='margin:12px'>Holdout opaque child</p>"></iframe>
+  <p style="margin:8px">Frame boundaries remain evidence while inaccessible child content stays unknown.</p>
+</body>
+</html>

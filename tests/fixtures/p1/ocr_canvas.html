@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>P1 OCR Canvas Fixture</title>
+</head>
+<body>
+  <main>
+    <h1>OCR candidate fixture</h1>
+    <p>This page intentionally renders its important sentence only on a canvas so the DOM cannot provide that text. The surrounding paragraph keeps the page in the content state while the canvas remains screenshot-only evidence.</p>
+    <canvas id="ocr-canvas" width="640" height="120"></canvas>
+  </main>
+  <script>
+    const canvas = document.getElementById("ocr-canvas");
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = "#1b1b1b";
+    ctx.font = "bold 26px sans-serif";
+    ctx.fillText("Invoice total: 128.50", 24, 54);
+    ctx.font = "16px sans-serif";
+    ctx.fillText("This sentence exists only as painted pixels.", 24, 86);
+  </script>
+</body>
+</html>

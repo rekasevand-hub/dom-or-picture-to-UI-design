@@ -1,0 +1,11 @@
+{
+  "schema_version": "p1-figma-visual-policy/1.0",
+  "policy_id": "p2-figma-dpr-aware/1.0",
+  "status": "provisional-derived-from-p1-figma-policy",
+  "max_mean": 3.0,
+  "max_ink_mean": 100.0,
+  "max_over30_pct": 2.5,
+  "max_bad_pixel_count": 14000,
+  "gate_bad_pixel_count": false,
+  "require_size_match": true
+}

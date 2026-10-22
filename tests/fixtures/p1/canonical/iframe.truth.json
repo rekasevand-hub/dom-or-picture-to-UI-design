@@ -1,0 +1,15 @@
+{
+  "schema_version": "p1-canonical-output-truth/1.0",
+  "expected_texts": [
+    "Iframe boundary fixture",
+    "This controlled page keeps both an accessible frame and a sandboxed frame visible.",
+    "Accessible iframe content",
+    "Use this page to verify that iframe scope is recorded as evidence rather than merged into the parent DOM."
+  ],
+  "expected_absent_texts": [
+    "Sandboxed iframe content"
+  ],
+  "critical_boxes": [],
+  "expected_asset_count": 0,
+  "native_text_required": true
+}

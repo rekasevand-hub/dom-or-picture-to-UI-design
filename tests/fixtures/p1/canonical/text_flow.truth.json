@@ -1,0 +1,29 @@
+{
+  "schema_version": "p1-canonical-output-truth/1.0",
+  "expected_texts": [
+    "Canonical 混合文本",
+    "第一行 Chinese and English stay in one paragraph. This longer second sentence exercises automatic wrapping without changing the declared block height.",
+    "Flow block keeps native text and a fixed-height contract."
+  ],
+  "expected_absent_texts": [],
+  "critical_boxes": [
+    {
+      "text": "Canonical 混合文本",
+      "x": 24,
+      "y": 24,
+      "width": 852,
+      "height": 40,
+      "tolerance_px": 1
+    },
+    {
+      "text": "第一行 Chinese and English stay in one paragraph. This longer second sentence exercises automatic wrapping without changing the declared block height.",
+      "x": 24,
+      "y": 80,
+      "width": 520,
+      "height": 78,
+      "tolerance_px": 1
+    }
+  ],
+  "expected_asset_count": 0,
+  "native_text_required": true
+}

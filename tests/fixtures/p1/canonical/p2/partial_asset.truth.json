@@ -1,0 +1,39 @@
+{
+  "schema_version": "p1-canonical-output-truth/1.0",
+  "visual_class": "partial",
+  "expected_texts": [
+    "Partial asset holdout",
+    "One local asset is available and one declared asset remains missing.",
+    "Missing asset"
+  ],
+  "expected_absent_texts": [],
+  "critical_boxes": [
+    {
+      "text": "Partial asset holdout",
+      "x": 40,
+      "y": 30,
+      "width": 620,
+      "height": 40,
+      "tolerance_px": 1
+    }
+  ],
+  "expected_asset_count": 2,
+  "minimum_asset_count": 1,
+  "expected_asset_regions": [
+    {
+      "name": "available-local-asset",
+      "x": 200,
+      "y": 140,
+      "width": 80,
+      "height": 80,
+      "tolerance_px": 1,
+      "require_local_bytes": true,
+      "expected_natural_size": [80.0, 80.0],
+      "expected_source_rect": [0.0, 0.0, 80.0, 80.0],
+      "expected_object_fit": "fill"
+    }
+  ],
+  "expected_output_status": "partial",
+  "expected_limitations": ["missing-asset-bytes"],
+  "native_text_required": true
+}

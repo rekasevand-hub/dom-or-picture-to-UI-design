@@ -1,0 +1,45 @@
+{
+  "schema_version": "p1-canonical-output-manifest/1.0",
+  "environment": {
+    "engine": "chromium",
+    "viewport": {
+      "width": 900,
+      "height": 700
+    },
+    "device_scale_factor": 1,
+    "locale": "zh-CN",
+    "timezone": "Asia/Shanghai"
+  },
+  "samples": [
+    {
+      "sample_id": "assets",
+      "source": "tests/fixtures/p1/assets.html",
+      "truth": "tests/fixtures/p1/canonical/assets.truth.json"
+    },
+    {
+      "sample_id": "iframe",
+      "source": "tests/fixtures/p1/iframe.html",
+      "truth": "tests/fixtures/p1/canonical/iframe.truth.json"
+    },
+    {
+      "sample_id": "text-flow",
+      "source": "tests/fixtures/p1/canonical/text_flow.html",
+      "truth": "tests/fixtures/p1/canonical/text_flow.truth.json"
+    },
+    {
+      "sample_id": "font-fallback",
+      "source": "tests/fixtures/p1/canonical/font_fallback.html",
+      "truth": "tests/fixtures/p1/canonical/font_fallback.truth.json"
+    },
+    {
+      "sample_id": "transparent-crop",
+      "source": "tests/fixtures/p1/canonical/transparent_crop.html",
+      "truth": "tests/fixtures/p1/canonical/transparent_crop.truth.json"
+    },
+    {
+      "sample_id": "partial-asset",
+      "source": "tests/fixtures/p1/canonical/partial_asset.html",
+      "truth": "tests/fixtures/p1/canonical/partial_asset.truth.json"
+    }
+  ]
+}

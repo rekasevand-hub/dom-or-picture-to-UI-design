@@ -1,0 +1,6 @@
+{
+  "schema_version": "p1-fixture-truth/1.0",
+  "open_shadow_roots": 1,
+  "closed_shadow_roots": 1,
+  "notes": "Declared by the controlled fixture author; closed root contents are intentionally unobservable to page scripts."
+}

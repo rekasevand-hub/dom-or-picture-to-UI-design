@@ -1,0 +1,36 @@
+{
+  "schema_version": "p1-canonical-output-truth/1.0",
+  "visual_class": "overlay",
+  "expected_texts": [
+    "Right crop",
+    "This holdout verifies transparent overlay ownership and the right half of a cropped image.",
+    "The visible asset and source crop must remain separate evidence dimensions."
+  ],
+  "critical_boxes": [
+    {
+      "text": "Right crop",
+      "x": 92,
+      "y": 80,
+      "width": 76,
+      "height": 48,
+      "tolerance_px": 1
+    }
+  ],
+  "expected_asset_count": 1,
+  "expected_asset_regions": [
+    {
+      "name": "right-half-crop",
+      "x": 80,
+      "y": 60,
+      "width": 100,
+      "height": 100,
+      "tolerance_px": 1,
+      "require_local_bytes": true,
+      "expected_content_sha256": "88efd19bab6935e1e4c57ce8aff9d81a5a6c4e969f1d63a40c9fb865926ad04b",
+      "expected_natural_size": [200.0, 100.0],
+      "expected_source_rect": [100.0, 0.0, 100.0, 100.0],
+      "expected_object_fit": "cover"
+    }
+  ],
+  "native_text_required": true
+}

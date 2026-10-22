@@ -1,0 +1,21 @@
+{
+  "schema_version": "p1-canonical-output-truth/1.0",
+  "visual_class": "text",
+  "expected_texts": [
+    "Ambiguous fallback probe",
+    "Latin 中文 mixed fallback",
+    "The diagnostic must preserve multiple platform faces instead of inventing one final glyph identity."
+  ],
+  "critical_boxes": [
+    {
+      "text": "Ambiguous fallback probe",
+      "x": 32,
+      "y": 28,
+      "width": 760,
+      "height": 44,
+      "tolerance_px": 1
+    }
+  ],
+  "expected_asset_count": 0,
+  "native_text_required": true
+}

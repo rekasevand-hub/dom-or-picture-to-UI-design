@@ -4,6 +4,7 @@
 用法：
     python scripts/render_design.py --design output/manual_design.json --tool figma
     python scripts/render_design.py --design output/manual_design.json --tool svg
+    python scripts/render_design.py --design output/manual_design.json --tool axure
 """
 from __future__ import annotations
 
@@ -21,7 +22,8 @@ from src.config import load_config
 def main() -> int:
     parser = argparse.ArgumentParser(description="Render DesignSpec JSON to prototype tool")
     parser.add_argument("--design", required=True, help="DesignSpec JSON 文件路径")
-    parser.add_argument("--tool", default="figma", choices=["svg", "figma"], help="原型工具")
+    parser.add_argument("--tool", default="figma", choices=["svg", "figma", "axure"],
+                        help="原型工具（axure = 从零生成 .rp）")
     args = parser.parse_args()
 
     design_path = Path(args.design)

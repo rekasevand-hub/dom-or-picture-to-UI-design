@@ -1,0 +1,11 @@
+{
+  "schema_version": "p1-figma-visual-policy/1.0",
+  "policy_id": "p2-figma-mixed-font-provisional/1.0",
+  "status": "provisional-calibrated-from-mixed-font",
+  "max_mean": 3.7,
+  "max_ink_mean": 80.0,
+  "max_over30_pct": 3.9,
+  "max_bad_pixel_count": 12000,
+  "gate_bad_pixel_count": false,
+  "require_size_match": true
+}

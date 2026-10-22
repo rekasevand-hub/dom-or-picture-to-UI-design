@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>P1 Canvas Fixture</title>
+</head>
+<body>
+  <main>
+    <h1>Canvas text fixture</h1>
+    <p>The text below is rendered on a canvas and exposed only as pixels.</p>
+    <canvas id="canvas" width="520" height="140"></canvas>
+    <div id="overlay" style="position:absolute;left:220px;top:110px;background:#fff;color:#111;padding:6px;">
+      DOM overlay text
+    </div>
+    <p>This page also keeps ordinary DOM text so the capture remains a content page.</p>
+  </main>
+  <script>
+    const canvas = document.getElementById("canvas");
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#f4f7fb";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = "#12324a";
+    ctx.font = "28px sans-serif";
+    ctx.fillText("Canvas-only heading", 24, 54);
+    ctx.font = "18px sans-serif";
+    ctx.fillText("This line has no DOM text node.", 24, 92);
+  </script>
+</body>
+</html>

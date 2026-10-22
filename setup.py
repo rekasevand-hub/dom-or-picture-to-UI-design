@@ -1,12 +1,17 @@
 """项目安装配置。"""
 from __future__ import annotations
 
+from pathlib import Path
+
 from setuptools import find_packages, setup
+
+# 版本号单一定义在仓库根的 VERSION；1.1.0 交付范围见 HANDOFF_2026-10-17_release.md。
+VERSION = Path(__file__).with_name("VERSION").read_text(encoding="utf-8").strip()
 
 setup(
     name="figma-auto-agent",
-    version="0.1.0",
-    description="UI 自动还原 Agent：从截图提取 UI 组件并生成 Figma/SVG 原型",
+    version=VERSION,
+    description="UI 自动还原 Agent：DOM/视觉多路线生成 SVG、Figma 与 Axure 原型",
     packages=find_packages(),
     python_requires=">=3.10",
     install_requires=[
@@ -20,7 +25,7 @@ setup(
         "tesseract": ["pytesseract>=0.3.10"],
         "llm": ["openai>=1.0.0"],
         "server": ["fastapi>=0.100.0", "uvicorn>=0.23.0", "websockets>=12.0"],
-        "dev": ["pytest>=7.4.0"],
+        "dev": ["pytest>=7.4.0", "cryptography>=42.0.0"],
     },
     entry_points={
         "console_scripts": [

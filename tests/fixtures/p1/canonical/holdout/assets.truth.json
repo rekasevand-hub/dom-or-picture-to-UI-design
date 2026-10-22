@@ -1,0 +1,57 @@
+{
+  "schema_version": "p1-canonical-output-truth/1.0",
+  "visual_class": "assets",
+  "expected_texts": [
+    "Holdout asset sample",
+    "This independent holdout verifies three asset display regions and local bytes under the predeclared asset visual policy."
+  ],
+  "critical_boxes": [
+    {
+      "text": "Holdout asset sample",
+      "x": 60,
+      "y": 36,
+      "width": 620,
+      "height": 38,
+      "tolerance_px": 1
+    }
+  ],
+  "expected_asset_count": 3,
+  "expected_asset_regions": [
+    {
+      "name": "warm-image",
+      "x": 60,
+      "y": 92,
+      "width": 120,
+      "height": 60,
+      "tolerance_px": 1,
+      "require_local_bytes": true,
+      "expected_content_sha256": "47c9360286e007734f812b512072b7d8c660de77da6f3d805695411f248a4069",
+      "expected_natural_size": [120.0, 60.0],
+      "expected_source_rect": [0.0, 0.0, 120.0, 60.0],
+      "expected_object_fit": "fill"
+    },
+    {
+      "name": "teal-background",
+      "x": 60,
+      "y": 174,
+      "width": 140,
+      "height": 70,
+      "tolerance_px": 1,
+      "require_local_bytes": true,
+      "expected_content_sha256": "363e7c16220ca6423faff1285b130bffe576f9909e38f355c55119f92b8ce310",
+      "expected_natural_size": [140.0, 70.0],
+      "expected_source_rect": [0.0, 0.0, 140.0, 70.0],
+      "expected_object_fit": "fill"
+    },
+    {
+      "name": "purple-svg",
+      "x": 230,
+      "y": 92,
+      "width": 50,
+      "height": 50,
+      "tolerance_px": 1,
+      "require_local_bytes": true
+    }
+  ],
+  "native_text_required": true
+}

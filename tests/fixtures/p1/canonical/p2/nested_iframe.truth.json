@@ -1,0 +1,23 @@
+{
+  "schema_version": "p1-canonical-output-truth/1.0",
+  "visual_class": "frame",
+  "expected_texts": [
+    "Nested iframe holdout",
+    "This root document verifies recursive srcdoc frame capture across two nested levels.",
+    "Child frame content",
+    "This paragraph is captured from the first accessible child document.",
+    "Grandchild text remains native and editable."
+  ],
+  "critical_boxes": [
+    {
+      "text": "Nested iframe holdout",
+      "x": 20,
+      "y": 20,
+      "width": 620,
+      "height": 40,
+      "tolerance_px": 1
+    }
+  ],
+  "expected_asset_count": 0,
+  "native_text_required": true
+}

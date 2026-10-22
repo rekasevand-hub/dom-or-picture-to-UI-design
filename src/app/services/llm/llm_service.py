@@ -225,7 +225,8 @@ _SOM_BATCH_SYSTEM = (
     "2) 每条 element 的 id 必须原样等于列表 id（字符串）；只允许本批列表内的 id；"
     "禁止合并、拆分、重复、丢弃；\n"
     "3) 坐标与尺寸以列表 bbox 为准（最终按 SoM bbox 落盘，禁止平移缩放）；\n"
-    "4) text 优先使用列表中的 text，列表为空时才从截图识别；\n"
+    "4) text 优先使用列表中的 text，列表为空时才从截图识别；列表里的 placeholder/alt "
+    "是语义提示（输入框提示语/图片替代文本），可参考其语义但不得当作正文写进 text；\n"
     "5) 条目若自带 style（浏览器 computed style，颜色/字号/圆角的真值），"
     "fillColor/textColor/fontSize/fontWeight/borderRadius/borderWidth/borderColor "
     "优先照抄；无 style 的条目才参照标注图推断；\n"
@@ -261,6 +262,10 @@ def _som_entries(som_json: dict) -> list[dict]:
             entry["ariaLabel"] = str(e["ariaLabel"])
         if e.get("title"):
             entry["title"] = str(e["title"])
+        if e.get("placeholder"):
+            entry["placeholder"] = str(e["placeholder"])
+        if e.get("alt"):
+            entry["alt"] = str(e["alt"])
         if e.get("style"):
             entry["style"] = e["style"]
         entries.append(entry)
@@ -339,8 +344,7 @@ def generate_som_design(
     时退回单发整表提示词，便于 A/B 对比。
     """
     if not cfg.som_batch_enabled:
-        design = parse_design_json(call_vlm(build_som_prompt(som_json, image_b64), cfg))
-        return reconcile_som_styles(design, som_json)
+        return parse_design_json(call_vlm(build_som_prompt(som_json, image_b64), cfg))
 
     size = som_json.get("size") or [0, 0]
     canvas = {"width": int(size[0]), "height": int(size[1])}
@@ -413,44 +417,6 @@ def generate_som_design(
                        len(missing), len(expected), ", ".join(missing[:20]))
     if cfg.som_color_backfill and som_json.get("image"):
         design = backfill_colors_from_screenshot(design, som_json["image"], som_json)
-    return reconcile_som_styles(design, som_json)
-
-
-def reconcile_som_styles(design: dict, som_json: dict) -> dict:
-    """SoM 携带的浏览器 computed style 回填到 DesignSpec。
-
-    DOM 路线的 SoM style 是界面的真值；VLM 从标注图
-    “猜色”时会把实际 DOM 色读偏（如白字蓝底反写成
-    蓝字白底、绿色状态列被写成黑字）。凡 SoM 已记录
-    的字段以 SoM 为准（fillColor/textColor/fontSize/fontWeight/
-    borderRadius/borderWidth/borderColor），未记录的字段保留模型输出。
-    仅对 dom 路线生效；grounding/cv 无 DOM 计算值，不做回填。
-    """
-    route = (som_json.get("provenance") or {}).get("route")
-    if route != "dom":
-        return design
-    ref: dict[str, dict] = {}
-    for item in (som_json.get("containers") or []) + (som_json.get("elements") or []):
-        st = item.get("style") or {}
-        if st:
-            ref[str(item["id"])] = st
-    if not ref:
-        return design
-    keys = ("fillColor", "textColor", "fontSize", "fontWeight",
-            "borderRadius", "borderWidth", "borderColor")
-    changed = 0
-    for el in design.get("elements") or []:
-        st = ref.get(str(el.get("id")))
-        if not st:
-            continue
-        style = el.setdefault("style", {})
-        for key in keys:
-            if st.get(key) is not None:
-                style[key] = st[key]
-                changed += 1
-    if changed:
-        meta = design.setdefault("_meta", {})
-        meta["som_style_overrides"] = changed
     return design
 
 

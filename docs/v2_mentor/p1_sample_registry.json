@@ -1,0 +1,133 @@
+{
+  "schema_version": "p1-sample-registry/1.0",
+  "scope_version": "p1-sample-scope/1.0",
+  "browser": "chromium",
+  "samples": [
+    {
+      "sample_id": "P1-S01-C1",
+      "scenario_id": "P1-S01",
+      "source_kind": "controlled",
+      "locator": "tests/fixtures/p1/iframe.html",
+      "expected_page_state": "content",
+      "expected_markers": {"iframe": 2},
+      "notes": "Accessible srcdoc iframe and sandboxed iframe in one controlled page."
+    },
+    {
+      "sample_id": "P1-S01-R1",
+      "scenario_id": "P1-S01",
+      "source_kind": "real",
+      "locator": "https://www.w3schools.com/html/html_iframe.asp",
+      "expected_page_state": "content",
+      "expected_markers": {"iframe": 1},
+      "notes": "Public page with an iframe example."
+    },
+    {
+      "sample_id": "P1-S02-C1",
+      "scenario_id": "P1-S02",
+      "source_kind": "controlled",
+      "locator": "tests/fixtures/p1/shadow_dom.html",
+      "expected_page_state": "content",
+      "expected_markers": {"shadow": 1},
+      "notes": "Open and closed shadow roots on one controlled page."
+    },
+    {
+      "sample_id": "P1-S02-R1",
+      "scenario_id": "P1-S02",
+      "source_kind": "real",
+      "locator": "https://shoelace.style/",
+      "expected_page_state": "content",
+      "expected_markers": {"shadow": 1},
+      "notes": "Public Shoelace site with real shadow-root descendants; webcomponents.org had no captured shadow nodes."
+    },
+    {
+      "sample_id": "P1-S03-C1",
+      "scenario_id": "P1-S03",
+      "source_kind": "controlled",
+      "locator": "tests/fixtures/p1/canvas.html",
+      "expected_page_state": "content",
+      "expected_markers": {"canvas": 1},
+      "notes": "Canvas text plus a DOM overlay."
+    },
+    {
+      "sample_id": "P1-S03-R1",
+      "scenario_id": "P1-S03",
+      "source_kind": "real",
+      "locator": "https://www.w3schools.com/html/html5_canvas.asp",
+      "expected_page_state": "content",
+      "expected_markers": {"canvas": 1},
+      "notes": "Public canvas tutorial with actual canvas nodes; the MDN article page had no captured canvas nodes."
+    },
+    {
+      "sample_id": "P1-S04-C1",
+      "scenario_id": "P1-S04",
+      "source_kind": "controlled",
+      "locator": "tests/fixtures/p1/dynamic.html",
+      "expected_page_state": "content",
+      "expected_markers": {"dom_nodes": 5},
+      "notes": "Deferred DOM hydration shell."
+    },
+    {
+      "sample_id": "P1-S04-R1",
+      "scenario_id": "P1-S04",
+      "source_kind": "real",
+      "locator": "https://react.dev/",
+      "expected_page_state": "content",
+      "expected_markers": {"dom_nodes": 100},
+      "notes": "Public hydrated React documentation page."
+    },
+    {
+      "sample_id": "P1-S05-C1",
+      "scenario_id": "P1-S05",
+      "source_kind": "controlled",
+      "locator": "tests/fixtures/p1/ocr_canvas.html",
+      "expected_page_state": "content",
+      "expected_markers": {"canvas": 1},
+      "notes": "Text rendered only on canvas and absent from DOM text."
+    },
+    {
+      "sample_id": "P1-S05-R1",
+      "scenario_id": "P1-S05",
+      "source_kind": "real",
+      "locator": "https://www.w3schools.com/graphics/canvas_text.asp",
+      "expected_page_state": "content",
+      "expected_markers": {"canvas": 1},
+      "notes": "Public page with canvas-rendered text examples."
+    },
+    {
+      "sample_id": "P1-S06-C1",
+      "scenario_id": "P1-S06",
+      "source_kind": "controlled",
+      "locator": "tests/fixtures/p1/assets.html",
+      "expected_page_state": "content",
+      "expected_markers": {"img": 1, "svg": 1, "background_image": 1},
+      "notes": "Image, background-image, and inline SVG."
+    },
+    {
+      "sample_id": "P1-S06-R1",
+      "scenario_id": "P1-S06",
+      "source_kind": "real",
+      "locator": "https://www.dushu.com/",
+      "expected_page_state": "content",
+      "expected_markers": {"img": 1},
+      "notes": "Public content page with many image nodes; Wikipedia and a W3Schools asset page were unreliable in this environment."
+    },
+    {
+      "sample_id": "P1-S07-C1",
+      "scenario_id": "P1-S07",
+      "source_kind": "controlled",
+      "locator": "tests/fixtures/p1/soft_block.html",
+      "expected_page_state": "soft_block",
+      "expected_markers": {},
+      "notes": "Controlled challenge-page copy; no bypass attempt."
+    },
+    {
+      "sample_id": "P1-S07-R1",
+      "scenario_id": "P1-S07",
+      "source_kind": "real",
+      "locator": "https://github.com/login",
+      "expected_page_state": "hard_login",
+      "expected_markers": {},
+      "notes": "Public login page with a password field; no credentials are entered."
+    }
+  ]
+}

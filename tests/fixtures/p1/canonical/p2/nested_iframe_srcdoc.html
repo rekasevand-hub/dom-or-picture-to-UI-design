@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>P2 nested srcdoc frame holdout</title>
+</head>
+<body style="margin:0;background:#ffffff">
+  <h1 style="position:absolute;left:20px;top:20px;width:620px;height:40px;margin:0;font:700 30px/40px Arial,sans-serif;color:#17212b">Nested iframe holdout</h1>
+  <p style="position:absolute;left:20px;top:66px;width:620px;height:44px;margin:0;font:16px/22px Arial,sans-serif;color:#475569">This root document verifies recursive srcdoc frame capture across two nested levels.</p>
+  <iframe id="nested-child" title="Nested srcdoc child" style="position:absolute;left:20px;top:120px;width:500px;height:300px;border:0;background:#f8fafc"></iframe>
+  <script>
+    const grandchild = "<body style='margin:0;background:#ffffff'><p style='position:absolute;left:12px;top:12px;width:390px;height:28px;margin:0;font:18px/28px Arial,sans-serif;color:#334155'>Grandchild text remains native and editable.</p></body>";
+    const child = "<body style='margin:0;background:#f8fafc'><h2 style='position:absolute;left:20px;top:20px;width:420px;height:32px;margin:0;font:700 24px/32px Arial,sans-serif;color:#1e293b'>Child frame content</h2><p style='position:absolute;left:20px;top:58px;width:420px;height:44px;margin:0;font:16px/22px Arial,sans-serif;color:#475569'>This paragraph is captured from the first accessible child document.</p><iframe id='nested-grandchild' title='Nested srcdoc grandchild' style='position:absolute;left:20px;top:120px;width:420px;height:100px;border:0;background:#ffffff'></iframe></body>";
+    const host = document.getElementById("nested-child");
+    host.srcdoc = child;
+    host.addEventListener("load", () => {
+      const grand = host.contentDocument.getElementById("nested-grandchild");
+      grand.srcdoc = grandchild;
+    });
+  </script>
+</body>
+</html>

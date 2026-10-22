@@ -1,0 +1,58 @@
+{
+  "schema_version": "p1-canonical-output-truth/1.0",
+  "expected_texts": [
+    "Asset evidence fixture",
+    "The page contains an image element, a CSS background image, and an inline SVG.",
+    "Ordinary text keeps the page classifiable while the three visual assets remain separate evidence targets."
+  ],
+  "expected_absent_texts": [],
+  "critical_boxes": [
+    {
+      "text": "The page contains an image element, a CSS background image, and an inline SVG.",
+      "x": 8,
+      "y": 79,
+      "width": 884,
+      "height": 18,
+      "tolerance_px": 1
+    }
+  ],
+  "expected_asset_count": 3,
+  "expected_asset_regions": [
+    {
+      "name": "img-blue",
+      "x": 8,
+      "y": 114,
+      "width": 96,
+      "height": 64,
+      "tolerance_px": 1,
+      "require_local_bytes": true,
+      "expected_content_sha256": "604eaf9e6cad21e5d4784779bce76e199d51874e2d79c00fc9d201550d0f1ee2",
+      "expected_natural_size": [96.0, 64.0],
+      "expected_source_rect": [0.0, 0.0, 96.0, 64.0],
+      "expected_object_fit": "fill"
+    },
+    {
+      "name": "background-orange",
+      "x": 8,
+      "y": 182,
+      "width": 160,
+      "height": 80,
+      "tolerance_px": 1,
+      "require_local_bytes": true,
+      "expected_content_sha256": "9ba01d464dc5071ce4eefe89bfe4d8469572d4a6ce81dc50088e0764bf675637",
+      "expected_natural_size": [160.0, 80.0],
+      "expected_source_rect": [0.0, 0.0, 160.0, 80.0],
+      "expected_object_fit": "fill"
+    },
+    {
+      "name": "inline-svg-green",
+      "x": 8,
+      "y": 262,
+      "width": 48,
+      "height": 48,
+      "tolerance_px": 1,
+      "require_local_bytes": true
+    }
+  ],
+  "native_text_required": true
+}

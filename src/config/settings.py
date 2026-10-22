@@ -1,6 +1,8 @@
 """
-全局配置（环境变量 > 默认值）。
-建议在项目根目录放置 .env 文件并加载。
+应用配置。
+
+普通应用设置从环境变量/.env 读取；Figma bridge 与默认 client 设置从根目录
+figma_bridge.config.json 读取。
 """
 from __future__ import annotations
 
@@ -8,11 +10,33 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from src.app.services.contracts import DeliveryProfile
+
 
 def _env_opt(name: str) -> str | None:
     """读取可选字符串环境变量：未设置或空白一律返回 None。"""
     value = os.getenv(name)
     return value if value and value.strip() else None
+
+
+def _bridge_url_default() -> str:
+    from src.app.services.bridge_config import load_bridge_config
+
+    bridge_config = load_bridge_config()
+    if bridge_config.allow_env_overrides:
+        configured = os.getenv("FIGMA_BRIDGE_URL", "").strip()
+        if configured:
+            return configured
+    return bridge_config.client.url
+
+
+def _delivery_profile_default() -> DeliveryProfile:
+    value = (os.getenv("DELIVERY_PROFILE") or "legacy").strip() or "legacy"
+    if value not in {"legacy", "contract-v2"}:
+        raise ValueError(
+            "DELIVERY_PROFILE must be one of: legacy, contract-v2"
+        )
+    return value  # type: ignore[return-value]
 
 
 @dataclass(frozen=True)
@@ -52,18 +76,30 @@ class Config:
     som_batch_min_coverage: float = field(default_factory=lambda: float(os.getenv("SOM_BATCH_MIN_COVERAGE", "0.9")))
     # 像素级颜色校正（预留接口，默认关；实现见 llm_service.backfill_colors_from_screenshot）
     som_color_backfill: bool = field(default_factory=lambda: os.getenv("SOM_COLOR_BACKFILL", "false").lower() in ("1", "true", "yes"))
-    # dom 路线用 computed style 拼 DesignSpec（跳过 VLM，秒级完成；字段名兼容旧配置）
-    dom_direct_design: bool = field(default_factory=lambda: os.getenv("DOM_DIRECT_DESIGN", "false").lower() in ("1", "true", "yes"))
-
     # --- 新流程路由与抓取 ---
     route_default: str = field(default_factory=lambda: os.getenv("ROUTE", "auto"))
+    playwright_browser: str = field(default_factory=lambda: os.getenv("PLAYWRIGHT_BROWSER", "chromium"))
     playwright_viewport_width: int = field(default_factory=lambda: int(os.getenv("PLAYWRIGHT_VIEWPORT_WIDTH", "1440")))
     playwright_viewport_height: int = field(default_factory=lambda: int(os.getenv("PLAYWRIGHT_VIEWPORT_HEIGHT", "900")))
     playwright_headless: bool = field(default_factory=lambda: os.getenv("PLAYWRIGHT_HEADLESS", "true").lower() in ("1", "true", "yes"))
     playwright_storage_state: str | None = field(default_factory=lambda: _env_opt("PLAYWRIGHT_STORAGE_STATE"))
+    # 真实浏览器会话降级：持久化用户目录优先（可复用已登录/已过验证的会话），
+    # 其次 storage_state，最后退回全新有头 Chromium。验证码/人机验证不自动破解。
+    playwright_user_data_dir: str | None = field(default_factory=lambda: _env_opt("PLAYWRIGHT_USER_DATA_DIR"))
+    playwright_headed_fallback: bool = field(default_factory=lambda: os.getenv("PLAYWRIGHT_HEADED_FALLBACK", "true").lower() in ("1", "true", "yes"))
     device_scale_factor: int = field(default_factory=lambda: int(os.getenv("DEVICE_SCALE_FACTOR", "1")))
-    enrich_visual: bool = field(default_factory=lambda: os.getenv("ENRICH_VISUAL", "false").lower() in ("1", "true", "yes"))
     wait_networkidle_timeout: int = field(default_factory=lambda: int(os.getenv("WAIT_NETWORKIDLE_TIMEOUT", "30000")))
+
+    # --- 渲染输出 ---
+    delivery_profile: DeliveryProfile = field(
+        default_factory=_delivery_profile_default
+    )
+    # SVG 文本兜底字体栈（DesignSpec 里带 fontFamily 时优先用节点自身的）。
+    # 留空/未设置时用 svg_adapter.DEFAULT_FONT_STACK。
+    svg_font_stack: str | None = field(default_factory=lambda: _env_opt("SVG_FONT_STACK"))
+    # 文本基线的像素级微调（±1px）：渲染一遍 → 与截图逐元素比 → 只接受明确变好的
+    # 1px 位移并重渲染（见 services/rendering/text_align.py）；置 0 关闭。
+    text_align: bool = field(default_factory=lambda: os.getenv("TEXT_ALIGN", "true").lower() in ("1", "true", "yes"))
 
     # --- 视觉提取 ---
     cv_resize_long_edge: int = field(default_factory=lambda: int(os.getenv("CV_RESIZE_LONG_EDGE", "1280")))
@@ -100,8 +136,8 @@ class Config:
     red_box_overlap_threshold: float = field(default_factory=lambda: float(os.getenv("RED_BOX_OVERLAP_THRESHOLD", "0.5")))
 
     # --- 原型工具 ---
-    prototype_tool: str = field(default_factory=lambda: os.getenv("PROTOTYPE_TOOL", "svg"))  # svg | figma | jsdesign | mockingbot
-    figma_bridge_url: str = field(default_factory=lambda: os.getenv("FIGMA_BRIDGE_URL", "ws://localhost:8765"))
+    prototype_tool: str = field(default_factory=lambda: os.getenv("PROTOTYPE_TOOL", "svg"))  # svg | figma | jsdesign | mockingbot | axure
+    figma_bridge_url: str = field(default_factory=_bridge_url_default)
     jsdesign_api_base: str = field(default_factory=lambda: os.getenv("JSDESIGN_API_BASE", ""))
     jsdesign_token: str | None = field(default_factory=lambda: os.getenv("JSDESIGN_TOKEN"))
     mockingbot_api_base: str = field(default_factory=lambda: os.getenv("MOCKINGBOT_API_BASE", ""))

@@ -1,0 +1,42 @@
+{
+  "schema_version": "p1-canonical-output-manifest/1.0",
+  "environment": {
+    "engine": "chromium",
+    "viewport": {
+      "width": 900,
+      "height": 700
+    },
+    "device_scale_factor": 1,
+    "locale": "zh-CN",
+    "timezone": "Asia/Shanghai"
+  },
+  "visual_policy_path": "tests/fixtures/p1/canonical/visual_policy.json",
+  "samples": [
+    {
+      "sample_id": "holdout-text",
+      "source": "tests/fixtures/p1/canonical/holdout/text.html",
+      "truth": "tests/fixtures/p1/canonical/holdout/text.truth.json"
+    },
+    {
+      "sample_id": "holdout-assets",
+      "source": "tests/fixtures/p1/canonical/holdout/assets.html",
+      "truth": "tests/fixtures/p1/canonical/holdout/assets.truth.json"
+    },
+    {
+      "sample_id": "holdout-overlay",
+      "source": "tests/fixtures/p1/canonical/holdout/overlay.html",
+      "truth": "tests/fixtures/p1/canonical/holdout/overlay.truth.json"
+    },
+    {
+      "sample_id": "holdout-frame",
+      "source": "tests/fixtures/p1/canonical/holdout/frame.html",
+      "truth": "tests/fixtures/p1/canonical/holdout/frame.truth.json"
+    },
+    {
+      "sample_id": "holdout-remote-asset",
+      "source": "tests/fixtures/p1/canonical/holdout/remote.html",
+      "truth": "tests/fixtures/p1/canonical/holdout/remote.truth.json",
+      "remote_asset_directory": "tests/fixtures/p1/canonical/holdout/remote_assets"
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "schema_version": "p1-figma-visual-policy/1.0",
+  "policy_id": "p1-figma-frame-v1",
+  "threshold_state": "provisional",
+  "require_size_match": true,
+  "max_mean": 3.0,
+  "max_ink_mean": 100.0,
+  "max_over30_pct": 2.5,
+  "max_bad_pixel_count": 14000,
+  "scope": "900x700-dpr1-chromium-windows-frame"
+}

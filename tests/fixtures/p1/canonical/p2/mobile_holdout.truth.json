@@ -1,0 +1,34 @@
+{
+  "schema_version": "p1-canonical-output-truth/1.0",
+  "visual_class": "assets",
+  "expected_texts": [
+    "Independent mobile holdout",
+    "This independent fixture checks a different narrow width and longer wording.",
+    "Holdout card",
+    "The independent sample keeps native text and a local asset observable.",
+    "Footer content remains separate from the asset evidence."
+  ],
+  "critical_boxes": [
+    {
+      "text": "Independent mobile holdout",
+      "x": 18,
+      "y": 18,
+      "width": 324,
+      "height": 32,
+      "tolerance_px": 1
+    }
+  ],
+  "expected_asset_count": 1,
+  "expected_asset_regions": [
+    {
+      "name": "independent-mobile-svg",
+      "x": 18,
+      "y": 118,
+      "width": 90,
+      "height": 60,
+      "tolerance_px": 1,
+      "require_local_bytes": true
+    }
+  ],
+  "native_text_required": true
+}

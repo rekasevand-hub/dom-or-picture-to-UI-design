@@ -1,0 +1,72 @@
+{
+  "allow_env_overrides": false,
+  "client": {
+    "allow_legacy_job_ids": false,
+    "auth_token": "",
+    "client_id": "",
+    "client_token": "",
+    "timeout": 30,
+    "tls": {
+      "ca_file": "",
+      "certfile": "",
+      "enabled": false,
+      "keyfile": "",
+      "verify": true
+    },
+    "url": "ws://localhost:8765"
+  },
+  "schema_version": "figma-bridge-config/1.0",
+  "ledger": {
+    "allow_legacy_read": false,
+    "compact_min_events": 256,
+    "max_events": 4096,
+    "path": "output/_bridge_state/write-jobs.jsonl",
+    "terminal_retention_days": 30
+  },
+  "security": {
+    "require_secret_references": false,
+    "require_secure_file_permissions": false
+  },
+  "server": {
+    "allow_legacy_job_ids": false,
+    "auth_token": "",
+    "client_tokens": {},
+    "client_write_defaults": {
+      "burst": 4,
+      "max_inflight": 4,
+      "min_interval_ms": 0
+    },
+    "client_write_limits": {},
+    "exclusive_journal_lock": true,
+    "host": "localhost",
+    "idempotency_ttl": 60,
+    "journal_path": "output/_bridge_state/bridge-journal.jsonl",
+    "max_cache_entries": 1024,
+    "max_inflight": 64,
+    "max_journal_events": 4096,
+    "max_message_bytes": 1048576,
+    "max_params_depth": 16,
+    "plugin_token": "",
+    "plugin_token_recheck_seconds": 0.5,
+    "port": 8765,
+    "timeout": 30,
+    "tls": {
+      "ca_file": "",
+      "certfile": "",
+      "enabled": false,
+      "keyfile": "",
+      "require_client_cert": false
+    },
+    "write_pacing": {
+      "max_queue": 16,
+      "min_interval_ms": 50,
+      "queue_timeout_seconds": 5
+    },
+    "writer_lease": {
+      "enabled": false,
+      "owner_id": "bridge-local",
+      "path": "output/_bridge_state/writer-lease.json",
+      "ttl_seconds": 300
+    }
+  }
+}

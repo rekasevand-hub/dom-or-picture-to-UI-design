@@ -1,0 +1,21 @@
+{
+  "schema_version": "p1-canonical-output-manifest/1.0",
+  "environment": {
+    "engine": "chromium",
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "device_scale_factor": 1,
+    "locale": "zh-CN",
+    "timezone": "Asia/Shanghai"
+  },
+  "visual_policy_path": "tests/fixtures/p1/canonical/p2/visual_policy_dpr_aware.json",
+  "samples": [
+    {
+      "sample_id": "mobile-layout",
+      "source": "tests/fixtures/p1/canonical/p2/mobile.html",
+      "truth": "tests/fixtures/p1/canonical/p2/mobile.truth.json"
+    }
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "schema_version": "p1-canonical-output-truth/1.0",
+  "expected_texts": [
+    "Fallback 字体保持可编辑",
+    "This canonical page verifies that a missing declared font falls back to the recorded system stack while preserving native editable text and stable geometry.",
+    "The fallback declaration must remain observable even though the first family is unavailable on the canonical host."
+  ],
+  "expected_absent_texts": [],
+  "critical_boxes": [
+    {
+      "text": "Fallback 字体保持可编辑",
+      "x": 30,
+      "y": 30,
+      "width": 520,
+      "height": 48,
+      "tolerance_px": 1
+    }
+  ],
+  "expected_font_markers": [
+    {
+      "text": "Fallback 字体保持可编辑",
+      "family_contains": "Arial"
+    }
+  ],
+  "expected_asset_count": 0,
+  "native_text_required": true
+}

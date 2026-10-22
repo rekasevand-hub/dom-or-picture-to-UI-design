@@ -1,0 +1,30 @@
+{
+  "schema_version": "p1-canonical-output-truth/1.0",
+  "visual_class": "text",
+  "expected_texts": [
+    "Holdout 文本排版",
+    "This holdout uses different wording and widths to verify that browser-measured line breaks generalize beyond the calibration examples.",
+    "Native text, mixed CJK and Latin content, and stable line boxes remain observable in the generated output."
+  ],
+  "expected_absent_texts": [],
+  "critical_boxes": [
+    {
+      "text": "Holdout 文本排版",
+      "x": 48,
+      "y": 40,
+      "width": 600,
+      "height": 40,
+      "tolerance_px": 1
+    },
+    {
+      "text": "This holdout uses different wording and widths to verify that browser-measured line breaks generalize beyond the calibration examples.",
+      "x": 48,
+      "y": 96,
+      "width": 420,
+      "height": 78,
+      "tolerance_px": 1
+    }
+  ],
+  "expected_asset_count": 0,
+  "native_text_required": true
+}

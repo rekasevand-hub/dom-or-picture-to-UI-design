@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>P1 Iframe Fixture</title>
+</head>
+<body>
+  <main>
+    <h1>Iframe boundary fixture</h1>
+    <p>This controlled page keeps both an accessible frame and a sandboxed frame visible.</p>
+    <iframe id="accessible-frame" srcdoc="<p>Accessible iframe content</p>"></iframe>
+    <iframe id="sandboxed-frame" sandbox srcdoc="<p>Sandboxed iframe content</p>"></iframe>
+    <p>Use this page to verify that iframe scope is recorded as evidence rather than merged into the parent DOM.</p>
+  </main>
+</body>
+</html>

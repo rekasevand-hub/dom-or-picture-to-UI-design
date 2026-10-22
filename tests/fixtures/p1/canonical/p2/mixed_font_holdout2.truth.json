@@ -1,0 +1,33 @@
+{
+  "schema_version": "p1-canonical-output-truth/1.0",
+  "visual_class": "mixed-font",
+  "expected_texts": [
+    "Second mixed font holdout",
+    "Lead ",
+    "Family switch",
+    " 中文空格与编辑性",
+    "Each run remains independently editable native text."
+  ],
+  "critical_boxes": [
+    {
+      "text": "Second mixed font holdout",
+      "x": 36,
+      "y": 28,
+      "width": 800,
+      "height": 48,
+      "tolerance_px": 1
+    }
+  ],
+  "expected_font_markers": [
+    {
+      "text": "Family switch",
+      "family_contains": "Times New Roman"
+    },
+    {
+      "text": " 中文空格与编辑性",
+      "family_contains": "Arial"
+    }
+  ],
+  "expected_asset_count": 0,
+  "native_text_required": true
+}

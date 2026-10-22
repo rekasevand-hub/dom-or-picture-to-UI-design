@@ -1,0 +1,26 @@
+{
+  "schema_version": "p1-canonical-output-truth/1.0",
+  "visual_class": "frame",
+  "expected_texts": [
+    "Holdout frame sample",
+    "This independent frame holdout keeps one accessible child and one sandbox opaque boundary visible.",
+    "Holdout accessible child",
+    "Frame boundaries remain evidence while inaccessible child content stays unknown."
+  ],
+  "expected_absent_texts": [
+    "Holdout opaque child"
+  ],
+  "visual_exclusion_regions": [
+    {
+      "name": "opaque-frame-interior",
+      "x": 330,
+      "y": 81,
+      "width": 320,
+      "height": 120,
+      "reason": "opaque-frame-content-unobservable"
+    }
+  ],
+  "critical_boxes": [],
+  "expected_asset_count": 0,
+  "native_text_required": true
+}

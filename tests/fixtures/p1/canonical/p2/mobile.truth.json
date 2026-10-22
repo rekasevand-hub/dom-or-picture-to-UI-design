@@ -1,0 +1,34 @@
+{
+  "schema_version": "p1-canonical-output-truth/1.0",
+  "visual_class": "assets",
+  "expected_texts": [
+    "Mobile viewport holdout",
+    "This paragraph verifies width-aware wrapping in a narrow canonical viewport.",
+    "Responsive card",
+    "Mobile text stays native and observable.",
+    "Footer note remains visible."
+  ],
+  "critical_boxes": [
+    {
+      "text": "Mobile viewport holdout",
+      "x": 20,
+      "y": 20,
+      "width": 350,
+      "height": 38,
+      "tolerance_px": 1
+    }
+  ],
+  "expected_asset_count": 1,
+  "expected_asset_regions": [
+    {
+      "name": "mobile-local-svg",
+      "x": 20,
+      "y": 130,
+      "width": 100,
+      "height": 80,
+      "tolerance_px": 1,
+      "require_local_bytes": true
+    }
+  ],
+  "native_text_required": true
+}

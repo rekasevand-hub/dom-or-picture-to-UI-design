@@ -1,0 +1,28 @@
+{
+  "schema_version": "p1-canonical-output-truth/1.0",
+  "visual_class": "mixed-font",
+  "expected_texts": [
+    "Variable font probe",
+    "Semilight named instance",
+    "Semibold approximation probe",
+    "This diagnostic separates named variable instances from unsupported arbitrary axis values."
+  ],
+  "critical_boxes": [
+    {
+      "text": "Variable font probe",
+      "x": 32,
+      "y": 28,
+      "width": 760,
+      "height": 44,
+      "tolerance_px": 1
+    }
+  ],
+  "expected_font_markers": [
+    {
+      "text": "Semilight named instance",
+      "family_contains": "Segoe UI Variable"
+    }
+  ],
+  "expected_asset_count": 0,
+  "native_text_required": true
+}

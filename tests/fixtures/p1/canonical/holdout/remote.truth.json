@@ -1,0 +1,40 @@
+{
+  "schema_version": "p1-canonical-output-truth/1.0",
+  "visual_class": "assets",
+  "expected_texts": [
+    "Remote asset holdout",
+    "This controlled loopback HTTP fixture verifies MIME, fetched bytes and content identity for a remote asset without changing production SSRF policy.",
+    "The visible display region and downloaded source bytes are separate evidence dimensions."
+  ],
+  "critical_boxes": [
+    {
+      "text": "Remote asset holdout",
+      "x": 54,
+      "y": 38,
+      "width": 620,
+      "height": 38,
+      "tolerance_px": 1
+    }
+  ],
+  "expected_asset_count": 1,
+  "expected_asset_regions": [
+    {
+      "name": "remote-svg-visible",
+      "x": 54,
+      "y": 96,
+      "width": 150,
+      "height": 80,
+      "tolerance_px": 1,
+      "require_local_bytes": true
+    }
+  ],
+  "expected_remote_assets": [
+    {
+      "asset_id": "remote-svg",
+      "url_suffix": "/remote.svg",
+      "mime": "image/svg+xml",
+      "sha256": "b2db6c61dba1448dbb7e035c30084b169880c83e0ecbb8dbbf1450f90608c5c3"
+    }
+  ],
+  "native_text_required": true
+}

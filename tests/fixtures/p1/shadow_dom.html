@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>P1 Shadow DOM Fixture</title>
+  <style>
+    open-card, closed-card { display: block; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Shadow DOM boundary fixture</h1>
+    <p>This page contains both an open shadow root and a closed shadow root.</p>
+    <open-card></open-card>
+    <closed-card></closed-card>
+    <p>The controlled page remains large enough to be classified as content while preserving the two component boundaries.</p>
+  </main>
+  <script>
+    class OpenCard extends HTMLElement {
+      constructor() {
+        super();
+        const root = this.attachShadow({mode: "open"});
+        root.innerHTML = "<h2>Open shadow title</h2><p>Open shadow body text.</p>";
+      }
+    }
+    class ClosedCard extends HTMLElement {
+      constructor() {
+        super();
+        const root = this.attachShadow({mode: "closed"});
+        root.innerHTML = "<h2>Closed shadow title</h2><p>Closed shadow body text.</p>";
+      }
+    }
+    customElements.define("open-card", OpenCard);
+    customElements.define("closed-card", ClosedCard);
+  </script>
+</body>
+</html>

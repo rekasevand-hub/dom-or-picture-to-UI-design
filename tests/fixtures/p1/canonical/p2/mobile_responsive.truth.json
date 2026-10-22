@@ -1,0 +1,13 @@
+{
+  "schema_version": "p1-canonical-output-truth/1.0",
+  "visual_class": "mobile",
+  "expected_texts": [
+    "Mobile matrix",
+    "This responsive fixture checks narrow mobile widths, wrapped text, a local asset and stable native editability.",
+    "Responsive card",
+    "Native text remains available.",
+    "Footer content remains visible."
+  ],
+  "expected_asset_count": 1,
+  "native_text_required": true
+}

@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>P1 Dynamic Fixture</title>
+</head>
+<body>
+  <main>
+    <h1>Hydration fixture shell</h1>
+    <p>This paragraph is present in the initial document.</p>
+    <section id="content-shell">Loading content...</section>
+  </main>
+  <script>
+    setTimeout(() => {
+      document.getElementById("content-shell").innerHTML =
+        "<h2>Hydrated content</h2><p>The client-side update replaced the shell with meaningful content for the capture.</p>";
+    }, 1200);
+  </script>
+</body>
+</html>

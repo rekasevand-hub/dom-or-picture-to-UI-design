@@ -1,0 +1,33 @@
+{
+  "schema_version": "p1-canonical-output-truth/1.0",
+  "visual_class": "mixed-font",
+  "expected_texts": [
+    "Mixed font run probe",
+    "Alpha ",
+    "Times run",
+    " 中文回退保持可编辑",
+    "The resolved platform fonts must remain explicit or ambiguous."
+  ],
+  "critical_boxes": [
+    {
+      "text": "Mixed font run probe",
+      "x": 30,
+      "y": 30,
+      "width": 720,
+      "height": 48,
+      "tolerance_px": 1
+    }
+  ],
+  "expected_font_markers": [
+    {
+      "text": "Times run",
+      "family_contains": "Times New Roman"
+    },
+    {
+      "text": " 中文回退保持可编辑",
+      "family_contains": "Arial"
+    }
+  ],
+  "expected_asset_count": 0,
+  "native_text_required": true
+}

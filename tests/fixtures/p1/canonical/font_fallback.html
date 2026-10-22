@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>Canonical font fallback fixture</title>
+</head>
+<body style="margin:0;background:#ffffff">
+  <div style="position:absolute;left:30px;top:30px;width:520px;height:48px;font:700 32px/48px 'Missing Font 2026',Arial,'Microsoft YaHei',sans-serif;color:#1f2937">
+    Fallback 字体保持可编辑
+  </div>
+  <p style="position:absolute;left:30px;top:100px;width:620px;height:56px;margin:0;font:18px/28px 'Missing Font 2026',Arial,'Microsoft YaHei',sans-serif;color:#364152">
+    This canonical page verifies that a missing declared font falls back to the recorded system stack while preserving native editable text and stable geometry.
+  </p>
+  <p style="position:absolute;left:30px;top:172px;width:680px;height:44px;margin:0;font:16px/22px Arial,sans-serif;color:#53606f">
+    The fallback declaration must remain observable even though the first family is unavailable on the canonical host.
+  </p>
+</body>
+</html>

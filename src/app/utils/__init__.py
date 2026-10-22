@@ -9,6 +9,7 @@ from src.app.utils.image_utils import (
     save_image,
 )
 from src.app.utils.logging_utils import setup_logging
+from src.app.utils.path_utils import file_uri
 
 __all__ = [
     "bgr_to_hex",
@@ -23,4 +24,5 @@ __all__ = [
     "resize_frame",
     "save_image",
     "setup_logging",
+    "file_uri",
 ]

@@ -35,6 +35,9 @@ venv/
 .env
 .env.test
 
+# Playwright 登录态（含 token，勿提交）
+login_state.json
+
 # Output
 output/
 uploads/

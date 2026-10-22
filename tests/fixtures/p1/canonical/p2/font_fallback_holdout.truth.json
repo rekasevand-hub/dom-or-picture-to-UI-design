@@ -1,0 +1,27 @@
+{
+  "schema_version": "p1-canonical-output-truth/1.0",
+  "visual_class": "text",
+  "expected_texts": [
+    "Missing font remains editable",
+    "The independent fallback holdout checks that missing font declarations remain observable while native text keeps its content, geometry and editability.",
+    "The readable fallback is not evidence of identical glyph identity."
+  ],
+  "critical_boxes": [
+    {
+      "text": "Missing font remains editable",
+      "x": 30,
+      "y": 30,
+      "width": 560,
+      "height": 48,
+      "tolerance_px": 1
+    }
+  ],
+  "expected_font_markers": [
+    {
+      "text": "Missing font remains editable",
+      "family_contains": "Arial"
+    }
+  ],
+  "expected_asset_count": 0,
+  "native_text_required": true
+}

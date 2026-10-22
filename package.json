@@ -1,0 +1,13 @@
+{
+  "name": "figma_auto_agent",
+  "version": "1.0.0",
+  "description": "**版本：1.1.0 冻结发版（2026-10-17）**",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs"
+}
