@@ -410,6 +410,7 @@ Exit criterion: `verified-for: single-writer fence on controlled Windows host`.
 - Test: `tests/v2/test_p5_permission_takeover_probe.py`
 - Test: `tests/v2/test_p5_collaboration_race_probe.py`
 - Create: `docs/v2_mentor/P5_MANUAL_RECONCILIATION_POLICY.md`
+- Create: `docs/v2_mentor/P5_DETERMINISTIC_FAULT_MATRIX.md`
 - Evidence: `output/_p5_permission_takeover_round1/`
 - Evidence: `output/_p5_collaboration_race_round1/`
 
@@ -446,6 +447,13 @@ C:\Users\lzq\.conda\envs\omni\python.exe -m pytest tests/v2/test_p5_permission_t
 Exit criterion: `verified-for: permission/takeover/conservative collaboration
 reconciliation on the fixed pilot document`.
 
+Deterministic audit 2026-10-23: Steps 1-3 are covered by the round-2
+deterministic probes and JS harness, including partial-state reconciliation,
+authoritative-attribution preservation, unknown no-resend and
+`NODE_NOT_FOUND` classification. Step 4 remains pending because real accounts
+and controlled collaborator timing are unavailable. This does not satisfy the
+exit criterion.
+
 ---
 
 ### Task 7: Complete Expected-State and Region Compensation Coverage
@@ -458,6 +466,7 @@ reconciliation on the fixed pilot document`.
 - Test: `tests/v2/test_bridge_protocol.py`
 - Test: `tests/v2/test_figma_adapter_edits.py`
 - Create: `scripts/p5_region_compensation_probe.py`
+- Update: `docs/v2_mentor/P5_DETERMINISTIC_FAULT_MATRIX.md`
 - Evidence: `output/_p5_region_compensation_round1/`
 
 **Interfaces:**
@@ -489,6 +498,14 @@ C:\Users\lzq\.conda\envs\omni\python.exe -m pytest tests/v2/test_bridge_protocol
 
 Exit criterion: `verified-for: expected-state and region compensation for
 supported pilot actions`.
+
+Deterministic audit 2026-10-23: image fill hashes now come from actual
+`image_fill_report` bytes, layout aliases are normalized, `set_bounds` is an
+executable edit action, region membership is read from plugin data, partial
+regions are grouped, and compensation requires exact job/owner/region markers.
+Round-2 evidence is `output/_p5_region_compensation_round2/result.json`.
+Real takeover, upload interruption and concurrent deletion remain blocked, so
+the exit criterion is not claimed.
 
 ---
 
@@ -588,7 +605,9 @@ selected storage profile`.
 **Files:**
 - Create: `docs/v2_mentor/P5_PILOT_RUNBOOK.md`
 - Create: `scripts/p5_dry_run.py`
+- Create: `scripts/p5_evidence_audit.py`
 - Create: `tests/v2/test_p5_dry_run_contract.py`
+- Create: `tests/v2/test_p5_evidence_audit.py`
 - Evidence: `output/_p5_dry_run_round1/`
 
 **Interfaces:**
@@ -618,7 +637,13 @@ timeout.
 
 ```powershell
 C:\Users\lzq\.conda\envs\omni\python.exe scripts\p5_dry_run.py --out output\_p5_dry_run_round1
+C:\Users\lzq\.conda\envs\omni\python.exe scripts\p5_evidence_audit.py `
+  --report <figma_bridge_soak.json> `
+  --inputs output\_p5_pilot_inputs\inputs.json `
+  --max-journal-events 4096 `
+  --out <evidence_audit.json>
 C:\Users\lzq\.conda\envs\omni\python.exe -m pytest tests/v2/test_p5_dry_run_contract.py -q
+C:\Users\lzq\.conda\envs\omni\python.exe -m pytest tests/v2/test_p5_evidence_audit.py -q
 ```
 
 Pass requires:

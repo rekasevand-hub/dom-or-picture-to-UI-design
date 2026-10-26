@@ -18,7 +18,7 @@ from src.app.services.job_namespace import (
     build_job_namespace,
     validate_job_namespace,
 )
-from src.app.services.rendering.adapter_base import PrototypeAdapter
+from src.app.services.rendering.adapter_base import PrototypeAdapter, _offset_box
 from src.app.services.rendering.write_job_ledger import CompensationScope
 
 logger = logging.getLogger(__name__)
@@ -126,17 +126,11 @@ def evaluate_expected_region(
             continue
         if key not in readback:
             checks[key] = "unknown"
-        elif key == "layoutSnapshot" and isinstance(expected[key], dict):
-            actual = readback.get(key)
-            checks[key] = (
-                "matched"
-                if isinstance(actual, dict)
-                and all(actual.get(name) == value for name, value in expected[key].items())
-                else "mismatched"
-            )
         else:
             checks[key] = (
-                "matched" if readback.get(key) == expected[key] else "mismatched"
+                "matched"
+                if _expected_value_matches(key, expected[key], readback.get(key))
+                else "mismatched"
             )
     unknown = sum(value == "unknown" for value in checks.values())
     matched = sum(value == "matched" for value in checks.values())
@@ -186,7 +180,13 @@ def plan_region_compensation(
             marker.get("job_id") == scope.job_id
             and marker.get("owner") == "figma_auto_agent"
         ):
-            remove.append(node_id)
+            marker_region = str(marker.get("region_id") or marker.get("regionId") or "")
+            if marker_region == scope.region_id:
+                remove.append(node_id)
+            elif marker_region:
+                preserved.append(node_id)
+            else:
+                unknown.append(node_id)
         else:
             preserved.append(node_id)
     if unknown:
@@ -211,18 +211,17 @@ def plan_region_compensation(
 def classify_permission_failure(error: Any) -> PermissionOutcome:
     payload = error if isinstance(error, dict) else {}
     code = str(payload.get("code") or getattr(error, "code", "") or "")
-    message = str(
-        payload.get("message")
-        or payload.get("error")
-        or str(error)
-        or ""
-    )
+    message = str(payload.get("message") or payload.get("error") or str(error) or "")
     text = f"{code} {message}".lower()
     retry_after_ms = payload.get("retryAfterMs")
     if not isinstance(retry_after_ms, (int, float)):
         retry_after_ms = getattr(error, "retry_after_ms", None)
-    retry_value = int(retry_after_ms) if isinstance(retry_after_ms, (int, float)) else None
-    if any(token in text for token in ("view-only", "view only", "readonly", "read-only")):
+    retry_value = (
+        int(retry_after_ms) if isinstance(retry_after_ms, (int, float)) else None
+    )
+    if any(
+        token in text for token in ("view-only", "view only", "readonly", "read-only")
+    ):
         return PermissionOutcome(
             category="view-only",
             retryable=False,
@@ -239,7 +238,16 @@ def classify_permission_failure(error: Any) -> PermissionOutcome:
             reason="Figma rate limit rejected the operation before commit.",
             retry_after_ms=retry_value,
         )
-    if any(token in text for token in ("token revoked", "revoked token", "invalid token", "unauthorized", "401")):
+    if any(
+        token in text
+        for token in (
+            "token revoked",
+            "revoked token",
+            "invalid token",
+            "unauthorized",
+            "401",
+        )
+    ):
         return PermissionOutcome(
             category="plugin-token-revoked",
             retryable=False,
@@ -247,7 +255,9 @@ def classify_permission_failure(error: Any) -> PermissionOutcome:
             manual_review=True,
             reason="The plugin token is revoked or no longer authorized.",
         )
-    if any(token in text for token in ("takeover", "replaced by", "connection replaced")):
+    if any(
+        token in text for token in ("takeover", "replaced by", "connection replaced")
+    ):
         return PermissionOutcome(
             category="plugin-takeover",
             retryable=False,
@@ -255,7 +265,10 @@ def classify_permission_failure(error: Any) -> PermissionOutcome:
             manual_review=True,
             reason="Another plugin connection took over the writer.",
         )
-    if any(token in text for token in ("permission", "forbidden", "403", "access denied", "not allowed")):
+    if any(
+        token in text
+        for token in ("permission", "forbidden", "403", "access denied", "not allowed")
+    ):
         return PermissionOutcome(
             category="permission-denied",
             retryable=False,
@@ -263,7 +276,16 @@ def classify_permission_failure(error: Any) -> PermissionOutcome:
             manual_review=True,
             reason="Figma denied the requested write.",
         )
-    if any(token in text for token in ("precondition", "modified", "collaborator", "conflict", "not found")):
+    if any(
+        token in text
+        for token in (
+            "precondition",
+            "modified",
+            "collaborator",
+            "conflict",
+            "not found",
+        )
+    ):
         return PermissionOutcome(
             category="user-modification",
             retryable=False,
@@ -302,7 +324,10 @@ def reconciliation_policy(
     elif status in {"mismatch", "conflict", "external-conflict"}:
         recommendation = "operator-resolve-conflict"
         reason = "Current state conflicts with the write intent."
-    elif status in {"matches", "matches-intended", "partial-match"}:
+    elif status == "partial-match":
+        recommendation = "operator-reconcile-partial-state"
+        reason = "Only part of the intended state is observable; operator review is required."
+    elif status in {"matches", "matches-intended"}:
         recommendation = "operator-confirm-no-resend"
         reason = (
             "Matching state is current-state evidence only; it does not prove "
@@ -325,6 +350,31 @@ def reconciliation_policy(
     )
 
 
+def _expected_value_matches(property_name: str, expected: Any, actual: Any) -> bool:
+    if property_name == "layoutSnapshot" and isinstance(expected, dict):
+        return isinstance(actual, dict) and all(
+            actual.get(name) == value for name, value in expected.items()
+        )
+    if property_name == "textRuns" and isinstance(expected, list):
+        if not isinstance(actual, list) or len(actual) != len(expected):
+            return False
+        for expected_run, actual_run in zip(expected, actual, strict=True):
+            if isinstance(expected_run, dict):
+                if not isinstance(actual_run, dict) or not all(
+                    actual_run.get(name) == value
+                    for name, value in expected_run.items()
+                ):
+                    return False
+            elif expected_run != actual_run:
+                return False
+        return True
+    if property_name == "regionMembership" and isinstance(expected, dict):
+        return isinstance(actual, dict) and all(
+            actual.get(name) == value for name, value in expected.items()
+        )
+    return actual == expected
+
+
 def _object_mapping(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return dict(value)
@@ -343,11 +393,7 @@ def _object_mapping(value: Any) -> dict[str, Any]:
         "actor",
         "revision",
     )
-    return {
-        name: getattr(value, name)
-        for name in names
-        if hasattr(value, name)
-    }
+    return {name: getattr(value, name) for name in names if hasattr(value, name)}
 
 
 class FigmaBridgeError(RuntimeError):
@@ -394,9 +440,7 @@ class FigmaBridgeAdapter(PrototypeAdapter):
         self.bridge_url = str(bridge_url or env_url or client_config.url).rstrip("/")
         env_timeout = environment.get("FIGMA_BRIDGE_TIMEOUT", "").strip()
         self.timeout = float(
-            timeout
-            if timeout is not None
-            else env_timeout or client_config.timeout
+            timeout if timeout is not None else env_timeout or client_config.timeout
         )
         resolved_client_token = (
             client_token
@@ -409,25 +453,25 @@ class FigmaBridgeAdapter(PrototypeAdapter):
             if resolved_client_token is not None
             else None
         ) or None
-        normalized_client_id = str(
-            client_id or client_config.client_id or ""
-        ).strip()
+        normalized_client_id = str(client_id or client_config.client_id or "").strip()
         if self.client_token and not normalized_client_id:
             raise ValueError("client_id is required when client_token is configured")
         self.client_id = normalized_client_id or uuid.uuid4().hex
         if allow_legacy_job_ids is None:
-            env_legacy = environment.get(
-                "FIGMA_BRIDGE_ALLOW_LEGACY_JOB_IDS",
-                "",
-            ).strip().lower()
+            env_legacy = (
+                environment.get(
+                    "FIGMA_BRIDGE_ALLOW_LEGACY_JOB_IDS",
+                    "",
+                )
+                .strip()
+                .lower()
+            )
             if env_legacy in {"1", "true", "yes"}:
                 allow_legacy_job_ids = True
             elif env_legacy in {"0", "false", "no", ""}:
                 allow_legacy_job_ids = client_config.allow_legacy_job_ids
             else:
-                raise ValueError(
-                    "FIGMA_BRIDGE_ALLOW_LEGACY_JOB_IDS must be a boolean"
-                )
+                raise ValueError("FIGMA_BRIDGE_ALLOW_LEGACY_JOB_IDS must be a boolean")
         self.allow_legacy_job_ids = bool(allow_legacy_job_ids)
         self.auth_token = (
             auth_token
@@ -541,9 +585,7 @@ class FigmaBridgeAdapter(PrototypeAdapter):
         request_id = (
             transaction_id
             if len(transaction_id) <= 256
-            else "owned-" + hashlib.sha256(
-                transaction_id.encode("utf-8")
-            ).hexdigest()
+            else "owned-" + hashlib.sha256(transaction_id.encode("utf-8")).hexdigest()
         )
         return self._send(
             "apply_batch",
@@ -646,6 +688,30 @@ class FigmaBridgeAdapter(PrototypeAdapter):
     ) -> str | None:
         params = _with_parent(spec, parent_id)
         return self._send("create_text", params)
+
+    def _text_render_spec(
+        self,
+        spec: dict[str, Any],
+        local_spec: dict[str, Any],
+        origin: tuple[int, int],
+    ) -> dict[str, Any]:
+        """Use the browser-measured line box for single-line Figma text.
+
+        Figma applies pixel line-height around its own font metrics. For one
+        measured browser line, ``textEmBox`` already starts at the real line
+        top, so applying both shifts glyphs by different amounts per font size.
+        """
+        lines = spec.get("lines")
+        if int(spec.get("textEmLines") or 0) != 1:
+            return local_spec
+        if isinstance(lines, list) and len(lines) > 1:
+            return local_spec
+        measured = _offset_box(spec.get("textEmBox"), origin)
+        if measured is None:
+            return local_spec
+        rendered = {**local_spec, "y": measured[1]}
+        rendered.pop("lineHeight", None)
+        return rendered
 
     def create_image(
         self, spec: dict[str, Any], parent_id: str | None = None

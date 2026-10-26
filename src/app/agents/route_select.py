@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""三源路由的“选择交互入口”：引导选 URL/截图 与 dom/grounding/cv 路线，再交给 PreciseAgent。"""
+"""交互入口：按输入族选择 URL 或截图，再选择实现层结构策略。"""
 from __future__ import annotations
 
 import sys
@@ -11,12 +11,13 @@ if TYPE_CHECKING:
 
 ALL_ROUTES = ("auto", "dom", "grounding", "cv")
 TOOLS = ("svg", "figma", "jsdesign", "mockingbot", "axure")
+INPUT_SOURCE_OPTIONS = ("网页 URL", "本地截图")
 
 ROUTE_HINTS = {
     "auto":      "自动：URL 可直接访问就走 DOM；无头被反爬拦截时切真实会话自主截图，再失败才报错",
-    "dom":       "网页真实 DOM -> computed style 规则直出（几何/样式保真、不调模型）—— 被拦截时直接报错，不静默降级",
-    "grounding": "VLM 语义链：多模态模型看图出结构 -> SoM -> VLM 生成 DesignSpec（需 VISION_API_KEY）",
-    "cv":        "纯像素 CV 管线（OmniParser）出结构 -> VLM 语义生成 —— 可直接作为主处理方向",
+    "dom":       "实现策略：DOM 输入使用真实 DOM + computed style 直出（不调视觉模型）",
+    "grounding": "实现策略：图像默认用 VLM Grounding 解析结构（需 VISION_API_KEY）",
+    "cv":        "实现策略：图像兜底；产品规则仅在 Grounding VLM 不可用时启用（I-004 前不视为已实现）",
 }
 TOOL_HINTS = {
     "svg":       "离线验证，输出 prototype.svg（推荐先跑这个）",
@@ -62,9 +63,9 @@ def select_interactive(cfg: "Config", *, ask: Callable[[str], str] = input,
         input_kind = "url" if prefill.get("url") else "image"
         url, image = prefill.get("url"), prefill.get("image")
     else:
-        src = prompt_choice("输入来源？", ["网页 URL（可 dom）", "本地截图（grounding/cv）"],
+        src = prompt_choice("输入来源？", list(INPUT_SOURCE_OPTIONS),
                             default=1, ask=ask)
-        if src == "网页 URL（可 dom）":
+        if src == INPUT_SOURCE_OPTIONS[0]:
             while True:
                 url = (ask("网页地址 (https://...)：") or "").strip()
                 if url.lower().startswith(("http://", "https://")):
@@ -81,7 +82,8 @@ def select_interactive(cfg: "Config", *, ask: Callable[[str], str] = input,
     route_default = prefill.get("route") or "auto"
     if route_default not in opts:
         route_default = "auto"
-    route = prompt_choice("处理路线？", opts, default=max(1, opts.index(route_default) + 1),
+    route = prompt_choice("结构提取策略（实现层）？", opts,
+                          default=max(1, opts.index(route_default) + 1),
                           ask=ask)
     tool_default = prefill.get("tool") or cfg.prototype_tool
     if tool_default not in TOOLS:

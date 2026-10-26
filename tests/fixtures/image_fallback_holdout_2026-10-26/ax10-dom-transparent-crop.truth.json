@@ -1,0 +1,39 @@
+{
+  "schema_version": "image-mvp-truth/1.0",
+  "sample_id": "AX10-DOM-TRANSPARENT-CROP",
+  "description": "Frozen A-010 screenshot used as an image fallback holdout. The image pipeline receives only the PNG.",
+  "critical_texts": [
+    "Overlay text",
+    "This canonical page verifies transparent overlay ownership and a cropped image whose source aspect ratio differs from its displayed box.",
+    "Both the overlay text and the visible crop must remain explainable in the generated SVG."
+  ],
+  "expected_asset_count": 1,
+  "asset_claim": "display-replacement-only",
+  "flow_claim": "candidate-fixed-coordinate",
+  "policy": {
+    "policy_id": "image-figma-mvp-product/1.0",
+    "frozen": true,
+    "visual_within30_min_pct": 90.0,
+    "require_size_match": true,
+    "critical_text_required": true,
+    "native_text_required": true,
+    "claimed_asset_replacement_required": true,
+    "original_asset_identity_required": false,
+    "adaptive_flow_required": false
+  },
+  "image_sha256": "f6153c9cbd34d01382224ead55adf1621b6b282f5c2a48cfc1ed5110d478c295",
+  "image_size": [
+    900,
+    700
+  ],
+  "capture_environment": {
+    "browser": "Chromium canonical fixture",
+    "viewport": [
+      900,
+      700
+    ],
+    "device_scale_factor": 1,
+    "locale": "en-US",
+    "timezone": "Asia/Shanghai"
+  }
+}

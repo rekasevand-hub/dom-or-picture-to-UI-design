@@ -588,6 +588,12 @@ class OwnedBatchCoordinatorTests(unittest.TestCase):
                 expected_created_nodes=1,
                 fingerprint="a" * 64,
             )
+            ledger.mark_inflight(job_id)
+            ledger.record_bridge_outcome(
+                job_id,
+                "committed",
+                {"status": "committed", "transactionId": job_id},
+            )
 
             plan = coordinator.plan_cleanup(job_id)
             self.assertTrue(plan["allowed"])
@@ -621,11 +627,42 @@ class OwnedBatchCoordinatorTests(unittest.TestCase):
                 expected_created_nodes=1,
                 fingerprint="a" * 64,
             )
+            ledger.mark_inflight(job_id)
+            ledger.record_bridge_outcome(
+                job_id,
+                "committed",
+                {"status": "committed", "transactionId": job_id},
+            )
 
             result = coordinator.cleanup_job(job_id)
 
             self.assertEqual(result.state, WriteJobState.RESUME_REQUIRED)
             self.assertEqual(result.cleanup_failed_count, 1)
+
+    def test_cleanup_of_unknown_job_blocks_before_dispatch(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            ledger = WriteJobLedger(Path(temp_dir) / "write-jobs.jsonl")
+            adapter = self._Adapter()
+            coordinator = OwnedBatchCoordinator(adapter, ledger)
+            job_id = build_job_namespace("adapter-client", "job-unknown")
+            ledger.begin_job(
+                job_id=job_id,
+                transaction_id=job_id,
+                client_id="adapter-client",
+                request_id="request",
+                expected_created_nodes=1,
+                fingerprint="a" * 64,
+            )
+            ledger.mark_inflight(job_id)
+            ledger.record_bridge_outcome(job_id, "unknown")
+
+            plan = coordinator.plan_cleanup(job_id)
+
+            self.assertFalse(plan["allowed"])
+            self.assertEqual(plan["reason"], "cleanup-requires-manual-review")
+            with self.assertRaises(ValueError):
+                coordinator.cleanup_job(job_id)
+            self.assertEqual(adapter.calls, [])
 
 
 if __name__ == "__main__":

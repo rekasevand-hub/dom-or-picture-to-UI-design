@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from dataclasses import asdict
 from typing import Any, Iterable, Iterator
 
+from src.app.services.rendering.adapter_base import paint_order
 from src.app.services.rendering.text_wrap import TextAcceptance
 from src.app.services.structure.asset_metadata import resolve_asset_identity
 from src.app.services.structure.font_provenance import evaluate_font_face
@@ -82,6 +83,7 @@ def accept_output(
         edit_probe=bundle.get("edit_probe"),
         asset_probe=bundle.get("asset_probe"),
         image_report=bundle.get("image_report"),
+        text_dimensions=bundle.get("text_dimensions"),
         policy=bundle.get("policy"),
     )
     text = _text_acceptance(
@@ -166,18 +168,41 @@ def _text_acceptance(
     if isinstance(value, TextAcceptance):
         return value.to_dict()
     if isinstance(value, dict):
-        return TextAcceptance(**{
-            key: str(value.get(key) or "not-evaluated")
-            for key in ("content", "linebreak", "box", "baseline", "glyph")
-        }).to_dict()
-    content = str((acceptance.get("checks", {}).get("content") or {}).get("status") or "not-evaluated")
-    geometry = str((acceptance.get("checks", {}).get("geometry") or {}).get("status") or "not-evaluated")
+        return TextAcceptance(
+            **{
+                key: str(value.get(key) or "not-evaluated")
+                for key in ("content", "linebreak", "box", "baseline", "glyph")
+            }
+        ).to_dict()
+    content = str(
+        (acceptance.get("checks", {}).get("content") or {}).get("status")
+        or "not-evaluated"
+    )
+    geometry = str(
+        (acceptance.get("checks", {}).get("geometry") or {}).get("status")
+        or "not-evaluated"
+    )
+    text_check = acceptance.get("checks", {}).get("text") or {}
+    text_dimensions = text_check.get("dimensions") or {}
+    linebreak = str(
+        (text_dimensions.get("linebreak") or {}).get("status") or "not-evaluated"
+    )
+    baseline = str(
+        (text_dimensions.get("baseline") or {}).get("status") or "not-evaluated"
+    )
+    glyph_data = text_dimensions.get("glyph") or {}
+    glyph = str(glyph_data.get("status") or "not-evaluated")
+    if (
+        glyph == "not-evaluated"
+        and str(glyph_data.get("policy_status") or "") == "explicit-not-evaluated"
+    ):
+        glyph = "not-required"
     return TextAcceptance(
         content="pass" if content == "pass" else "fail",
-        linebreak="not-evaluated",
+        linebreak=linebreak,
         box="pass" if geometry == "pass" else "fail",
-        baseline="not-evaluated",
-        glyph="not-evaluated",
+        baseline=baseline,
+        glyph=glyph,
     ).to_dict()
 
 
@@ -221,6 +246,91 @@ def _asset_acceptance(
         if _element_type(element) not in {"image", "avatar"}:
             continue
         identity = element.get("assetIdentity") or {}
+        fusion = element.get("sourceResolution")
+        if isinstance(fusion, dict):
+            record = identity.get("asset_record") or {}
+            use = record.get("use") or {}
+            source_kind = str(use.get("source_kind") or "unknown")
+            requires_original = source_kind != "icon-crop"
+            fusion_status = str(fusion.get("status") or "unknown")
+            identity_selection = fusion.get("identity") or {}
+            display_selection = fusion.get("display") or {}
+            display_kind = str(display_selection.get("selected") or "missing")
+            display_generated = bool(display_selection.get("generated"))
+            generated_icon_scoped = (
+                not requires_original
+                and fusion_status == "generated-icon-display"
+                and display_generated
+                and display_kind != "missing"
+            )
+            identities.append(
+                {
+                    "element_id": element.get("id"),
+                    "status": (
+                        "not-required"
+                        if generated_icon_scoped
+                        else "pass"
+                        if fusion_status == "resolved-source-and-capture"
+                        else "partial"
+                        if fusion_status
+                        in {
+                            "partial-unresolved-identity",
+                            "partial-generated-display",
+                        }
+                        else "fail"
+                    ),
+                    "source_kind": source_kind,
+                    "requires_original": requires_original,
+                    "source_status": identity_selection.get("selected"),
+                    "source_is_original": bool(identity_selection.get("original")),
+                    "display_payload_status": (
+                        "missing" if display_kind == "missing" else "available"
+                    ),
+                    "display_payload_kind": display_kind,
+                    "display_payload_original": bool(display_selection.get("original")),
+                    "display_payload_reference_only": bool(
+                        display_selection.get("reference_only")
+                    ),
+                    "replacement_allowed": bool(identity_selection.get("replaceable")),
+                    "fusion_status": fusion_status,
+                    "display_selected": display_kind,
+                    "display_generated": display_generated,
+                    "display_original": bool(display_selection.get("original")),
+                    "display_fallback_used": bool(
+                        display_selection.get("fallback_used")
+                    ),
+                    "missing": display_kind == "missing",
+                }
+            )
+            continue
+        record = identity.get("asset_record")
+        if isinstance(record, dict):
+            source = record.get("source_identity") or {}
+            display = (
+                element.get("displayPayload") or record.get("display_payload") or {}
+            )
+            replacement = element.get("replacement") or record.get("replacement") or {}
+            missing = record.get("missing") or {}
+            identities.append(
+                {
+                    "element_id": element.get("id"),
+                    "status": source.get("status"),
+                    "source_status": source.get("status"),
+                    "source_is_original": source.get("status") == "verified-original",
+                    "display_payload_status": display.get("status"),
+                    "display_payload_kind": display.get("kind"),
+                    "display_payload_original": bool(display.get("original")),
+                    "display_payload_reference_only": bool(
+                        display.get("reference_only")
+                    ),
+                    "replacement_allowed": bool(replacement.get("allowed")),
+                    "replacement_mode": replacement.get("mode"),
+                    "replacement_runtime": replacement.get("figma_runtime"),
+                    "missing": bool(missing.get("is_missing")),
+                    "missing_outcome": missing.get("outcome"),
+                }
+            )
+            continue
         payload_sha = identity.get("payload_sha256") or identity.get("content_sha256")
         if not payload_sha and element.get("imageBase64"):
             payload_sha = _base64_payload_sha(element.get("imageBase64"))
@@ -236,10 +346,27 @@ def _asset_acceptance(
         )
         identities.append({"element_id": element.get("id"), **resolved.to_dict()})
     if not identities:
-        overall = str((acceptance.get("dimensions", {}).get("asset") or {}).get("status") or "not-required")
-    elif any(item["status"].startswith("blocked-") for item in identities):
+        overall = str(
+            (acceptance.get("dimensions", {}).get("asset") or {}).get("status")
+            or "not-required"
+        )
+    elif any(
+        str(item.get("status") or "").startswith("blocked-")
+        or item.get("status") == "fail"
+        or bool(item.get("missing"))
+        for item in identities
+    ):
         overall = "fail"
-    elif any(item["status"] == "reference-only" for item in identities):
+    elif any(item.get("status") == "partial" for item in identities):
+        overall = "partial"
+    elif any(
+        (
+            bool(item.get("requires_original", True))
+            and item.get("status") in {"reference-only", "unavailable"}
+        )
+        or item.get("display_payload_status") != "available"
+        for item in identities
+    ):
         overall = "partial"
     else:
         overall = "pass"
@@ -270,6 +397,7 @@ def evaluate_figma_acceptance(
     edit_probe: dict[str, Any] | None = None,
     asset_probe: dict[str, Any] | None = None,
     image_report: dict[str, Any] | None = None,
+    text_dimensions: dict[str, Any] | None = None,
     policy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Evaluate one Figma sample without allowing one dimension to mask another."""
@@ -368,6 +496,7 @@ def evaluate_figma_acceptance(
             "native_text": native_text,
             "assets": assets,
             "visual": visual,
+            "text": text_dimensions,
         },
         "dimensions": dimensions,
         "acceptance_status": acceptance_status,
@@ -386,14 +515,14 @@ def _evaluate_content(
     nodes: list[dict[str, Any]],
 ) -> dict[str, Any]:
     design_texts = [
-        _normalize_text(item.get("text"))
+        _content_key(item.get("text"))
         for item in _design_elements(design)
-        if _element_type(item) == "text" and _normalize_text(item.get("text"))
+        if _content_key(item.get("text"))
     ]
     truth_texts = [
-        _normalize_text(item)
+        _content_key(item)
         for item in (truth.get("expected_texts") or [])
-        if _normalize_text(item)
+        if _content_key(item)
     ]
     expected_counts = Counter(design_texts)
     for text in truth_texts:
@@ -401,18 +530,18 @@ def _evaluate_content(
             expected_counts[text] = 1
     expected_texts = list(expected_counts.elements())
     actual_entries = [
-        (_normalize_text(node.get("characters")), node)
+        (_content_key(node.get("characters")), node)
         for node in nodes
-        if node.get("type") == "TEXT" and _normalize_text(node.get("characters"))
+        if node.get("type") == "TEXT" and _content_key(node.get("characters"))
     ]
     expected_counts = Counter(expected_texts)
     actual_counts = Counter(text for text, _node in actual_entries)
     missing_texts = list((expected_counts - actual_counts).elements())
     unexpected_texts = list((actual_counts - expected_counts).elements())
     forbidden_present = [
-        _normalize_text(item)
+        _content_key(item)
         for item in (truth.get("expected_absent_texts") or [])
-        if any(_normalize_text(item) in text for text, _node in actual_entries)
+        if any(_content_key(item) in text for text, _node in actual_entries)
     ]
     matched_count = sum((expected_counts & actual_counts).values())
     coverage = matched_count / len(expected_texts) if expected_texts else 1.0
@@ -466,7 +595,12 @@ def _evaluate_geometry(
     candidates = nodes[1:]
     used: set[int] = set()
     matched_pairs: list[tuple[int, dict[str, Any]]] = []
-    for element_index, element in enumerate(_design_elements(design)):
+    elements = _design_elements(design)
+    paint_ranks = {
+        id(element): rank
+        for rank, (_index, element) in enumerate(paint_order(elements))
+    }
+    for element_index, element in enumerate(elements):
         kind = _element_type(element)
         if kind not in {"text", "container", "image", "rectangle", "ellipse"}:
             continue
@@ -497,7 +631,22 @@ def _evaluate_geometry(
         row["actual"] = actual_box
         row["node_id"] = candidate.get("id")
         if kind == "text":
-            x_delta = abs(actual_box["x"] - expected_box["x"])
+            horizontal_alignment = str(
+                (element.get("style") or {}).get("textAlign") or "left"
+            ).lower()
+            if horizontal_alignment == "center":
+                x_delta = abs(
+                    (actual_box["x"] + actual_box["width"] / 2)
+                    - (expected_box["x"] + expected_box["width"] / 2)
+                )
+            elif horizontal_alignment in {"right", "end"}:
+                x_delta = abs(
+                    (actual_box["x"] + actual_box["width"])
+                    - (expected_box["x"] + expected_box["width"])
+                )
+            else:
+                horizontal_alignment = "left"
+                x_delta = abs(actual_box["x"] - expected_box["x"])
             y_delta = abs(actual_box["y"] - expected_box["y"])
             y_tolerance = _text_vertical_tolerance(
                 element,
@@ -519,6 +668,7 @@ def _evaluate_geometry(
             row.update(
                 {
                     "position_delta_px": {"x": x_delta, "y": y_delta},
+                    "horizontal_alignment": horizontal_alignment,
                     "vertical_tolerance_px": y_tolerance,
                     "contained": contained,
                     "passed": (
@@ -538,6 +688,7 @@ def _evaluate_geometry(
         rows.append(row)
 
     node_positions = {id(node): index for index, node in enumerate(nodes)}
+    parent_by_node = _node_parent_map(nodes[0])
     semantic_rows = rows[1:]
     matched_count = sum(row["node_id"] is not None for row in semantic_rows)
     node_count = {
@@ -552,11 +703,17 @@ def _evaluate_geometry(
     }
     checked_order_pairs = 0
     order_inversions = []
-    for left_index in range(len(matched_pairs)):
-        left_element, left_node = matched_pairs[left_index]
+    ordered_pairs = sorted(
+        matched_pairs,
+        key=lambda pair: paint_ranks[id(elements[pair[0]])],
+    )
+    for left_index in range(len(ordered_pairs)):
+        left_element_index, left_node = ordered_pairs[left_index]
         left_box = _global_box(left_node, root_origin)
-        for right_index in range(left_index + 1, len(matched_pairs)):
-            right_element, right_node = matched_pairs[right_index]
+        for right_index in range(left_index + 1, len(ordered_pairs)):
+            right_element_index, right_node = ordered_pairs[right_index]
+            if parent_by_node.get(id(left_node)) != parent_by_node.get(id(right_node)):
+                continue
             right_box = _global_box(right_node, root_origin)
             if not _boxes_overlap(left_box, right_box):
                 continue
@@ -564,9 +721,9 @@ def _evaluate_geometry(
             if node_positions[id(left_node)] > node_positions[id(right_node)]:
                 order_inversions.append(
                     {
-                        "earlier_element_index": left_element,
+                        "earlier_element_index": left_element_index,
                         "earlier_node_id": left_node.get("id"),
-                        "later_element_index": right_element,
+                        "later_element_index": right_element_index,
                         "later_node_id": right_node.get("id"),
                     }
                 )
@@ -574,9 +731,9 @@ def _evaluate_geometry(
         "status": "pass" if not order_inversions else "fail",
         "scope": "overlapping-semantic-pairs-only",
         "checked_pair_count": checked_order_pairs,
-        "expected_node_ids": [node.get("id") for _element_index, node in matched_pairs],
+        "expected_node_ids": [node.get("id") for _element_index, node in ordered_pairs],
         "readback_positions": [
-            node_positions[id(node)] for _element_index, node in matched_pairs
+            node_positions[id(node)] for _element_index, node in ordered_pairs
         ],
         "inversions": order_inversions,
     }
@@ -762,8 +919,7 @@ def _evaluate_native_text(
 ) -> dict[str, Any]:
     required = bool(truth.get("native_text_required"))
     expected_count = sum(
-        _element_type(item) == "text" and bool(_normalize_text(item.get("text")))
-        for item in _design_elements(design)
+        bool(_normalize_text(item.get("text"))) for item in _design_elements(design)
     )
     native_nodes = [
         node
@@ -1052,6 +1208,19 @@ def _iter_nodes(root: dict[str, Any]) -> Iterator[dict[str, Any]]:
                 yield from _iter_nodes(child)
 
 
+def _node_parent_map(root: dict[str, Any]) -> dict[int, str | None]:
+    parents: dict[int, str | None] = {}
+
+    def visit(node: dict[str, Any], parent_id: str | None) -> None:
+        parents[id(node)] = parent_id
+        for child in node.get("children") or []:
+            if isinstance(child, dict):
+                visit(child, str(node.get("id") or ""))
+
+    visit(root, None)
+    return parents
+
+
 def _root_origin(root: dict[str, Any]) -> tuple[float, float]:
     box = _global_box(root, (0.0, 0.0))
     return box["x"], box["y"]
@@ -1188,7 +1357,7 @@ def _match_element_candidate(
         if kind == "text":
             if node.get("type") != "TEXT":
                 continue
-            if _normalize_text(node.get("characters")) != expected_text:
+            if _content_key(node.get("characters")) != _content_key(expected_text):
                 continue
         elif kind == "container":
             if node.get("type") not in {
@@ -1198,7 +1367,20 @@ def _match_element_candidate(
             } or _is_image_node(node):
                 continue
         elif kind == "image":
-            if not _is_image_node(node):
+            missing_display = (
+                str(
+                    ((element.get("sourceResolution") or {}).get("display") or {}).get(
+                        "selected"
+                    )
+                    or ""
+                )
+                == "missing"
+            )
+            if not _is_image_node(node) and not (
+                missing_display
+                and node.get("type") == "RECTANGLE"
+                and not _is_image_node(node)
+            ):
                 continue
         elif kind == "rectangle":
             if node.get("type") != "RECTANGLE" or _is_image_node(node):
@@ -1229,7 +1411,7 @@ def _nearest_text_match(
     expected = _numeric_box(element) or {"x": 0.0, "y": 0.0}
     choices = []
     for index, node in enumerate(nodes):
-        if index in used or _normalize_text(node.get("characters")) != text:
+        if index in used or _content_key(node.get("characters")) != _content_key(text):
             continue
         box = _global_box(node, root_origin)
         distance = abs(box["x"] - expected["x"]) + abs(box["y"] - expected["y"])
@@ -1265,6 +1447,11 @@ def _nearest_image_match(
 
 def _normalize_text(value: Any) -> str:
     return " ".join(str(value or "").split())
+
+
+def _content_key(value: Any) -> str:
+    """Ignore layout-inserted whitespace while preserving visible characters."""
+    return re.sub(r"\s+", "", str(value or ""))
 
 
 def _font_families(value: str) -> list[str]:

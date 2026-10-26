@@ -1,4 +1,5 @@
 """P0 pure contracts for v2 delivery, coverage, acceptance and replay."""
+
 from __future__ import annotations
 
 from typing import Literal
@@ -43,6 +44,14 @@ from src.app.services.contracts.migration import (
     canonical_hash,
     canonical_json,
     migrate_runtime_ir,
+)
+from src.app.services.contracts.output_ir import (
+    OUTPUT_CAPABILITY_VERSION,
+    OUTPUT_IR_SCHEMA_VERSION,
+    build_output_ir,
+    output_capabilities,
+    project_for_output,
+    validate_output_ir,
 )
 from src.app.services.contracts.models import (
     AcceptanceCheck,
@@ -105,6 +114,8 @@ __all__ = [
     "IR_SCHEMA_VERSIONS",
     "OCR_PROMOTION_GUARD",
     "ORDERED_AUDIT_ONLY",
+    "OUTPUT_CAPABILITY_VERSION",
+    "OUTPUT_IR_SCHEMA_VERSION",
     "PRODUCTION_PREREQUISITES",
     "RUNTIME_IR_SCHEMA_ID",
     "SUPPORTED_RUNTIME_IR_VERSIONS",
@@ -151,6 +162,7 @@ __all__ = [
     "audit_replay",
     "authority_for_ocr",
     "build_audit_bundle",
+    "build_output_ir",
     "build_page_coverage",
     "canonical_hash",
     "canonical_json",
@@ -162,6 +174,8 @@ __all__ = [
     "jsonable",
     "materialize_replay",
     "migrate_runtime_ir",
+    "output_capabilities",
+    "project_for_output",
     "raise_for_issues",
     "recapture_reconcile",
     "rect_union_area",
@@ -170,5 +184,6 @@ __all__ = [
     "text_decision_from_ocr",
     "validate_audit_bundle",
     "validate_layers",
+    "validate_output_ir",
     "validate_runtime_ir",
 ]

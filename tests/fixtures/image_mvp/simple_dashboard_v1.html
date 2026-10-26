@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>Image MVP Simple Dashboard</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; width: 1200px; height: 800px; }
+    body {
+      color: #172033;
+      background: #eef2f7;
+      font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
+    }
+    header {
+      height: 64px;
+      display: flex;
+      align-items: center;
+      gap: 28px;
+      padding: 0 40px;
+      color: #f8fafc;
+      background: #26364f;
+    }
+    .brand { font-size: 20px; font-weight: 700; }
+    nav { display: flex; gap: 24px; font-size: 14px; color: #cfd8e6; }
+    main { padding: 34px 40px 0; }
+    .heading-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      margin-bottom: 24px;
+    }
+    h1 { margin: 0 0 8px; font-size: 28px; }
+    .subtitle { margin: 0; color: #5d6b80; font-size: 15px; }
+    .primary {
+      width: 132px;
+      height: 42px;
+      border: 0;
+      border-radius: 8px;
+      color: #ffffff;
+      background: #2f6fed;
+      font-size: 15px;
+      font-weight: 600;
+    }
+    .stats { display: flex; gap: 18px; margin-bottom: 22px; }
+    .stat {
+      width: 360px;
+      height: 116px;
+      padding: 22px 24px;
+      border: 1px solid #dbe3ee;
+      border-radius: 10px;
+      background: #ffffff;
+    }
+    .stat strong { display: block; font-size: 28px; margin-bottom: 8px; }
+    .stat span { color: #64748b; font-size: 14px; }
+    .panel {
+      display: flex;
+      gap: 24px;
+      width: 1120px;
+      height: 270px;
+      padding: 24px;
+      border: 1px solid #dbe3ee;
+      border-radius: 10px;
+      background: #ffffff;
+    }
+    .thumb {
+      width: 260px;
+      height: 220px;
+      border-radius: 8px;
+      object-fit: cover;
+    }
+    .panel-copy { padding-top: 8px; }
+    .panel-copy h2 { margin: 0 0 12px; font-size: 22px; }
+    .panel-copy p {
+      margin: 0 0 18px;
+      width: 540px;
+      color: #526071;
+      font-size: 15px;
+      line-height: 24px;
+    }
+    .secondary {
+      width: 118px;
+      height: 38px;
+      border: 1px solid #2f6fed;
+      border-radius: 8px;
+      color: #2f6fed;
+      background: #ffffff;
+      font-size: 14px;
+      font-weight: 600;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">Northstar Admin</div>
+    <nav><span>Overview</span><span>Orders</span><span>Team</span></nav>
+  </header>
+  <main>
+    <div class="heading-row">
+      <div>
+        <h1>Image import workspace</h1>
+        <p class="subtitle">Review today's activity and continue the screenshot import.</p>
+      </div>
+      <button class="primary">Start import</button>
+    </div>
+    <section class="stats">
+      <div class="stat"><strong>128</strong><span>Pending orders</span></div>
+      <div class="stat"><strong>24</strong><span>New customers today</span></div>
+      <div class="stat"><strong>96%</strong><span>Fulfillment completion</span></div>
+    </section>
+    <section class="panel">
+      <img class="thumb" alt="Abstract product preview" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='520' height='440'%3E%3Crect width='520' height='440' fill='%232f6fed'/%3E%3Ccircle cx='390' cy='110' r='88' fill='%23f2b84b'/%3E%3Cpath d='M0 360 L180 190 L320 310 L520 130 L520 440 L0 440 Z' fill='%235dd3b6'/%3E%3C/svg%3E">
+      <div class="panel-copy">
+        <h2>Latest imported layout</h2>
+        <p>Editable text, sampled surfaces and reference-only image crops stay visible in the review report.</p>
+        <button class="secondary">View details</button>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

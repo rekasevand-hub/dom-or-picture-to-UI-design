@@ -19,6 +19,8 @@ image/avatar 元素会按 SoM bbox 从整页截图裁真实像素回填（imageB
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import logging
 
 from src.app.services.som.design_crops import (
@@ -29,6 +31,11 @@ from src.app.services.som.design_crops import (
 )
 from src.app.services.rendering.layout_plan import build_layout_plan
 from src.app.services.structure.site_profiles import load_profile, rule as _rule
+from src.app.services.structure.asset_metadata import (
+    attach_display_payload,
+    build_asset_record,
+)
+from src.app.services.structure.asset_fusion import fuse_asset_record
 from src.app.utils.style_utils import css_color_to_hex
 
 logger = logging.getLogger(__name__)
@@ -111,6 +118,10 @@ def _carry_asset_metadata(out: dict, item: dict) -> None:
         out["assetIdentity"] = dict(item["assetIdentity"])
     if isinstance(item.get("sourceCrop"), dict):
         out["sourceCrop"] = dict(item["sourceCrop"])
+    if isinstance(item.get("displayPayload"), dict):
+        out["displayPayload"] = dict(item["displayPayload"])
+    if isinstance(item.get("replacement"), dict):
+        out["replacement"] = dict(item["replacement"])
 
 
 def _carry_name(out: dict, item: dict) -> None:
@@ -412,14 +423,29 @@ def build_direct_design(som_json: dict, profile=None, dom_nodes=None) -> dict:
     capture = provenance.get("capture") or {}
     pixel_ratio = max(1, int(capture.get("device_scale_factor") or 1))
     viewport = capture.get("viewport") or {}
-    logical_width = int(viewport.get("width") or (int(size[0]) // pixel_ratio))
-    logical_height = int(viewport.get("height") or (int(size[1]) // pixel_ratio))
+    canvas_size = capture.get("canvas_size")
+    if isinstance(canvas_size, (list, tuple)) and len(canvas_size) >= 2:
+        logical_width = max(1, int(canvas_size[0]) // pixel_ratio)
+        logical_height = max(1, int(canvas_size[1]) // pixel_ratio)
+    else:
+        logical_width = int(viewport.get("width") or (int(size[0]) // pixel_ratio))
+        logical_height = int(viewport.get("height") or (int(size[1]) // pixel_ratio))
     canvas = {
         "width": logical_width,
         "height": logical_height,
         "background": _page_background(dom_nodes),
     }
     image_path = som_json.get("image")
+    screenshot_sha256 = None
+    if image_path:
+        try:
+            digest = hashlib.sha256()
+            with open(image_path, "rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            screenshot_sha256 = digest.hexdigest()
+        except OSError:
+            screenshot_sha256 = None
     elements: list[dict] = []
     backdrops: list[dict] = []  # 浮层像素底，渲染端在同 z 时最后画（见文末）
     skipped_containers = 0  # 透明且无边框（凭空造不出框）的容器
@@ -611,6 +637,18 @@ def build_direct_design(som_json: dict, profile=None, dom_nodes=None) -> dict:
         # Axure 出口的落字对齐输入（见 rendering/axure_adapter）：第一行行框 + 行数
         _carry_box(element, e, "textEmBox")
         _carry_int(element, e, "textEmLines")
+        baseline = e.get("textBaseline")
+        dom_index = e.get("domIndex")
+        if (
+            not isinstance(baseline, dict)
+            and isinstance(dom_nodes, list)
+            and isinstance(dom_index, int)
+            and 0 <= dom_index < len(dom_nodes)
+            and isinstance(dom_nodes[dom_index], dict)
+        ):
+            baseline = dom_nodes[dom_index].get("textBaseline")
+        if isinstance(baseline, dict):
+            element["textBaseline"] = dict(baseline)
         _carry_text_lines(element, e)
         _carry_asset_metadata(element, e)
         # 裁剪：文字必须靠 clipPath（字形长度 ≠ 盒子），先看裁剪后的可见部分是不是
@@ -637,20 +675,77 @@ def build_direct_design(som_json: dict, profile=None, dom_nodes=None) -> dict:
                 clamped_clip += 1 if was_clamped else 0
         # 图标字形叶子（iconCrop）与 image/avatar 同一条回填链：DOM 只有盒子和字形码位，
         # 真实像素只能从原截图裁（antd 图标字体在顶层栏/侧栏/分页上大量使用）。
-        if (etype in ("image", "avatar") or e.get("iconCrop")) and image_path:
-            b64 = _crop_image_b64(
-                image_path,
-                x,
-                y,
-                w,
-                h,
-                canvas["width"],
-                canvas["height"],
-                pixel_ratio=pixel_ratio,
-            )
-            if b64:
-                element["imageBase64"] = b64
-                image_backfilled += 1
+        if etype in ("image", "avatar") or e.get("iconCrop"):
+            b64 = None
+            if image_path:
+                b64 = _crop_image_b64(
+                    image_path,
+                    x,
+                    y,
+                    w,
+                    h,
+                    canvas["width"],
+                    canvas["height"],
+                    pixel_ratio=pixel_ratio,
+                )
+                if b64:
+                    element["imageBase64"] = b64
+                    asset_identity = element.get("assetIdentity") or {}
+                    record = asset_identity.get("asset_record")
+                    if isinstance(record, dict):
+                        try:
+                            payload_sha256 = hashlib.sha256(
+                                base64.b64decode(b64)
+                            ).hexdigest()
+                        except (ValueError, TypeError):
+                            payload_sha256 = None
+                        enriched = attach_display_payload(
+                            record,
+                            payload_sha256=payload_sha256,
+                            screenshot_sha256=screenshot_sha256,
+                            display_box=(x, y, w, h),
+                        )
+                        asset_identity["asset_record"] = enriched
+                        element["assetIdentity"] = asset_identity
+                        element["displayPayload"] = dict(enriched["display_payload"])
+                        element["replacement"] = dict(enriched["replacement"])
+                    image_backfilled += 1
+            asset_identity = element.get("assetIdentity") or {}
+            record = asset_identity.get("asset_record")
+            if not isinstance(record, dict):
+                record = build_asset_record(
+                    sample_id="dom",
+                    node_index=int(e.get("domIndex") or len(elements)),
+                    source_kind=("icon-crop" if e.get("iconCrop") else "image"),
+                    source=None,
+                    natural_size=(w, h),
+                    display_box=(x, y, w, h),
+                )
+                if b64:
+                    try:
+                        payload_sha256 = hashlib.sha256(
+                            base64.b64decode(b64)
+                        ).hexdigest()
+                    except (ValueError, TypeError):
+                        payload_sha256 = None
+                    record = attach_display_payload(
+                        record,
+                        payload_sha256=payload_sha256,
+                        screenshot_sha256=screenshot_sha256,
+                        display_box=(x, y, w, h),
+                    )
+                asset_identity["asset_record"] = record
+                element["assetIdentity"] = asset_identity
+                element["displayPayload"] = dict(record["display_payload"])
+                element["replacement"] = dict(record["replacement"])
+            if isinstance(record, dict):
+                generated_candidates = e.get("generatedAssetCandidates")
+                if not isinstance(generated_candidates, list):
+                    generated_candidates = []
+                element["sourceResolution"] = fuse_asset_record(
+                    record,
+                    generated_candidates=generated_candidates,
+                )
         elements.append(element)
 
     # 冗余图层过滤：被浮层像素底完全盖住的图元（同框白底容器、表头条、列内

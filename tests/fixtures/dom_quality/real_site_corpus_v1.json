@@ -1,0 +1,288 @@
+{
+  "corpus_id": "dom-quality-real-sites/1.0",
+  "corpus_sha256": "edec396946c03755fabbdea70e6ab210d5a0516b3eef7034c218386f8e45f4ef",
+  "environment": {
+    "browser_version": "151.0.7922.34",
+    "capture_contract": "capture_page_with_fallback+dom-quality-corpus/1.0",
+    "device_scale_factor": 1,
+    "engine": "chromium",
+    "executable_path": "C:\\Users\\lzq\\AppData\\Local\\ms-playwright\\chromium-1234\\chrome-win64\\chrome.exe",
+    "executable_sha256": "409805a16d6416087e6b2f778df1cf8f7bbb267d6b99f6b5bb0a618eace234f2",
+    "font_files": [
+      {
+        "name": "segoeui.ttf",
+        "sha256": "704eada12961a27fd271f7d3b09e2066520e758390c1776744eff430fee30f6e",
+        "size": 960076,
+        "status": "present"
+      },
+      {
+        "name": "msyh.ttc",
+        "sha256": "d79c55e68b1131eea0cc1c47be4f572d964f28c682e143db2ad09c1e4cb07a3f",
+        "size": 19704352,
+        "status": "present"
+      },
+      {
+        "name": "arial.ttf",
+        "sha256": "b3658eadae55e682b5f69eb64c439c1ecc8f196c0bb8d4756d145d13bc86476a",
+        "size": 1045720,
+        "status": "present"
+      },
+      {
+        "name": "simhei.ttf",
+        "sha256": "9b1959db3b3abeb7efdaec26edf7dfe871a6039de8d614af7248575207be629e",
+        "size": 9745792,
+        "status": "present"
+      }
+    ],
+    "headless": true,
+    "locale": "zh-CN",
+    "machine": "AMD64",
+    "os": "Windows-11-10.0.26300-SP0",
+    "os_version": "10.0.26300",
+    "python_version": "3.12.0",
+    "schema_version": "dom-quality-environment/1.0",
+    "timezone": "Asia/Shanghai",
+    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/151.0.7922.34 Safari/537.36",
+    "viewport": {
+      "height": 900,
+      "width": 1440
+    }
+  },
+  "excluded_sites": [
+    {
+      "reason": "Prior observation produced state-unstable / inconclusive and must not enter the required denominator.",
+      "site": "W3Schools iframe",
+      "status": "excluded-state-unstable",
+      "url": "https://www.w3schools.com/html/html_iframe.asp"
+    }
+  ],
+  "frozen_at": "2026-10-25T02:42:07.442021+00:00",
+  "network": {
+    "allow_real_session": false,
+    "asset_policy_during_corpus_capture": "reference-only",
+    "block_cross_origin_frame_documents": false,
+    "mode": "public-network",
+    "network_idle_timeout_ms": 30000
+  },
+  "purpose": "Freeze representative real DOM states before quality measurement.",
+  "samples": [
+    {
+      "drift": {
+        "node_count_ratio": 0.2,
+        "text_count_ratio": 0.2
+      },
+      "expected_final_url": "https://react.dev/",
+      "expected_page_state": "content",
+      "fingerprint": {
+        "browser_engine": "chromium",
+        "capture_profile": "rendered-frame-state-strict/1.0",
+        "dom_sha256": "ac99866e8f97f964a91e977ac988d7cf1cabbb4229d48642139e0943e5e91f68",
+        "frame_count": 0,
+        "navigation_status": "ok",
+        "node_count": 1415,
+        "page_state_kind": "content",
+        "page_state_sha256": "a64d8abbaaa18b05b6a47f5695b9d5c7e01d9e6db15e388ae99364a2f885b7cb",
+        "screenshot_sha256": "7bbb30ad375c533c3f50f2253a7d1ce2c9f5900b8bd369eb6c7ea3ec6957e9c3",
+        "stable": true,
+        "state_signature_sha256": "2fb1b0ff641bd5e3bad28139d923d61c7e8fb52bfcc4887b1b6431409227d678",
+        "structure_sha256": "4ca20d29eb37be81dc8dc57fd11599e20f8cdc0bee947329bd2378b03003f28b",
+        "text_count": 529,
+        "text_sha256": "28b648ccf415e8d80727362f6ab8eecf1d99037f414c72954de2d22d38010e7b"
+      },
+      "forbidden_text": [
+        "Access Denied",
+        "403 Forbidden",
+        "Just a moment..."
+      ],
+      "gate_role": "required",
+      "known_exclusions": [
+        "Linked documentation pages are outside this saved state.",
+        "Search overlays and interactive code previews are not opened.",
+        "Per-glyph font identity remains D-004 scope."
+      ],
+      "required_markers": {
+        "dom_nodes": 500,
+        "img": 5,
+        "svg": 20,
+        "text_nodes": 200
+      },
+      "required_text": [
+        "React",
+        "The library for web and native user interfaces",
+        "Learn React"
+      ],
+      "sample_id": "DQ-R01",
+      "scenario": "hydrated-documentation",
+      "site": "React",
+      "state": {
+        "capture_attempts": 2,
+        "name": "homepage-top",
+        "scroll_x": 0,
+        "scroll_y": 0,
+        "stable_window_ms": 900,
+        "wait_fonts": true,
+        "wait_until": "networkidle"
+      },
+      "url": "https://react.dev/"
+    },
+    {
+      "drift": {
+        "node_count_ratio": 0.15,
+        "text_count_ratio": 0.15
+      },
+      "expected_final_url": "https://www.dushu.com/",
+      "expected_page_state": "content",
+      "fingerprint": {
+        "browser_engine": "chromium",
+        "capture_profile": "rendered-frame-state-strict/1.0",
+        "dom_sha256": "724aeb93771dc173d4cd8134879fd46fe1cf3a53d2b9b14541f4b35372451bbd",
+        "frame_count": 0,
+        "navigation_status": "ok",
+        "node_count": 487,
+        "page_state_kind": "content",
+        "page_state_sha256": "8562947b38a5bfe0640a4c2b52e0d6e2c4f490e06cf750bad243158e0868bd3c",
+        "screenshot_sha256": "2f51949d84d0e88e13c5d7817703771afcaad83c559e7a03bebce401128b2f8c",
+        "stable": true,
+        "state_signature_sha256": "404ae7baaf6f5c343fb2e73aa00a28abd2c1bfc41b2f1bc02ff737e59339c06d",
+        "structure_sha256": "745c08b277312c6c5e8c8035fe932911f817f12c4e041beb7408f68176d1e04d",
+        "text_count": 165,
+        "text_sha256": "eb299d16b0f8f1692ebf5eab4795b227031da92f1af7a1b9e123f6265ac8d7ff"
+      },
+      "forbidden_text": [
+        "Access Denied",
+        "403 Forbidden",
+        "Just a moment..."
+      ],
+      "gate_role": "required",
+      "known_exclusions": [
+        "Carousel frames, account pages and search results are not included.",
+        "Remote asset bytes remain reference-only at corpus freeze time.",
+        "Ad and recommendation content may change without changing the saved state definition."
+      ],
+      "required_markers": {
+        "dom_nodes": 300,
+        "img": 20,
+        "text_nodes": 100
+      },
+      "required_text": [
+        "读书好，好读书，读好书！",
+        "在线读书",
+        "出版图书"
+      ],
+      "sample_id": "DQ-R02",
+      "scenario": "dense-grid-and-assets",
+      "site": "Dushu",
+      "state": {
+        "capture_attempts": 2,
+        "name": "homepage-top",
+        "scroll_x": 0,
+        "scroll_y": 0,
+        "stable_window_ms": 900,
+        "wait_fonts": true,
+        "wait_until": "networkidle"
+      },
+      "url": "https://www.dushu.com/"
+    },
+    {
+      "drift": {
+        "node_count_ratio": 0.15,
+        "text_count_ratio": 0.15
+      },
+      "expected_final_url": "https://shoelace.style/",
+      "expected_page_state": "content",
+      "fingerprint": {
+        "browser_engine": "chromium",
+        "capture_profile": "rendered-frame-state-strict/1.0",
+        "dom_sha256": "73ed52d84f1342246645b27946afbf4d8800b8a37855f719cf56c999cb63b4e4",
+        "frame_count": 0,
+        "navigation_status": "ok",
+        "node_count": 457,
+        "page_state_kind": "content",
+        "page_state_sha256": "71f40575db5f7cc40fe4bed3290581946ee10c2ccba5379363863de452e442ad",
+        "screenshot_sha256": "df8787f89e3a3551a5de3a94d785c049bd1ebf4647d9a11321de7deae13086f5",
+        "stable": true,
+        "state_signature_sha256": "874a93768f5af77a078815da1e31d379841ddc4250fce4006f69a6ba199b78eb",
+        "structure_sha256": "dbce7f693a83ed86c7ff5ca9ec163d203e6f1ed4930ceedea0c18525dcf43c40",
+        "text_count": 220,
+        "text_sha256": "4619801d0e6b27f019ccb0c4465b5d3eaac063bacea30df69645a73cfb8d27c4"
+      },
+      "forbidden_text": [
+        "Access Denied",
+        "403 Forbidden",
+        "Just a moment..."
+      ],
+      "gate_role": "required",
+      "known_exclusions": [
+        "Closed shadow roots remain unobservable.",
+        "Component demos reachable through navigation are outside this state.",
+        "The cross-browser Shoelace difference remains a structured observation, not a pass."
+      ],
+      "required_markers": {
+        "dom_nodes": 300,
+        "shadow": 10,
+        "text_nodes": 100
+      },
+      "required_text": [
+        "Shoelace",
+        "web components",
+        "Web Awesome"
+      ],
+      "sample_id": "DQ-R03",
+      "scenario": "open-shadow-web-components",
+      "site": "Shoelace",
+      "state": {
+        "capture_attempts": 2,
+        "name": "homepage-top",
+        "scroll_x": 0,
+        "scroll_y": 0,
+        "stable_window_ms": 900,
+        "wait_fonts": true,
+        "wait_until": "networkidle"
+      },
+      "url": "https://shoelace.style/"
+    }
+  ],
+  "schema_version": "dom-quality-real-site-corpus/1.0",
+  "status": "frozen",
+  "thresholds": {
+    "assets": {
+      "missing_asset_outcome": "partial-not-pass",
+      "replacement_probe_rate": 1.0,
+      "required_original_identity_rate": 1.0
+    },
+    "composite_score_allowed": false,
+    "content": {
+      "forbidden_text_match_rate": 0.0,
+      "required_page_state": "content",
+      "required_text_match_rate": 1.0
+    },
+    "edit": {
+      "required_native_text_rate": 1.0
+    },
+    "layout": {
+      "l1_pass_required": true,
+      "l2_required_mutation_rate": 1.0,
+      "l3_required_mutation_rate": 0.9
+    },
+    "structure": {
+      "geometry_tolerance_px": 2.0,
+      "node_count_drift_ratio": 0.2,
+      "required_object_match_rate": 1.0,
+      "text_count_drift_ratio": 0.2
+    },
+    "text": {
+      "baseline_tolerance_px": 1.0,
+      "box_tolerance_px": 2.0,
+      "glyph_identity_status": "explicit-not-evaluated",
+      "linebreak_match_rate": 0.98
+    },
+    "visual": {
+      "max_bad_pixel_ratio": 0.03,
+      "max_ink_mean": 100.0,
+      "max_mean": 3.0,
+      "max_over30_pct": 2.5,
+      "require_size_match": true
+    }
+  },
+  "thresholds_sha256": "6dd4f29ed90041bb5fbd7912d8c772603279c27f114896dbc2c04f832251d8a2"
+}

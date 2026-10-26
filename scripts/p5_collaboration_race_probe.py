@@ -67,6 +67,15 @@ def run_probe(output: str | Path) -> dict[str, Any]:
             {"status": "partial-match", "owned_node_ids": ["1:4", "1:5"]},
             unavailable,
         ),
+        "authoritative-attribution": reconciliation_policy(
+            {"transactionId": "race-5", "state": "unknown"},
+            {"status": "matches", "owned_node_ids": ["1:6"]},
+            {
+                "status": "authoritative",
+                "actor": "operator-a",
+                "revision": "revision-42",
+            },
+        ),
     }
     checks = (
         _check("same-state-no-attribution", "Matching state does not infer actor or revision", races["same-target-same-state"].actor == "unknown" and races["same-target-same-state"].revision == "unknown"),
@@ -74,12 +83,18 @@ def run_probe(output: str | Path) -> dict[str, Any]:
         _check("conflict-manual", "Conflicting state is routed to operator review", races["same-target-conflict"].recommendation == "operator-resolve-conflict"),
         _check("deletion-manual", "Concurrent deletion is rollback-incomplete/manual-review", races["concurrent-node-deletion"].recommendation == "rollback-incomplete-manual-review"),
         _check("owned-evidence", "Owned node evidence is preserved", races["partial-owned-state"].owned_node_ids == ("1:4", "1:5")),
-        _check("no-inferred-attribution", "All unavailable-attribution races keep unknown actor/revision", all(item.actor == "unknown" and item.revision == "unknown" for item in races.values())),
+        _check("partial-state-manual", "Partial state requires operator reconciliation", races["partial-owned-state"].recommendation == "operator-reconcile-partial-state"),
+        _check("authoritative-attribution", "Authoritative attribution is preserved when supplied", races["authoritative-attribution"].actor == "operator-a" and races["authoritative-attribution"].revision == "revision-42"),
+        _check("no-inferred-attribution", "Unavailable-attribution races keep unknown actor/revision", all(item.actor == "unknown" and item.revision == "unknown" for key, item in races.items() if key != "authoritative-attribution")),
         _check("real-attribution-evidence", "Existing real multiplayer attribution artifact is retained", bool(attribution_sha)),
     )
     result = {
         "schema": "p5-collaboration-race-probe/1.0",
-        "status": "completed-for-current-scope",
+        "status": (
+            "completed-for-current-scope"
+            if all(item["passed"] for item in checks)
+            else "failed"
+        ),
         "scope": "conservative collaboration reconciliation and attribution boundary",
         "created_at": "2026-10-22T00:00:00+00:00",
         "profile": PROFILE,

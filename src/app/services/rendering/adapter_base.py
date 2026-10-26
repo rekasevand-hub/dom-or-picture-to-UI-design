@@ -162,8 +162,8 @@ class PrototypeAdapter(ABC):
         frame_id = self.create_frame(
             {
                 "name": name,
-                "x": 0,
-                "y": 0,
+                "x": canvas.get("x", 0),
+                "y": canvas.get("y", 0),
                 "width": canvas.get("width", 800),
                 "height": canvas.get("height", 600),
                 "backgroundColor": canvas.get("background") or "#ffffff",
@@ -275,7 +275,17 @@ class PrototypeAdapter(ABC):
                     self._note_backing(r, spec.get("fillColor"), chrome, page_rect)
                     self.create_rectangle(spec_out, parent_id=parent_id)
             elif el_type in ("image", "avatar"):
-                self.create_image(spec_out, parent_id=parent_id)
+                if spec.get("imageBase64"):
+                    self.create_image(spec_out, parent_id=parent_id)
+                else:
+                    # Missing display payloads stay editable/honest placeholders;
+                    # the asset record keeps their original status separate.
+                    placeholder = {
+                        **spec_out,
+                        "name": spec.get("name") or spec.get("id") or "Image",
+                        "fillColor": "transparent",
+                    }
+                    self.create_rectangle(placeholder, parent_id=parent_id)
             elif el_type == "circle":
                 self.create_ellipse(spec_out, parent_id=parent_id)
             elif el_type == "text":
@@ -296,7 +306,11 @@ class PrototypeAdapter(ABC):
                         "letterSpacing": spec.get("letterSpacing"),
                     }
                     self.create_rectangle(bg_spec, parent_id=parent_id)
-                self.create_text(self._wrap_text_spec(spec_out), parent_id=parent_id)
+                text_spec = self._text_render_spec(spec, spec_out, origin)
+                self.create_text(
+                    self._wrap_text_spec(text_spec),
+                    parent_id=parent_id,
+                )
             elif el_type == "divider":
                 r = self._element_rect(spec)
                 self._note_backing(r, spec.get("fillColor"), chrome, page_rect)
@@ -415,6 +429,16 @@ class PrototypeAdapter(ABC):
         if not lines:
             return spec
         return {**spec, **lines_spec_fields(spec, lines)}
+
+    def _text_render_spec(
+        self,
+        spec: dict[str, Any],
+        local_spec: dict[str, Any],
+        origin: tuple[int, int],
+    ) -> dict[str, Any]:
+        """给输出端一次机会，按本端文本排版语义修正已局部化的元素。"""
+        del spec, origin
+        return local_spec
 
     @staticmethod
     def _frame_name(design: dict[str, Any]) -> str:

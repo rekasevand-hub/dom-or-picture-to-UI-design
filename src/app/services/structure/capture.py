@@ -182,6 +182,36 @@ DOM_JS = r"""
     'serif', 'sans-serif', 'monospace', 'cursive', 'fantasy',
     'system-ui', 'ui-serif', 'ui-sans-serif', 'ui-monospace',
   ]);
+  const fontProbeSeen = new Set();
+  const fontMetricsCanvas = document.createElement('canvas');
+  const fontMetricsContext = fontMetricsCanvas.getContext('2d');
+  const fontMetricsFor = (text, cs) => {
+    if (!fontMetricsContext) return null;
+    try {
+      fontMetricsContext.font = [
+        cs.fontStyle || 'normal',
+        cs.fontWeight || '400',
+        cs.fontSize || '16px',
+        cs.fontFamily || 'sans-serif',
+      ].join(' ');
+      const metrics = fontMetricsContext.measureText(String(text || 'Mg'));
+      let ascent = Number(metrics.fontBoundingBoxAscent);
+      let descent = Number(metrics.fontBoundingBoxDescent);
+      if (!Number.isFinite(ascent) || !Number.isFinite(descent)
+          || ascent + descent <= 0) {
+        ascent = Number(metrics.actualBoundingBoxAscent) || 0;
+        descent = Number(metrics.actualBoundingBoxDescent) || 0;
+      }
+      if (ascent + descent <= 0) return null;
+      return {
+        ascent: round2(ascent),
+        descent: round2(descent),
+        method: 'canvas-font-metrics',
+      };
+    } catch (e) {
+      return null;
+    }
+  };
   const isGenericFontStack = (value) => {
     const families = String(value || '')
       .split(',')
@@ -389,7 +419,7 @@ DOM_JS = r"""
     // 只量**自身的直接文本节点**（叶子就是整段；混合内容节点是它自己那几段），与
     // textBox / textRuns 同一口径；量到的记第一行行框 + 行数，多行没有"一行"可对齐。
     // <input> 的可见文本来自 value、没有文本节点，自然量不到 —— 输入框不在本机制内。
-    let textEmBox = null, textEmLines = 0;
+    let textEmBox = null, textEmLines = 0, textBaseline = null;
     let textLines = null;
     if (ownNodes.length) {
       try {
@@ -403,8 +433,35 @@ DOM_JS = r"""
           textEmBox = [Math.round(emRect.left), Math.round(emRect.top),
                        Math.round(emRect.width), Math.round(emRect.height)];
           textEmLines = emRects.length;
+          const metrics = fontMetricsFor(visible, cs);
+          if (metrics) {
+            textBaseline = {
+              y: round2(emRect.top + metrics.ascent),
+              ascent: metrics.ascent,
+              descent: metrics.descent,
+              method: metrics.method,
+              lineCount: emRects.length,
+            };
+          }
         }
       } catch (e) {}
+    }
+    // Inputs and textareas have no text nodes, so their value/placeholder cannot
+    // use Range.getClientRects(). Their content box already identifies the one
+    // browser line; pair it with the same Canvas font metrics used for text nodes.
+    if (isTextField && !textEmBox && textBox && (fieldValue || placeholder)) {
+      const metrics = fontMetricsFor(fieldValue || placeholder, cs);
+      if (metrics) {
+        textEmBox = Array.from(textBox);
+        textEmLines = 1;
+        textBaseline = {
+          y: round2(textBox[1] + metrics.ascent),
+          ascent: metrics.ascent,
+          descent: metrics.descent,
+          method: metrics.method,
+          lineCount: 1,
+        };
+      }
     }
     // 多行叶子文本的真实分行：逐字符 Range 按 top 分组成行。
     // 这是浏览器自己的换行结果，输出端可直接复用，避免离线字体估宽产生不同断点。
@@ -447,15 +504,26 @@ DOM_JS = r"""
         }
         if (current) lines.push(current);
         const clean = lines
-          .map((line) => ({
-            text: line.text.trim(),
-            box: [
-              Math.round(line.x0),
-              Math.round(line.y0),
-              Math.round(line.x1 - line.x0),
-              Math.round(line.y1 - line.y0),
-            ],
-          }))
+          .map((line) => {
+            const metrics = fontMetricsFor(line.text, cs);
+            return {
+              text: line.text.trim(),
+              box: [
+                Math.round(line.x0),
+                Math.round(line.y0),
+                Math.round(line.x1 - line.x0),
+                Math.round(line.y1 - line.y0),
+              ],
+              ...(metrics ? {
+                baseline: {
+                  y: round2(line.y0 + metrics.ascent),
+                  ascent: metrics.ascent,
+                  descent: metrics.descent,
+                  method: metrics.method,
+                },
+              } : {}),
+            };
+          })
           .filter((line) => line.text && line.box[2] > 0 && line.box[3] > 0);
         if (clean.length > 1
             || (clean.length === 1 && raw.trim().length > 40)) {
@@ -579,9 +647,18 @@ DOM_JS = r"""
                                     String(cs.fontFamily || '').trim())
                                && !String(el.style.fontFamily || '').trim();
     const effectiveFontFamily = srcdocDefaultFont ? 'sans-serif' : cs.fontFamily;
-    const fontProbeId = (hasText || placeholder) && fontProbePrefix
-                        && isGenericFontStack(effectiveFontFamily)
-                        ? `${fontProbePrefix}-${out.length}` : '';
+    const fontKey = [
+      cs.fontStyle || 'normal',
+      cs.fontWeight || '400',
+      cs.fontStretch || 'normal',
+      cs.fontSize || '16px',
+      effectiveFontFamily,
+    ].join('|');
+    const shouldProbeFont = (hasText || placeholder) && fontProbePrefix
+      && (isGenericFontStack(effectiveFontFamily) || !fontProbeSeen.has(fontKey));
+    if (shouldProbeFont) fontProbeSeen.add(fontKey);
+    const fontProbeId = shouldProbeFont
+      ? `${fontProbePrefix}-${out.length}` : '';
     const rec = {
       tag: el.tagName.toLowerCase(),
       role: el.getAttribute('role') || '',
@@ -672,6 +749,7 @@ DOM_JS = r"""
     if (textLines) rec.textLines = textLines;
     // 同理：只有量到「第一行行框」的节点才多带这两个（其余节点 / 老产物逐字节不变）
     if (textEmBox) { rec.textEmBox = textEmBox; rec.textEmLines = textEmLines; }
+    if (textBaseline) rec.textBaseline = textBaseline;
     if (textFlow) rec.textFlow = true;
     // 同理：只有图标字形叶子 / 非均匀边框的节点才多带字段
     if (iconBox) rec.iconBox = true;
@@ -1135,6 +1213,15 @@ def page_access_error_message(
     )
 
 
+def _browser_context_options(cfg: "Config", viewport: dict[str, int]) -> dict:
+    return {
+        "viewport": viewport,
+        "device_scale_factor": cfg.device_scale_factor,
+        "locale": cfg.playwright_locale,
+        "timezone_id": cfg.playwright_timezone,
+    }
+
+
 def export_login_state(
     url: str, output_path: str, cfg: "Config", *, headless: bool = False, ask=None
 ) -> str:
@@ -1149,11 +1236,13 @@ def export_login_state(
         browser = p.chromium.launch(headless=headless)
         try:
             page = browser.new_page(
-                viewport={
-                    "width": cfg.playwright_viewport_width,
-                    "height": cfg.playwright_viewport_height,
-                },
-                device_scale_factor=cfg.device_scale_factor,
+                **_browser_context_options(
+                    cfg,
+                    {
+                        "width": cfg.playwright_viewport_width,
+                        "height": cfg.playwright_viewport_height,
+                    },
+                )
             )
             page.goto(
                 url, wait_until="domcontentloaded", timeout=cfg.wait_networkidle_timeout
@@ -1462,14 +1551,13 @@ def _capture_session(
                 "width": cfg.playwright_viewport_width,
                 "height": cfg.playwright_viewport_height,
             }
+            context_options = _browser_context_options(cfg, viewport)
             if user_data_dir:
                 Path(user_data_dir).mkdir(parents=True, exist_ok=True)
                 launch_options = {
                     "user_data_dir": user_data_dir,
                     "headless": headless,
-                    "viewport": viewport,
-                    "device_scale_factor": cfg.device_scale_factor,
-                    "locale": "zh-CN",
+                    **context_options,
                 }
                 if browser_engine == "chromium":
                     launch_options["args"] = list(_LAUNCH_ARGS)
@@ -1480,11 +1568,7 @@ def _capture_session(
                 if browser_engine == "chromium":
                     launch_options["args"] = list(_LAUNCH_ARGS)
                 browser = browser_type.launch(**launch_options)
-                context_opts = {
-                    "viewport": viewport,
-                    "device_scale_factor": cfg.device_scale_factor,
-                    "locale": "zh-CN",
-                }
+                context_opts = {**context_options}
                 if storage_state:
                     context_opts["storage_state"] = storage_state
                 context = browser.new_context(**context_opts)

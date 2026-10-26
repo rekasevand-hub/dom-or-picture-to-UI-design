@@ -26,6 +26,9 @@ function classifyFigmaError(err) {
   if (lower.includes("precondition") || lower.includes("modified") || lower.includes("conflict")) {
     return { code: "USER_MODIFICATION", category: "user-modification", retryable: false, noResend: true, manualReview: true };
   }
+  if (lower.includes("not found") || lower.includes("node_not_found")) {
+    return { code: "USER_MODIFICATION", category: "user-modification", retryable: false, noResend: true, manualReview: true };
+  }
   return { code: "PLUGIN_OPERATION_FAILED", category: "unknown", retryable: false, noResend: true, manualReview: true };
 }
 
@@ -124,6 +127,8 @@ async function handleAction(action, params) {
       return await setText(params);
     case "set_name":
       return await setName(params);
+    case "set_bounds":
+      return await setBounds(params);
     case "set_visibility":
       return await setVisibility(params);
     case "replace_image_fill":
@@ -663,13 +668,17 @@ const TRANSACTION_CREATE_ACTIONS = new Set([
 const OWNERSHIP_OWNER = "figma_auto_agent";
 const OWNERSHIP_OWNER_KEY = "figma_auto_agent.owner";
 const OWNERSHIP_JOB_KEY = "figma_auto_agent.job_id";
+const OWNERSHIP_REGION_KEY = "figma_auto_agent.region_id";
 
-function markOwnedNode(node, jobId) {
+function markOwnedNode(node, jobId, regionId) {
   if (!node || typeof node.setPluginData !== "function") {
     throw new Error(`OWNERSHIP_MARKER_UNSUPPORTED: ${node && node.id}`);
   }
   node.setPluginData(OWNERSHIP_OWNER_KEY, OWNERSHIP_OWNER);
   node.setPluginData(OWNERSHIP_JOB_KEY, jobId);
+  if (regionId) {
+    node.setPluginData(OWNERSHIP_REGION_KEY, String(regionId));
+  }
 }
 
 async function applyBatch(params) {
@@ -719,7 +728,11 @@ async function applyBatch(params) {
       committed.push({ index, action, result });
       if (typeof result === "string" && result) {
         createdNodeIds.push(result);
-        markOwnedNode(figma.getNodeById(result), transactionId);
+        markOwnedNode(
+          figma.getNodeById(result),
+          transactionId,
+          actionParams.regionId
+        );
         markedCount += 1;
       }
     } catch (err) {
@@ -847,6 +860,7 @@ async function ownershipReport(params) {
       type: node.type,
       owner: node.getPluginData(OWNERSHIP_OWNER_KEY),
       jobId: node.getPluginData(OWNERSHIP_JOB_KEY),
+      regionId: node.getPluginData(OWNERSHIP_REGION_KEY) || null,
     })),
   };
 }
@@ -858,6 +872,7 @@ const TRANSACTION_EDIT_ACTIONS = new Set([
   "set_visible",
   "set_visibility",
   "set_layout_flow",
+  "set_bounds",
 ]);
 
 const MAX_EDIT_BATCH_ACTIONS = 50;
@@ -1049,6 +1064,17 @@ async function preflightEditAction(action, params) {
     const layoutMode = normalizedLayoutMode(layout.mode);
     const grid = validateGridLayout(layoutMode, layout);
     validateLayoutFlowRequest(node, layoutMode, layout, grid, params);
+    return;
+  }
+  if (action === "set_bounds") {
+    for (const name of ["x", "y", "width", "height"]) {
+      if (!Number.isFinite(Number(params[name]))) {
+        throw new Error(`BOUNDS_NUMBER_REQUIRED: ${name}`);
+      }
+    }
+    if (Number(params.width) <= 0 || Number(params.height) <= 0) {
+      throw new Error("BOUNDS_DIMENSIONS_MUST_BE_POSITIVE");
+    }
   }
 }
 
@@ -1085,6 +1111,20 @@ function captureEditSnapshot(action, params) {
       layout: captureLayoutSnapshot(node),
     };
   }
+  if (action === "set_bounds") {
+    return {
+      action,
+      nodeId: node.id,
+      node,
+      bounds: {
+        x: node.x,
+        y: node.y,
+        width: node.width,
+        height: node.height,
+      },
+      regionId: node.getPluginData(OWNERSHIP_REGION_KEY) || "",
+    };
+  }
   throw new Error(`UNSUPPORTED_EDIT_ACTION: ${action}`);
 }
 
@@ -1096,6 +1136,7 @@ async function applyEditAction(action, params) {
     return await setVisibility(params);
   }
   if (action === "set_layout_flow") return await setLayoutFlow(params);
+  if (action === "set_bounds") return await setBounds(params);
   throw new Error(`UNSUPPORTED_EDIT_ACTION: ${action}`);
 }
 
@@ -1125,6 +1166,13 @@ async function restoreEditSnapshot(snapshot) {
   }
   if (snapshot.action === "set_layout_flow") {
     restoreLayoutSnapshot(node, snapshot.layout);
+    return;
+  }
+  if (snapshot.action === "set_bounds") {
+    node.x = snapshot.bounds.x;
+    node.y = snapshot.bounds.y;
+    node.resize(snapshot.bounds.width, snapshot.bounds.height);
+    node.setPluginData(OWNERSHIP_REGION_KEY, snapshot.regionId);
     return;
   }
   throw new Error(`UNSUPPORTED_EDIT_ACTION: ${snapshot.action}`);
@@ -1489,6 +1537,35 @@ async function replaceImageFill(params) {
       || node.type === "FRAME"
       || node.type === "ELLIPSE",
     scaleModePreserved: previous.scaleMode === current.scaleMode,
+  };
+}
+
+async function setBounds(params) {
+  const node = figma.getNodeById(params.nodeId);
+  if (!node) throw new Error(`NODE_NOT_FOUND: ${params.nodeId}`);
+  const x = Number(params.x);
+  const y = Number(params.y);
+  const width = Number(params.width);
+  const height = Number(params.height);
+  if (![x, y, width, height].every(Number.isFinite)) {
+    throw new Error("BOUNDS_NUMBER_REQUIRED");
+  }
+  if (width <= 0 || height <= 0) {
+    throw new Error("BOUNDS_DIMENSIONS_MUST_BE_POSITIVE");
+  }
+  node.x = x;
+  node.y = y;
+  node.resize(width, height);
+  const regionId = String(params.regionId || "");
+  if (regionId) {
+    node.setPluginData(OWNERSHIP_REGION_KEY, regionId);
+  }
+  return {
+    nodeId: node.id,
+    bounds: { x: node.x, y: node.y, width: node.width, height: node.height },
+    regionMembership: regionId
+      ? { regionId, member: true }
+      : { regionId: null, member: false },
   };
 }
 
@@ -2080,7 +2157,23 @@ function readNodeTree(node, depth) {
     primaryAxisAlignItems: summary.primaryAxisAlignItems,
     counterAxisAlignItems: summary.counterAxisAlignItems,
     layoutWrap: summary.layoutWrap,
+    layoutSizingHorizontal: summary.layoutSizingHorizontal,
+    layoutSizingVertical: summary.layoutSizingVertical,
+    gridRowCount: summary.gridRowCount,
+    gridColumnCount: summary.gridColumnCount,
+    gridRowGap: summary.gridRowGap,
+    gridColumnGap: summary.gridColumnGap,
+    gridItemsPositioning: summary.gridItemsPositioning,
+    gridAutoTracks: summary.gridAutoTracks,
+    gridRowSizes: summary.gridRowSizes,
+    gridColumnSizes: summary.gridColumnSizes,
   };
+  if (typeof node.getPluginData === "function") {
+    const regionId = node.getPluginData(OWNERSHIP_REGION_KEY);
+    if (regionId) {
+      summary.regionMembership = { regionId, member: true };
+    }
+  }
   if ((node.type === "RECTANGLE" || node.type === "FRAME")
       && typeof node.topLeftRadius === "number") {
     summary.cornerRadius = {

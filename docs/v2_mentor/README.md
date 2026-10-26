@@ -1,5 +1,25 @@
 # v2 导师问答闭环
 
+- 全局总计划与交接基线：`GLOBAL_OPTIMIZATION_MASTER_PLAN_2026-10-25.md`。
+
+- Image → Figma MVP 当前范围验收：`IMAGE_FIGMA_MVP_ACCEPTANCE_2026-10-25.md`。
+
+- Image → Figma MVP 任务与证据 ledger：`IMAGE_FIGMA_MVP_LEDGER_2026-10-25.md`。
+
+- Axure 共享 IR 边界：`AXURE_SHARED_IR_BOUNDARY_2026-10-25.md`。
+
+- Axure 路线 ledger：`AXURE_ROUTE_LEDGER_2026-10-25.md`。
+
+- Axure 额外 Rect 归因：`AXURE_EXTRA_RECT_ATTRIBUTION_2026-10-25.md`。
+
+- Axure fresh holdout A-008：`AXURE_FRESH_HOLDOUT_A008_2026-10-25.md`。
+
+- Axure rendered-region repair A-009：`AXURE_A009_RENDERED_REGION_REPAIR_2026-10-25.md`。
+
+- Axure fresh holdout A-010：`AXURE_FRESH_HOLDOUT_A010_2026-10-25.md`。
+
+- Axure current-scope exit review A-011：`AXURE_CURRENT_SCOPE_EXIT_REVIEW_2026-10-25.md`。
+
 - 当前 P1 Figma 交接：项目根目录 `HANDOFF_2026-10-21_p1_figma_acceptance.md`。
 
 - 最近一次项目交接：项目根目录 `HANDOFF_2026-10-21_p3_p4.md`；当前实际进度以本文“当前进度”为准。
@@ -102,6 +122,17 @@
 > 2026-10-18：用户已确认 5 项默认产品策略（默认忠实、缺字体不自动替换、四维验收、部分交付须标范围、截图轨默认不引入 DOM），详见 `V2_OPTIMIZATION_PLAN.md` 第 13.4 节。
 
 ## 变更记录
+- 2026-10-25：A-011 Axure current-scope exit review 返回 `pass-current-scope`。受控 `DOM -> Axure` 由 A-010 fresh holdout 控制，命名 image 样本由 A-003/A-006 控制；独立验收、确定性 `.rp` 和 open/reopen publish 均有证据。A-006/A-008 历史失败及 A-007/A-009 remediation 分开保留；image route 未用 A-009 region gate 重跑，作为覆盖限制保留。任意泛化、Auto Layout、runtime replacement、clip、原生字距、交互、save-back 和生产准入仍未声明。下一步需用户选择能力扩展或生产准入。见 `AXURE_CURRENT_SCOPE_EXIT_REVIEW_2026-10-25.md`。
+- 2026-10-25：A-010 fresh Axure holdout 返回 `pass-unseen-holdout`。全新冻结的 assets、transparent-crop 和 nested-iframe 三样本均通过 object mapping、critical text、资产哈希、critical regions、within-30、参考图审查、确定性和发布/重开门禁；六次发布均为 `RESULT=OK`。该结论只覆盖冻结三样本，不升级为任意 DOM 或生产可用。A-011 进行 current-scope exit review。见 `AXURE_FRESH_HOLDOUT_A010_2026-10-25.md`。
+- 2026-10-25：A-009 完成当前范围。iframe 失败被归因为 A-008 使用历史 DesignSpec：当前采集器已把 `Accessible iframe content` 放在 `(18,133)`，历史输入仍为 `(16,37)`。A-009 重新生成输入，并为 Axure 发布验收新增 `critical_regions` ink 门禁；旧 A-008 渲染现在会以 `critical-region-missing` 失败，repaired iframe 在 `(14,120,286,40)` 的 reference/render ink 均为 `7.01923%`。Partial-asset 契约更正为 2 个声明/显示资产，同时保留 1 个缺失原图 provenance。两套 repaired 产物均确定性、conformance、发布/重开和验收通过；A-008 仍失败，A-010 需新的 untouched holdout。见 `AXURE_A009_RENDERED_REGION_REPAIR_2026-10-25.md`。
+- 2026-10-25：A-008 fresh Axure holdout 返回 `fail-unseen-holdout`。三份新冻结样本均确定性生成、conformance 通过并完成两轮 `RESULT=OK` 发布；320px mobile 全门通过。iframe 的自动化 label-only critical text 通过，但参考图审查发现可访问 iframe 正文没有可见呈现且标题重叠；上游 DesignSpec 已把内容 Text 放在 `(16,37)`。partial-asset 输出与参考图 100% 一致且 2/2 图片哈希匹配，但冻结 manifest 只预期 1 个资产，形成评估契约冲突。A-009 需修复 iframe 子坐标、可见 critical region 验收和资产计数语义。见 `AXURE_FRESH_HOLDOUT_A008_2026-10-25.md`。
+- 2026-10-25：A-007 完成当前范围。AX6-DOM-TEXTFLOW 的空 `360x96` Rect 被归因为样式 native Text 的派生背景层，不是幽灵对象；比较器仅允许一对一匹配已 matched Text 的源外框，并输出 `auxiliary_widgets` 来源映射。重新生成的 `.rp` 与 A-006 字节哈希完全一致，因此没有视觉或发布变化，A-006 仍保持 `fail-unseen-holdout`。全量 `tests/v2` 为 `722 passed`，A-008 需使用全新 untouched holdout。见 `AXURE_EXTRA_RECT_ATTRIBUTION_2026-10-25.md`。
+- 2026-10-25：A-006 untouched Axure holdout 返回 `fail-unseen-holdout`。全新 AX6-DOM-FONTFALLBACK、AX6-IMG-OVERLAY 通过对象图与发布验收；AX6-DOM-TEXTFLOW 的 critical/assets/visual 通过，但 `.rp` 多出一个未投影的空 `360x96` Rect，page/object mapping 不满足 100%。按 A-006 规则未在观测后修复，A-007 另行归因该对象。见 `AXURE_HOLDOUT_V2_ACCEPTANCE_2026-10-25.md`。
+- 2026-10-25：A-005 Axure frozen holdout 执行完成，结论 `partial-post-holdout-tuning`。冻结 DQ-R01、DQ-R03、AX-IMG-H01 后，首轮暴露 IR/asset 绑定、DQ-R03 视觉 `89.69745%`、image OCR `1/3` 与 asset `1/3`。TDD 修复后三样本在阈值不变下最终为 `93.7288%`、`90.2025%`、`97.2427%`，critical/assets 均 100%，且 reopen page HTML 一致。由于同一 holdout 驱动了修复，不宣称干净泛化；A-006 需新 untouched holdout。见 `AXURE_HOLDOUT_ACCEPTANCE_2026-10-25.md`。
+- 2026-10-25：A-003/A-004 完成当前范围。`image -> Axure` 复用既有 image MVP 与共享 IR，在 Axure RP 8.0.0.3400 生成真实 page `A003 IMG-MVP-01 Image Axure`、确定性 `.rp`、open/reopen publish 和独立 HTML 验收；22 widgets、14/14 critical text、1/1 reference-only 图片载荷、within-30 `96.571979%`。runtime replacement 明确降级为 `creation-only-image-box`。TDD 同时关闭 flat-image 单行标题/双位统计被 Axure 重折行的真实布局缺陷。A-004 对 DQ-R02 与 IMG-MVP-01 两条受控路径均完成；见 `AXURE_IMAGE_ACCEPTANCE_2026-10-25.md`。
+- 2026-10-25：A-002 完成 DOM → Axure 当前范围。DQ-R02 生成 647,034 字节确定性 `.rp`，Axure page 为 `A002 DQ-R02 DOM Axure`，469 widgets、54 个创建时图片载荷、3/3 critical text、30/30 published asset hashes、within-30 `99.377184%`；Axure open/reopen publish 与独立验收通过。见 `AXURE_DOM_ACCEPTANCE_2026-10-25.md`。
+- 2026-10-25：A-001 Axure 共享 IR 边界完成当前范围。`design-ir/2.0` 仅包装现有 DesignSpec，不重写输入理解链；新增 `design-ir/2.0` projection、fail-closed validation 与 Figma/Axure capability/degradation matrix。`IMG-MVP-01`（21 nodes / 1 asset）与 DQ-R02（440 nodes / 54 assets）均 0 IR 校验错误；Axure 分别明确报告 runtime image replacement 与 letter-spacing 不支持。尚无 `.rp` 输出或 Axure acceptance，A-002 为下一步。
+- 2026-10-25：Image → Figma MVP 当前范围通过。Grounding 默认，owned 截图 `IMG-MVP-01` 在真实 Figma frame `77:4851` 完成写入/回读/导出；critical text 14/14、原生文本编辑恢复和 reference-only 图片显示替换恢复通过，导出 within-30 `96.533125%`。原图身份、字体、DPR/viewport、hidden regions 与 adaptive flow 均为显式 non-claims；见 `IMAGE_FIGMA_MVP_ACCEPTANCE_2026-10-25.md`。
 - 2026-10-22：启动 R5 生产化重评估并完成首个 `R5-P3` 切片。`apply_batch` 创建节点写入 owner/job plugin data，`ownership_report` 只读回读，`cleanup_owned_job` 只删除双标记精确匹配节点；返回 ownership receipt，marker 失败时创建事务回滚。真实 Figma 同一会话完成 2 节点回读/清理闭环，零 unknown；插件重载/文档重开回读、business ledger、resume 与区域补偿仍开放。
 - 2026-10-22：BridgeHub 为 unknown `apply_batch` 持久化 ownership job id、期望创建数和 marker readback 分类；插件重连后自动调用 `ownership_report`，但 transaction 保持 unknown，不自动重发或晋升 committed。development-plugin 重载与文档关闭/重开后 marker 均为 2/2、清理 2/2；协议测试 33/33。
 - 2026-10-22：实现 R5-P3 business ledger、write-ahead coordinator、unknown resume 决策、job-scoped cleanup receipt 和确定性故障注入；6 job soak 为 1 committed、1 reconcile-no-resend、3 manual review、0 duplicate side effects，全量 338/338。

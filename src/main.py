@@ -27,7 +27,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--url", action="append", default=None, metavar="URL",
                         help="网页 URL（可重复：N 个 URL -> N 页，每个 URL 一页）")
     parser.add_argument("--route", default=None, choices=["auto", "dom", "grounding", "cv"],
-                        help="结构来源路线")
+                        help="实现层结构策略（不是产品路线）")
     parser.add_argument("--fast", action="store_true",
                         help="（已废弃，参数被忽略）DOM 路线恒定 computed style 直出，保留仅为兼容旧脚本")
     parser.add_argument("--enrich", action="store_true",

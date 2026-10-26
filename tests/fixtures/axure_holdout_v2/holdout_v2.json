@@ -1,0 +1,77 @@
+{
+  "schema_version": "axure-holdout/2.0",
+  "holdout_id": "axure-holdout/2.0",
+  "frozen_at": "2026-10-25T22:00:00+08:00",
+  "purpose": "Untouched A-006 Axure holdout; record result before remediation.",
+  "tuning_exclusions": [
+    "DQ-R02",
+    "IMG-MVP-01",
+    "DQ-R01",
+    "DQ-R03",
+    "AX-IMG-H01"
+  ],
+  "thresholds": {
+    "critical_text_rate": 1.0,
+    "expected_asset_hash_rate": 1.0,
+    "expected_asset_count_exact": true,
+    "page_package_object_match_rate": 1.0,
+    "deterministic_rp_byte_identical": true,
+    "size_match_required": true,
+    "visual_within30_min_pct": 90.0,
+    "forbidden_sample_substitution": true,
+    "composite_score_allowed": false
+  },
+  "samples": [
+    {
+      "sample_id": "AX6-DOM-TEXTFLOW",
+      "input_kind": "dom",
+      "page_name": "A006 Mixed Text Flow Axure",
+      "design_path": "output/_p1_canonical_output_fidelity/samples/text-flow/12_design.json",
+      "design_sha256": "a8630c1bd475c72a72f9878f6b6b93b9478aa4ff23a483af0e574f7ba48b4327",
+      "screenshot_path": "output/_p1_canonical_output_fidelity/samples/text-flow/00_screenshot.png",
+      "screenshot_sha256": "da6f8a86b62f0f3977f6d1669ad294bfb6a718d6501ddfd55302c49b8a57952f",
+      "truth_path": "tests/fixtures/p1/canonical/text_flow.truth.json",
+      "truth_sha256": "c4406db93f805171739cf13a67be354aa76c003f85888a623ff07f96d2413c41",
+      "critical_texts": [
+        "Canonical 混合文本",
+        "第一行 Chinese and English stay in one paragraph. This longer second sentence exercises automatic wrapping without changing the declared block height.",
+        "Flow block keeps native text and a fixed-height contract."
+      ],
+      "expected_asset_count": 0
+    },
+    {
+      "sample_id": "AX6-DOM-FONTFALLBACK",
+      "input_kind": "dom",
+      "page_name": "A006 Font Fallback Axure",
+      "design_path": "output/_p1_canonical_output_fidelity_round11/samples/font-fallback/12_design.json",
+      "design_sha256": "ff24c12bca93800ac79423c1cd78e775848d08717de922c3782a682b59f14223",
+      "screenshot_path": "output/_p1_canonical_output_fidelity_round11/samples/font-fallback/00_screenshot.png",
+      "screenshot_sha256": "2184ade4b5189835fce791567e8c43e68b9b538332a8c231e2793889f722d696",
+      "truth_path": "tests/fixtures/p1/canonical/font_fallback.truth.json",
+      "truth_sha256": "98a04c4535abb77bcf72d0cad980be43a1149e5bc744d93573506a6077537b1a",
+      "critical_texts": [
+        "Fallback 字体保持可编辑",
+        "This canonical page verifies that a missing declared font falls back to the recorded system stack while preserving native editable text and stable geometry.",
+        "The fallback declaration must remain observable even though the first family is unavailable on the canonical host."
+      ],
+      "expected_asset_count": 0
+    },
+    {
+      "sample_id": "AX6-IMG-OVERLAY",
+      "input_kind": "image",
+      "page_name": "A006 Overlay Image Axure",
+      "image_path": "tests/fixtures/axure_holdout_v2/overlay.png",
+      "image_sha256": "ac8fd6ee2af97f1cd8eb42c43f332d4b52793e349feaa78aaa70e463f3bdc2a7",
+      "truth_path": "tests/fixtures/axure_holdout_v2/overlay.truth.json",
+      "truth_sha256": "264439b75c4919bf087d99dfb0b60d4e45262a5ae435769164cccdb06f1e6ff6",
+      "design_path": "output/_axure_holdout_v2_2026-10-25/prepared/AX6-IMG-OVERLAY/pipeline/12_design.json",
+      "design_sha256": "2da1cbf0fc6e88bf8654a86a0af455f7a5c0066bdfe638d4058b17933f1ef067",
+      "critical_texts": [
+        "Holdout overlay",
+        "This independent overlay holdout uses a different source aspect ratio, crop anchor and overlay opacity from the calibration fixture.",
+        "The visual policy must validate the result without hiding missing overlay or crop evidence."
+      ],
+      "expected_asset_count": 1
+    }
+  ]
+}

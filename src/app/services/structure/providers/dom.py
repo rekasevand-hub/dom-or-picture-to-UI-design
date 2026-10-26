@@ -9,6 +9,7 @@ from typing import Any
 
 from src.app.services.structure.graph import new_graph, add_container, add_element
 from src.app.services.structure.asset_metadata import (
+    build_asset_record,
     object_fit_source_rect,
     parse_data_uri_asset,
 )
@@ -540,6 +541,7 @@ def _text_run_box(node: dict, canvas_w: int, canvas_h: int) -> list[int] | None:
 def _asset_metadata_for_node(
     node: dict[str, Any],
     display_box: list[int],
+    node_index: int = 0,
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     source = str(
         node.get("assetSrc") or next(iter(node.get("bgUrls") or []), "") or ""
@@ -554,6 +556,29 @@ def _asset_metadata_for_node(
     if (natural_size[0] <= 0 or natural_size[1] <= 0) and parsed.get("natural_size"):
         natural_size = list(parsed["natural_size"])
     is_data_uri = parsed.get("source_kind") == "data-uri"
+    complete_data_uri = is_data_uri and len(source) < 20000
+    natural_tuple = (
+        (natural_size[0], natural_size[1])
+        if all(size > 0 for size in natural_size)
+        else None
+    )
+    load_status = (
+        "missing" if node.get("tag") == "img" and natural_tuple is None else "loaded"
+    )
+    asset_record = build_asset_record(
+        sample_id="dom",
+        node_index=node_index,
+        source_kind=("img" if node.get("assetSrc") else "bg-0"),
+        source=source,
+        natural_size=natural_tuple,
+        source_payload_sha256=parsed.get("sha256") if is_data_uri else None,
+        mime=parsed.get("mime") if is_data_uri else None,
+        source_bytes_present=complete_data_uri,
+        source_provenance="data-uri" if is_data_uri else "remote-url",
+        display_box=(display_box[0], display_box[1], display_box[2], display_box[3]),
+        object_fit=str(node.get("objectFit") or "fill"),
+        load_status=load_status,
+    )
     identity = {
         "source_kind": parsed.get("source_kind"),
         "source": source[:20000],
@@ -562,9 +587,11 @@ def _asset_metadata_for_node(
         "natural_size": natural_size
         if all(size > 0 for size in natural_size)
         else None,
-        "content_sha256": parsed.get("sha256") if is_data_uri else None,
+        "content_sha256": parsed.get("sha256") if complete_data_uri else None,
         "source_ref_sha256": (parsed.get("sha256") if not is_data_uri else None),
         "inline_data_uri": source[:20000] if is_data_uri else None,
+        "source_truncated": is_data_uri and not complete_data_uri,
+        "asset_record": asset_record,
     }
     crop = None
     if natural_size[0] > 0 and natural_size[1] > 0:
@@ -712,11 +739,18 @@ def _placeholder_text(
             "color": node.get("placeholderColor") or node.get("color"),
         }
     )
-    return {
+    result = {
         "bbox": [x, y, w, h],
         "style": _style_from_node(probe, bg_under=bg_under),
         "text": ph,
     }
+    em_box = node.get("textEmBox")
+    if isinstance(em_box, list) and len(em_box) == 4:
+        result["textEmBox"] = [int(round(float(value))) for value in em_box]
+        result["textEmLines"] = max(1, int(node.get("textEmLines") or 1))
+    if isinstance(node.get("textBaseline"), dict):
+        result["textBaseline"] = dict(node["textBaseline"])
+    return result
 
 
 def _edge_rect(
@@ -987,7 +1021,11 @@ class DomProvider(BaseProvider):
             asset_identity = None
             source_crop = None
             if is_image:
-                asset_identity, source_crop = _asset_metadata_for_node(n, bbox)
+                asset_identity, source_crop = _asset_metadata_for_node(
+                    n,
+                    bbox,
+                    node_index=i,
+                )
             aria_label = n.get("ariaLabel", "")
             # 图标按钮自身无 aria 时，把子树图标节点的 aria-label 原样带出为
             # 语义候选（不映射成文案，text 保持 DOM 可见文本）
@@ -1073,6 +1111,8 @@ class DomProvider(BaseProvider):
                             z_index=z_index,
                             clip=clip,
                             name=_layer_name(n, text=ph["text"], label_max=label_max),
+                            text_em_box=ph.get("textEmBox"),
+                            text_em_lines=int(ph.get("textEmLines") or 0),
                             dom_index=i,
                         )
         return g

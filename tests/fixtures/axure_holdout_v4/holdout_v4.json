@@ -1,0 +1,185 @@
+{
+  "schema_version": "axure-holdout/4.0",
+  "holdout_id": "axure-holdout/4.0",
+  "task_id": "A-010",
+  "frozen_at": "2026-10-25T22:55:37.0315361+08:00",
+  "purpose": "Fresh untouched A-010 Axure holdout after A-009 rendered-region remediation.",
+  "environment": {
+    "axure_executable": "D:\\Program File\\Axure\\Axure RP 8\\AxureRP8.exe",
+    "axure_version": "8.0.0.3400",
+    "python_executable": "C:\\Users\\lzq\\.conda\\envs\\omni\\python.exe"
+  },
+  "tuning_exclusions": [
+    "DQ-R02",
+    "IMG-MVP-01",
+    "DQ-R01",
+    "DQ-R03",
+    "AX-IMG-H01",
+    "AX6-DOM-TEXTFLOW",
+    "AX6-DOM-FONTFALLBACK",
+    "AX6-IMG-OVERLAY",
+    "AX8-DOM-IFRAME",
+    "AX8-DOM-PARTIAL-ASSET",
+    "AX8-DOM-MOBILE320"
+  ],
+  "thresholds": {
+    "critical_text_rate": 1.0,
+    "expected_asset_hash_rate": 1.0,
+    "expected_asset_count_exact": true,
+    "page_package_object_match_rate": 1.0,
+    "deterministic_rp_byte_identical": true,
+    "size_match_required": true,
+    "visual_within30_min_pct": 90.0,
+    "critical_region_required": true,
+    "critical_region_min_reference_ink_pct": 0.5,
+    "critical_region_min_render_to_reference_ink_ratio": 0.25,
+    "forbidden_sample_substitution": true,
+    "composite_score_allowed": false
+  },
+  "samples": [
+    {
+      "sample_id": "AX10-DOM-ASSETS",
+      "input_kind": "dom",
+      "feature_focus": "three separate image payloads and surrounding native text",
+      "page_name": "A010 Asset Evidence Axure",
+      "design_path": "output/_p1_canonical_output_fidelity/samples/assets/12_design.json",
+      "design_sha256": "d5ea0b5db881f66010f5aba11ed901cde6363c9bcb48a5b018f97fb9a9135642",
+      "screenshot_path": "output/_p1_canonical_output_fidelity/samples/assets/00_screenshot.png",
+      "screenshot_sha256": "a22150581a324550af68fa568eb8673ea9a2ce63ea874fca33590c899d1236e8",
+      "truth_path": "tests/fixtures/p1/canonical/assets.truth.json",
+      "truth_sha256": "ef6649bbdfc24e53110c7eee49680a4c8835443c321627bf84b238b81758bb22",
+      "critical_texts": [
+        "Asset evidence fixture",
+        "The page contains an image element, a CSS background image, and an inline SVG.",
+        "Ordinary text keeps the page classifiable while the three visual assets remain separate evidence targets."
+      ],
+      "critical_regions": [
+        {
+          "name": "asset-heading",
+          "x": 8,
+          "y": 21,
+          "width": 500,
+          "height": 37
+        },
+        {
+          "name": "asset-explanation",
+          "x": 8,
+          "y": 79,
+          "width": 884,
+          "height": 18
+        },
+        {
+          "name": "asset-visual-content",
+          "x": 8,
+          "y": 114,
+          "width": 300,
+          "height": 196
+        }
+      ],
+      "viewport": {
+        "width": 900,
+        "height": 700
+      },
+      "expected_asset_count": 3
+    },
+    {
+      "sample_id": "AX10-DOM-TRANSPARENT-CROP",
+      "input_kind": "dom",
+      "feature_focus": "cropped translucent image with overlay text",
+      "page_name": "A010 Transparent Crop Axure",
+      "design_path": "output/_p1_canonical_output_fidelity_round17/samples/transparent-crop/12_design.json",
+      "design_sha256": "a6bbe4c67eaf4d565cb64a0f9edebadb0063c9ffacc8bcd6eb684d3c5006cb79",
+      "screenshot_path": "output/_p1_canonical_output_fidelity_round17/samples/transparent-crop/00_screenshot.png",
+      "screenshot_sha256": "f6153c9cbd34d01382224ead55adf1621b6b282f5c2a48cfc1ed5110d478c295",
+      "truth_path": "tests/fixtures/p1/canonical/transparent_crop.truth.json",
+      "truth_sha256": "b15b263259158d3a4ea9bb2ef22363b8cde26e45ba89101adcc34ac9f84597fa",
+      "critical_texts": [
+        "Overlay text",
+        "This canonical page verifies transparent overlay ownership and a cropped image whose source aspect ratio differs from its displayed box.",
+        "Both the overlay text and the visible crop must remain explainable in the generated SVG."
+      ],
+      "critical_regions": [
+        {
+          "name": "overlay-text",
+          "x": 50,
+          "y": 52,
+          "width": 80,
+          "height": 52
+        },
+        {
+          "name": "cropped-image",
+          "x": 40,
+          "y": 40,
+          "width": 100,
+          "height": 100
+        },
+        {
+          "name": "transparent-explanation",
+          "x": 40,
+          "y": 179,
+          "width": 680,
+          "height": 116
+        }
+      ],
+      "viewport": {
+        "width": 900,
+        "height": 700
+      },
+      "expected_asset_count": 1
+    },
+    {
+      "sample_id": "AX10-DOM-NESTED-IFRAME",
+      "input_kind": "dom",
+      "feature_focus": "two-level accessible srcdoc iframe projection",
+      "page_name": "A010 Nested Iframe Axure",
+      "design_path": "output/_p2_nested_iframe_probe_round3/samples/nested-iframe/12_design.json",
+      "design_sha256": "7a2b1d3e20f4d330ffdedd12cc4dc43435d70c92b94f74ac5a6d82c837b262b2",
+      "screenshot_path": "output/_p2_nested_iframe_probe_round3/samples/nested-iframe/00_screenshot.png",
+      "screenshot_sha256": "aceb4572eab87eee9ea350c3d6ab6cb741c1aed727c288db5bcbab9ca64d38fa",
+      "truth_path": "tests/fixtures/p1/canonical/p2/nested_iframe.truth.json",
+      "truth_sha256": "d09652da8b7bb1faf332f678f7f53acc4e624a5c032d1ae5de08499cab38b86f",
+      "critical_texts": [
+        "Nested iframe holdout",
+        "This root document verifies recursive srcdoc frame capture across two nested levels.",
+        "Child frame content",
+        "This paragraph is captured from the first accessible child document.",
+        "Grandchild text remains native and editable."
+      ],
+      "critical_regions": [
+        {
+          "name": "nested-heading",
+          "x": 20,
+          "y": 19,
+          "width": 620,
+          "height": 40
+        },
+        {
+          "name": "root-explanation",
+          "x": 20,
+          "y": 65,
+          "width": 620,
+          "height": 44
+        },
+        {
+          "name": "child-frame-content",
+          "x": 40,
+          "y": 139,
+          "width": 420,
+          "height": 82
+        },
+        {
+          "name": "grandchild-content",
+          "x": 52,
+          "y": 251,
+          "width": 390,
+          "height": 28
+        }
+      ],
+      "viewport": {
+        "width": 900,
+        "height": 500
+      },
+      "expected_asset_count": 0
+    }
+  ]
+}

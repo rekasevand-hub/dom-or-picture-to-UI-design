@@ -27,7 +27,88 @@ class _RecordingAdapter(FigmaBridgeAdapter):
         return {"ok": True}
 
 
+class _TextRenderAdapter(_RecordingAdapter):
+    def create_frame(self, spec):
+        self.calls.append(("create_frame", dict(spec)))
+        return "0:1"
+
+    def create_text(self, spec, parent_id=None):
+        self.calls.append(("create_text", dict(spec), parent_id))
+        return "0:2"
+
+    def flush(self) -> None:
+        pass
+
+
 class FigmaAdapterEditTests(unittest.TestCase):
+    def test_single_line_text_uses_measured_line_box_without_css_line_height(
+        self,
+    ) -> None:
+        adapter = _TextRenderAdapter()
+        design = {
+            "canvas": {"width": 500, "height": 120, "background": "#ffffff"},
+            "elements": [
+                {
+                    "id": "footer",
+                    "type": "text",
+                    "text": "Copyright",
+                    "x": 135,
+                    "y": 51,
+                    "width": 300,
+                    "height": 30,
+                    "textEmBox": [190, 56, 120, 19],
+                    "textEmLines": 1,
+                    "style": {
+                        "fontFamily": "Arial",
+                        "fontSize": 14,
+                        "lineHeight": 30,
+                        "textAlign": "center",
+                        "textColor": "#999999",
+                    },
+                }
+            ],
+        }
+
+        adapter.render_design(design)
+
+        text_spec = adapter.calls[-1][1]
+        self.assertEqual(text_spec["y"], 56)
+        self.assertNotIn("lineHeight", text_spec)
+
+    def test_multi_line_text_keeps_css_line_height_and_element_origin(
+        self,
+    ) -> None:
+        adapter = _TextRenderAdapter()
+        design = {
+            "canvas": {"width": 500, "height": 120, "background": "#ffffff"},
+            "elements": [
+                {
+                    "id": "summary",
+                    "type": "text",
+                    "text": "first\\nsecond",
+                    "x": 20,
+                    "y": 30,
+                    "width": 200,
+                    "height": 38,
+                    "textEmBox": [20, 30, 190, 34],
+                    "textEmLines": 2,
+                    "style": {
+                        "fontFamily": "Arial",
+                        "fontSize": 12,
+                        "lineHeight": 18,
+                        "textAlign": "start",
+                        "textColor": "#333333",
+                    },
+                }
+            ],
+        }
+
+        adapter.render_design(design)
+
+        text_spec = adapter.calls[-1][1]
+        self.assertEqual(text_spec["y"], 30)
+        self.assertEqual(text_spec["lineHeight"], 18)
+
     def test_expected_region_checks_are_independent(self) -> None:
         expected = {
             "imageFillSha256": "a" * 64,
@@ -54,7 +135,9 @@ class FigmaAdapterEditTests(unittest.TestCase):
         self.assertEqual(result.checks["bounds"], "mismatched")
         self.assertEqual(result.checks["layoutSnapshot"], "matched")
 
-    def test_compensation_removes_only_scope_nodes_and_keeps_incomplete_manual(self) -> None:
+    def test_compensation_removes_only_scope_nodes_and_keeps_incomplete_manual(
+        self,
+    ) -> None:
         scope = CompensationScope(
             job_id="job-a",
             region_id="region-1",
@@ -64,9 +147,21 @@ class FigmaAdapterEditTests(unittest.TestCase):
         plan = plan_region_compensation(
             scope,
             owned_nodes={
-                "1:1": {"job_id": "job-a", "owner": "figma_auto_agent"},
-                "1:2": {"job_id": "job-b", "owner": "figma_auto_agent"},
-                "1:3": {"job_id": "job-a", "owner": "figma_auto_agent"},
+                "1:1": {
+                    "job_id": "job-a",
+                    "region_id": "region-1",
+                    "owner": "figma_auto_agent",
+                },
+                "1:2": {
+                    "job_id": "job-b",
+                    "region_id": "region-1",
+                    "owner": "figma_auto_agent",
+                },
+                "1:3": {
+                    "job_id": "job-a",
+                    "region_id": "region-1",
+                    "owner": "figma_auto_agent",
+                },
             },
         )
         takeover = plan_region_compensation(
@@ -77,8 +172,16 @@ class FigmaAdapterEditTests(unittest.TestCase):
                 user_takeover_state="modified",
             ),
             owned_nodes={
-                "1:1": {"job_id": "job-a", "owner": "figma_auto_agent"},
-                "1:2": {"job_id": "job-a", "owner": "figma_auto_agent"},
+                "1:1": {
+                    "job_id": "job-a",
+                    "region_id": "region-1",
+                    "owner": "figma_auto_agent",
+                },
+                "1:2": {
+                    "job_id": "job-a",
+                    "region_id": "region-1",
+                    "owner": "figma_auto_agent",
+                },
             },
         )
 
@@ -87,6 +190,39 @@ class FigmaAdapterEditTests(unittest.TestCase):
         self.assertEqual(plan.status, "compensable")
         self.assertEqual(takeover.status, "rollback-incomplete/manual-review")
         self.assertEqual(takeover.remove_node_ids, ())
+
+    def test_compensation_requires_exact_job_owner_and_region_markers(self) -> None:
+        scope = CompensationScope(
+            job_id="job-a",
+            region_id="region-a",
+            node_ids=("1:1", "1:2", "1:3"),
+            user_takeover_state="none",
+        )
+
+        plan = plan_region_compensation(
+            scope,
+            owned_nodes={
+                "1:1": {
+                    "job_id": "job-a",
+                    "region_id": "region-a",
+                    "owner": "figma_auto_agent",
+                },
+                "1:2": {
+                    "job_id": "job-a",
+                    "region_id": "region-b",
+                    "owner": "figma_auto_agent",
+                },
+                "1:3": {
+                    "job_id": "job-a",
+                    "owner": "figma_auto_agent",
+                },
+            },
+        )
+
+        self.assertEqual(plan.status, "rollback-incomplete/manual-review")
+        self.assertEqual(plan.remove_node_ids, ())
+        self.assertEqual(plan.preserved_node_ids, ("1:2",))
+        self.assertEqual(plan.unknown_node_ids, ("1:3",))
 
     def test_set_text_targets_explicit_node(self) -> None:
         adapter = _RecordingAdapter()
@@ -333,10 +469,7 @@ class FigmaAdapterEditTests(unittest.TestCase):
                     {
                         "type": "response",
                         "requestId": self.request["requestId"],
-                        "error": (
-                            "BRIDGE_WRITE_BACKPRESSURE: "
-                            "write queue is full"
-                        ),
+                        "error": ("BRIDGE_WRITE_BACKPRESSURE: " "write queue is full"),
                         "code": "BRIDGE_WRITE_BACKPRESSURE",
                         "outcome": "not-applied",
                         "retryAfterMs": 37,

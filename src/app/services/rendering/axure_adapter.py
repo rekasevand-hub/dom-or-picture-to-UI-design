@@ -28,6 +28,7 @@
 
 与 Figma / SVG 链路完全独立：元素只由基类 `render_design` 按绘制序喂进来，本类不碰顺序。
 """
+
 from __future__ import annotations
 
 import logging
@@ -46,8 +47,15 @@ logger = logging.getLogger(__name__)
 # `0x00FFFFFF` 是 Axure 自己写的「透明」（alpha=0 时 RGB 无所谓，照抄它）。
 TRANSPARENT = 0x00FFFFFF
 _HEX = re.compile(r"^#?(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$")
-_ALIGN = {"left": 0, "start": 0, "center": 1, "centre": 1,
-          "right": 2, "end": 2, "justify": 0}
+_ALIGN = {
+    "left": 0,
+    "start": 0,
+    "center": 1,
+    "centre": 1,
+    "right": 2,
+    "end": 2,
+    "justify": 0,
+}
 
 
 def axure_color(value: Any) -> int | None:
@@ -158,7 +166,37 @@ def _no_reflow(spec: dict[str, Any]) -> bool:
     零余量那条由 `text_wrap.box_is_own_line` 判：有余量的盒子发布端本来也折不错，
     那条路径逐字节不变。
     """
-    return _nowrap(spec) or text_wrap.box_is_own_line(spec)
+    return _base_no_reflow(spec) or _measured_single_line(spec)
+
+
+def _base_no_reflow(spec: dict[str, Any]) -> bool:
+    return (
+        _nowrap(spec)
+        or text_wrap.box_is_own_line(spec)
+        or _image_candidate_single_line(spec)
+    )
+
+
+def _measured_single_line(spec: dict[str, Any]) -> bool:
+    """Use browser-derived first-line evidence to prevent Axure reflow."""
+    text = str(spec.get("text") or "")
+    if not text or "\n" in text or _number(spec.get("textEmLines"), 0.0) != 1:
+        return False
+    lines = spec.get("lines")
+    return not isinstance(lines, list) or len(lines) <= 1
+
+
+def _image_candidate_single_line(spec: dict[str, Any]) -> bool:
+    """Keep a flat-image single-line candidate from reflowing in Axure."""
+    image_meta = spec.get("imageMVP")
+    text = str(spec.get("text") or "")
+    if not isinstance(image_meta, dict) or not text or "\n" in text:
+        return False
+    if spec.get("lines"):
+        return False
+    height = _number(spec.get("height"), 0.0)
+    size = _number(spec.get("fontSize"), 12.0) or 12.0
+    return 0.0 < height <= size * 1.5
 
 
 def _pin_breaks(spec: dict[str, Any], text: str) -> str:
@@ -262,8 +300,11 @@ def _aligned_panel_height(spec: dict[str, Any], top: float, height: float) -> fl
     return new_height if new_height >= 1.0 else height
 
 
-def _caption_inset(spec: dict[str, Any], x: float, width: float,
-                   ) -> tuple[float, bool] | None:
+def _caption_inset(
+    spec: dict[str, Any],
+    x: float,
+    width: float,
+) -> tuple[float, bool] | None:
     """按钮标题相对控件左缘的偏移与「是否需要 nowrap」；不能接管时给 None。
 
     `Button` 的标题是控件的子 `RichTextPanel`。**面板几何不是杠杆**：发布端
@@ -311,13 +352,29 @@ class AxureRPAdapter(PrototypeAdapter):
     supports_pages = True
     # 本版真正下发的 DesignSpec 字段；其余（opacity / shadow …）忽略。`letterSpacing`
     # 也不下发（RP8 没有这个槽，见 `_pin_breaks`）—— 它只用来决定折行断点。
-    SUPPORTED_FIELDS = ("x", "y", "width", "height", "fillColor", "borderColor",
-                        "borderWidth", "borderRadius", "text", "textColor",
-                        "fontSize", "fontWeight", "fontFamily", "lineHeight",
-                        "textAlign", "whiteSpace", "imageBase64")
+    SUPPORTED_FIELDS = (
+        "x",
+        "y",
+        "width",
+        "height",
+        "fillColor",
+        "borderColor",
+        "borderWidth",
+        "borderRadius",
+        "text",
+        "textColor",
+        "fontSize",
+        "fontWeight",
+        "fontFamily",
+        "lineHeight",
+        "textAlign",
+        "whiteSpace",
+        "imageBase64",
+    )
 
-    def __init__(self, output_path: str | Path,
-                 template_path: str | Path | None = None):
+    def __init__(
+        self, output_path: str | Path, template_path: str | Path | None = None
+    ):
         self.output_path = Path(output_path)
         # 模板缺省 = 仓库默认（`assets/axure/rp8/base_native.rp`，从原生 Axure 抽出）。
         self.template_path = Path(template_path) if template_path else None
@@ -334,8 +391,11 @@ class AxureRPAdapter(PrototypeAdapter):
 
     def connect(self) -> None:
         if self._template is None:
-            self._template = (writer.Template.load(self.template_path)
-                              if self.template_path else writer.default_template())
+            self._template = (
+                writer.Template.load(self.template_path)
+                if self.template_path
+                else writer.default_template()
+            )
 
     def disconnect(self) -> None:
         pass
@@ -347,21 +407,33 @@ class AxureRPAdapter(PrototypeAdapter):
         self._pending_text = None
         self.canvas_width = _number(spec.get("width"), self.canvas_width) or 800.0
         self.canvas_height = _number(spec.get("height"), self.canvas_height) or 600.0
-        frame = doc.Frame(name=str(spec.get("name") or "Home"),
-                          width=self.canvas_width,
-                          height=self.canvas_height)
+        frame = doc.Frame(
+            name=str(spec.get("name") or "Home"),
+            width=self.canvas_width,
+            height=self.canvas_height,
+        )
         # 页面背景控件：Axure 的页面本身没有可编辑的底色对象（Figma 的画板有），
         # 而页宽/页高在 `.rp` 里也靠内容包围盒撑出来（format §11.9）。发一个铺满
         # 画板的矩形当最底层，既补上「背景控件」，也把画板尺寸钉死。
         background = axure_color(spec.get("backgroundColor")) or 0xFFFFFFFF
-        frame.widgets.append(doc.Rect(
-            x=0.0, y=0.0, width=self.canvas_width, height=self.canvas_height,
-            label="Background", fill=background, border=None, border_width=0.0))
+        frame.widgets.append(
+            doc.Rect(
+                x=0.0,
+                y=0.0,
+                width=self.canvas_width,
+                height=self.canvas_height,
+                label="Background",
+                fill=background,
+                border=None,
+                border_width=0.0,
+            )
+        )
         self._frames.append(frame)
         return None
 
-    def create_rectangle(self, spec: dict[str, Any],
-                         parent_id: str | None = None) -> str | None:
+    def create_rectangle(
+        self, spec: dict[str, Any], parent_id: str | None = None
+    ) -> str | None:
         # 基类把 rectangle / container / divider / button / input 都送到这里，靠
         # `spec["type"]` 分派：`button` -> 内置库 Button（顶部标题内嵌），
         # `input` -> `TextBox`（输入框），其余（含 `divider`）还是普通形状。
@@ -374,22 +446,38 @@ class AxureRPAdapter(PrototypeAdapter):
             widget = self._rect(spec)
         self._add(widget)
         # 有文字就等于已经内嵌进控件了：下一次 `create_text` 是同一个 spec 的重复下发。
-        self._pending_text = (widget if isinstance(widget, (doc.Button, doc.TextField))
-                              and str(spec.get("text") or "") else None)
+        self._pending_text = (
+            widget
+            if isinstance(widget, (doc.Button, doc.TextField))
+            and str(spec.get("text") or "")
+            else None
+        )
         return None
 
-    def create_ellipse(self, spec: dict[str, Any],
-                       parent_id: str | None = None) -> str | None:
+    def create_ellipse(
+        self, spec: dict[str, Any], parent_id: str | None = None
+    ) -> str | None:
         """圆 / 椭圆：`Shape=15` + 4 点圆路径（配方见 format §11.7），不是矩形换色。"""
         self._pending_text = None
         x, y, width, height = self._box(spec)
         fill, border, border_width = self._paint(spec)
-        self._add(doc.Ellipse(x=x, y=y, width=width, height=height, label=_label(spec),
-                              fill=fill, border=border, border_width=border_width))
+        self._add(
+            doc.Ellipse(
+                x=x,
+                y=y,
+                width=width,
+                height=height,
+                label=_label(spec),
+                fill=fill,
+                border=border,
+                border_width=border_width,
+            )
+        )
         return None
 
-    def create_text(self, spec: dict[str, Any],
-                    parent_id: str | None = None) -> str | None:
+    def create_text(
+        self, spec: dict[str, Any], parent_id: str | None = None
+    ) -> str | None:
         # 按钮 / 输入框的文字已经随控件发过了：基类为同一个元素再发的这次文字丢掉。
         # （基类里 `create_rectangle` 与这次 `create_text` 是**紧挨着**的两次调用，
         # 所以这个一次性配对是可靠的；任何别的控件调用都会把哨兵清掉。）
@@ -399,8 +487,9 @@ class AxureRPAdapter(PrototypeAdapter):
         self._add(self._text(spec))
         return None
 
-    def create_image(self, spec: dict[str, Any],
-                     parent_id: str | None = None) -> str | None:
+    def create_image(
+        self, spec: dict[str, Any], parent_id: str | None = None
+    ) -> str | None:
         self._pending_text = None
         data = spec.get("imageBase64")
         if not isinstance(data, (bytes, bytearray, str)):
@@ -412,8 +501,11 @@ class AxureRPAdapter(PrototypeAdapter):
             self._add(self._rect(spec))
             return None
         x, y, width, height = self._box(spec)
-        self._add(doc.Image(x=x, y=y, width=width, height=height,
-                            data=blob, label=_label(spec)))
+        self._add(
+            doc.Image(
+                x=x, y=y, width=width, height=height, data=blob, label=_label(spec)
+            )
+        )
         return None
 
     # --- 落盘 ---
@@ -424,29 +516,38 @@ class AxureRPAdapter(PrototypeAdapter):
         pages = doc.build(doc.DesignSpec(frames=list(self._frames)))
         assert self._template is not None
         # 页包缩略图按页自绘（P4）：`doc.build` 保持帧序，逐页一一对应。
-        thumbs = {page.package_guid: thumbnail.render(frame)
-                  for page, frame in zip(pages, self._frames)}
+        thumbs = {
+            page.package_guid: thumbnail.render(frame)
+            for page, frame in zip(pages, self._frames)
+        }
         members = writer.generate(self._template, pages, thumbnails=thumbs)
         report = writer.self_check(members)
         if not report["ok"]:
             raise ValueError(
                 "Axure .rp 离线自检未通过：c1 %d/%d，存储 %d/%d"
-                % (report["c1_ok"], report["c1"], report["stores_ok"], report["stores"]))
+                % (report["c1_ok"], report["c1"], report["stores_ok"], report["stores"])
+            )
         writer.write_rp(members, self.output_path)
         widgets = sum(len(page.widgets) for page in pages)
-        logger.info("Axure .rp 已生成：%s（%d 页 / %d 控件）",
-                    self.output_path, len(pages), widgets)
+        logger.info(
+            "Axure .rp 已生成：%s（%d 页 / %d 控件）",
+            self.output_path,
+            len(pages),
+            widgets,
+        )
         if self._imageless:
-            logger.warning("有 %d 个图片元素没有 `imageBase64`，已按透明矩形下发",
-                           self._imageless)
+            logger.warning(
+                "有 %d 个图片元素没有 `imageBase64`，已按透明矩形下发", self._imageless
+            )
 
     # --- 内部 ---
 
     def _current(self) -> doc.Frame:
         """当前页面；还没建画板时兜一个默认画板（基类保证会先调 `create_frame`）。"""
         if not self._frames:
-            self._frames.append(doc.Frame(width=self.canvas_width,
-                                          height=self.canvas_height))
+            self._frames.append(
+                doc.Frame(width=self.canvas_width, height=self.canvas_height)
+            )
         return self._frames[-1]
 
     def _add(self, widget) -> None:
@@ -454,9 +555,12 @@ class AxureRPAdapter(PrototypeAdapter):
 
     @staticmethod
     def _box(spec: dict[str, Any]) -> tuple[float, float, float, float]:
-        return (_number(spec.get("x")), _number(spec.get("y")),
-                max(0.0, _number(spec.get("width"))),
-                max(0.0, _number(spec.get("height"))))
+        return (
+            _number(spec.get("x")),
+            _number(spec.get("y")),
+            max(0.0, _number(spec.get("width"))),
+            max(0.0, _number(spec.get("height"))),
+        )
 
     @staticmethod
     def _paint(spec: dict[str, Any]) -> tuple[int, int | None, float]:
@@ -468,16 +572,26 @@ class AxureRPAdapter(PrototypeAdapter):
         fill = axure_color(spec.get("fillColor"))
         border = axure_color(spec.get("borderColor"))
         stroke = _opt_number(spec.get("borderWidth"))
-        return (TRANSPARENT if fill is None else fill, border,
-                0.0 if border is None else (stroke if stroke is not None else 1.0))
+        return (
+            TRANSPARENT if fill is None else fill,
+            border,
+            0.0 if border is None else (stroke if stroke is not None else 1.0),
+        )
 
     def _rect(self, spec: dict[str, Any]) -> doc.Rect:
         x, y, width, height = self._box(spec)
         fill, border, border_width = self._paint(spec)
         return doc.Rect(
-            x=x, y=y, width=width, height=height, label=_label(spec),
-            fill=fill, border=border, border_width=border_width,
-            corner_radius=_number(spec.get("borderRadius"), 0.0))
+            x=x,
+            y=y,
+            width=width,
+            height=height,
+            label=_label(spec),
+            fill=fill,
+            border=border,
+            border_width=border_width,
+            corner_radius=_number(spec.get("borderRadius"), 0.0),
+        )
 
     @staticmethod
     def _font_args(spec: dict[str, Any], anchor: str = "") -> dict[str, Any]:
@@ -487,8 +601,11 @@ class AxureRPAdapter(PrototypeAdapter):
             "size": _number(spec.get("fontSize"), 12.0) or 12.0,
             "weight": _weight(spec.get("fontWeight")),
             "color": axure_color(spec.get("textColor")) or 0xFF333333,
-            "align": (_align(spec.get("textAlign")) if spec.get("textAlign")
-                      else (1 if anchor == "middle" else 0)),
+            "align": (
+                _align(spec.get("textAlign"))
+                if spec.get("textAlign")
+                else (1 if anchor == "middle" else 0)
+            ),
             "line_spacing": _opt_number(spec.get("lineHeight")),
         }
 
@@ -506,8 +623,9 @@ class AxureRPAdapter(PrototypeAdapter):
             width = _text_width(text, fonts["size"])
             if anchor == "middle":
                 x -= width / 2.0
-        border_width = (0.0 if border is None
-                        else (stroke if stroke is not None else 1.0))
+        border_width = (
+            0.0 if border is None else (stroke if stroke is not None else 1.0)
+        )
         fill = axure_color(spec.get("fillColor"))
         if border_width:
             # 文字盒带边框（CSS `box-sizing:border-box`，内容盒在边框以内）：**边框单独
@@ -526,13 +644,23 @@ class AxureRPAdapter(PrototypeAdapter):
             # `left:1px`，两者都撤掉了。基类只为「带非中性底色的文字」发过底框
             # （adapter_base `_render_page`：整盒 + 同色 + 同边框）；底色透明 / 纯白时边框
             # 本来就画在文字控件上，那份也一并挪到这个矩形里。
-            if not (fill is not None
-                    and not self._is_neutral_background(spec.get("fillColor"))):
-                self._add(doc.Rect(
-                    x=x, y=y, width=width, height=height, label=_label(spec),
-                    fill=(TRANSPARENT if fill is None else fill),
-                    border=border, border_width=border_width,
-                    corner_radius=_number(spec.get("borderRadius"), 0.0)))
+            if not (
+                fill is not None
+                and not self._is_neutral_background(spec.get("fillColor"))
+            ):
+                self._add(
+                    doc.Rect(
+                        x=x,
+                        y=y,
+                        width=width,
+                        height=height,
+                        label=_label(spec),
+                        fill=(TRANSPARENT if fill is None else fill),
+                        border=border,
+                        border_width=border_width,
+                        corner_radius=_number(spec.get("borderRadius"), 0.0),
+                    )
+                )
             inset = border_width
             x, y = x + inset, y + inset
             width = max(1.0, width - 2 * inset)
@@ -544,7 +672,11 @@ class AxureRPAdapter(PrototypeAdapter):
         height = _aligned_panel_height(spec, y, height)
         return doc.Text(
             text=text,
-            x=x, y=y, width=width, height=height, label=_label(spec),
+            x=x,
+            y=y,
+            width=width,
+            height=height,
+            label=_label(spec),
             # 基类给「带底色的文字」另发过一个底框，这里再给文字形状一份同样的底色
             # 是幂等的（同色同几何）；缺了它「白底文字」就会漏底（基类把白当透明）。
             # 带边框那条分支里底色已由边框矩形铺满整盒，`fill` 在那里被换成透明。
@@ -556,7 +688,8 @@ class AxureRPAdapter(PrototypeAdapter):
             # 不许发布端再折一遍的元素（见 `_no_reflow`）：控件自己的 `AutoFitWidth`
             # 一发，发布端就写 `white-space:nowrap`，面板宽度仍是盒宽 -> 位置不变。
             shape_autofit=_no_reflow(spec),
-            **fonts)
+            **fonts,
+        )
 
     def _button(self, spec: dict[str, Any]) -> doc.Button:
         """按钮：内置库 `Button` 样式 + **内嵌**标题（配方见 format §11.8）。
@@ -572,12 +705,15 @@ class AxureRPAdapter(PrototypeAdapter):
         """
         x, y, width, height = self._box(spec)
         fill, border, border_width = self._paint(spec)
-        no_reflow = _no_reflow(spec)
+        caption = _caption_inset(spec, x, width)
+        measured_single_line = _measured_single_line(spec)
+        no_reflow = _base_no_reflow(spec) or (
+            measured_single_line and (caption is None or caption[1])
+        )
         # 按钮的标题内嵌在控件里、落点同样是「控件内居中」——与 `_text` 同一口径
         # 按采集到的第一行行框改控件高（见 `_aligned_panel_height`）。
         height = _aligned_panel_height(spec, y, height)
         fonts = self._font_args(spec, "middle")
-        caption = _caption_inset(spec, x, width)
         inset = None
         pad_right = None
         if caption is not None:
@@ -599,15 +735,22 @@ class AxureRPAdapter(PrototypeAdapter):
             # 偏移加回去，所以同时改成左对齐。
             fonts["align"] = 0
         return doc.Button(
-            x=x, y=y, width=width, height=height, label=_label(spec),
+            x=x,
+            y=y,
+            width=width,
+            height=height,
+            label=_label(spec),
             text=str(spec.get("text") or ""),
-            fill=fill, border=border, border_width=border_width,
+            fill=fill,
+            border=border,
+            border_width=border_width,
             corner_radius=_number(spec.get("borderRadius"), 0.0),
             shape_autofit=no_reflow,
             panel_box=panel_box,
             pad_left=inset,
             pad_right=pad_right,
-            **fonts)
+            **fonts,
+        )
 
     def _input(self, spec: dict[str, Any]) -> doc.TextField:
         """输入框：`Axure:DiagramObject:TextBox`（`Text Field` 库样式，§11.8）。
@@ -621,8 +764,15 @@ class AxureRPAdapter(PrototypeAdapter):
         # 行距（P20）没在 TextBox 上实测过，宁可不发，别发明没验过的槽位。
         fonts.pop("line_spacing", None)
         return doc.TextField(
-            x=x, y=y, width=width, height=height, label=_label(spec),
+            x=x,
+            y=y,
+            width=width,
+            height=height,
+            label=_label(spec),
             text=str(spec.get("text") or ""),
-            fill=fill, border=border, border_width=border_width,
+            fill=fill,
+            border=border,
+            border_width=border_width,
             show_border=(border is not None),
-            **fonts)
+            **fonts,
+        )

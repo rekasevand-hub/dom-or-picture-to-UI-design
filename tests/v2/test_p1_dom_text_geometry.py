@@ -8,6 +8,7 @@ from playwright.sync_api import sync_playwright
 
 from src.app.services.structure.capture import DOM_JS
 from src.app.services.structure.providers.dom import (
+    _placeholder_text,
     strip_icon_glyphs,
     _style_from_node,
     _text_geometry_box,
@@ -198,6 +199,49 @@ class DomTextGeometryTests(unittest.TestCase):
             " ".join(" ".join(item["text"] for item in lines).split()),
             " ".join(str(paragraph["text"]).split()),
         )
+        self.assertEqual(
+            paragraph["textBaseline"]["method"],
+            "canvas-font-metrics",
+        )
+        self.assertEqual(paragraph["textBaseline"]["lineCount"], len(lines))
+        self.assertTrue(paragraph["textBaseline"]["y"] > 0)
+        self.assertTrue(all(line["baseline"]["y"] > 0 for line in lines))
+
+    def test_dom_probe_marks_one_representative_per_font_style(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = Path(tmp) / "font-styles.html"
+            fixture.write_text(
+                "<!doctype html><body style='margin:0'>"
+                "<p style='font:16px/24px Arial'>same style A</p>"
+                "<p style='font:16px/24px Arial'>same style B</p>"
+                "<p style='font:700 20px/28px Arial'>bold style</p>"
+                "<p style='font:16px/24px sans-serif'>generic style</p>"
+                "</body>",
+                encoding="utf-8",
+            )
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch(headless=True)
+                try:
+                    page = browser.new_page(viewport={"width": 400, "height": 300})
+                    page.goto(
+                        fixture.resolve().as_uri(),
+                        wait_until="domcontentloaded",
+                    )
+                    nodes = page.evaluate(DOM_JS, "root")
+                finally:
+                    browser.close()
+        probes = [
+            item for item in nodes if item.get("text") and item.get("fontProbeId")
+        ]
+        self.assertEqual(len(probes), 3)
+        self.assertEqual(
+            len({item["fontProbeId"] for item in probes}),
+            3,
+        )
+        self.assertEqual(
+            sum(item["text"].startswith("same style") for item in probes),
+            1,
+        )
 
     def test_browser_measured_lines_take_priority_over_font_estimation(self) -> None:
         spec = {
@@ -212,6 +256,86 @@ class DomTextGeometryTests(unittest.TestCase):
             wrap_for_spec(spec),
             ["one two", "three four"],
         )
+
+    def test_input_placeholder_records_measured_single_line_and_baseline(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = Path(tmp) / "placeholder.html"
+            fixture.write_text(
+                "<!doctype html><body style='margin:0'>"
+                "<input placeholder='Search books' "
+                "style='box-sizing:border-box;width:220px;height:42px;"
+                "padding:8px 12px;border:1px solid #999;"
+                "font:16px/24px Arial'>"
+                "</body>",
+                encoding="utf-8",
+            )
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch(headless=True)
+                try:
+                    page = browser.new_page(viewport={"width": 300, "height": 100})
+                    page.goto(
+                        fixture.resolve().as_uri(),
+                        wait_until="domcontentloaded",
+                    )
+                    nodes = page.evaluate(DOM_JS)
+                finally:
+                    browser.close()
+
+        input_node = next(item for item in nodes if item.get("tag") == "input")
+        self.assertIsNotNone(input_node["textEmBox"])
+        self.assertEqual(input_node["textEmLines"], 1)
+        self.assertEqual(
+            input_node["textBaseline"]["method"],
+            "canvas-font-metrics",
+        )
+        self.assertEqual(input_node["textBaseline"]["lineCount"], 1)
+        self.assertAlmostEqual(
+            input_node["textBaseline"]["y"],
+            input_node["textEmBox"][1] + input_node["textBaseline"]["ascent"],
+            places=2,
+        )
+
+    def test_placeholder_text_preserves_measured_line_evidence(self) -> None:
+        node = {
+            "tag": "input",
+            "placeholder": "Search books",
+            "placeholderColor": "rgb(153, 153, 153)",
+            "color": "rgb(0, 0, 0)",
+            "textBox": [20, 10, 180, 24],
+            "textEmBox": [20, 10, 180, 24],
+            "textEmLines": 1,
+            "textBaseline": {
+                "y": 27,
+                "ascent": 17,
+                "descent": 4,
+                "method": "canvas-font-metrics",
+                "lineCount": 1,
+            },
+            "fontFamily": "Arial",
+            "fontSize": "16px",
+            "fontWeight": "400",
+            "fontStyle": "normal",
+            "textAlign": "start",
+            "lineHeight": "24px",
+            "x": 0,
+            "y": 0,
+            "w": 220,
+            "h": 42,
+            "bg": "#ffffff",
+            "pageBg": "#ffffff",
+            "borderColor": "#999999",
+            "borderWidth": "1px",
+            "borderRadius": "0px",
+            "position": "static",
+            "zIndex": 0,
+            "interactive": True,
+        }
+
+        placeholder = _placeholder_text(node, "#ffffff")
+
+        self.assertEqual(placeholder["textEmBox"], [20, 10, 180, 24])
+        self.assertEqual(placeholder["textEmLines"], 1)
+        self.assertEqual(placeholder["textBaseline"]["y"], 27)
 
     def test_single_measured_line_prevents_rewrap(self) -> None:
         text = (
@@ -295,14 +419,15 @@ class DomTextGeometryTests(unittest.TestCase):
             for item in nodes
             if str(item.get("text") or "").startswith("Browser measured single")
         )
+        self.assertEqual(len(paragraph["textLines"]), 1)
+        self.assertEqual(paragraph["textLines"][0]["text"], text)
         self.assertEqual(
-            paragraph["textLines"],
-            [
-                {
-                    "text": text,
-                    "box": paragraph["textLines"][0]["box"],
-                }
-            ],
+            paragraph["textLines"][0]["box"],
+            paragraph["textEmBox"],
+        )
+        self.assertEqual(
+            paragraph["textLines"][0]["baseline"]["method"],
+            "canvas-font-metrics",
         )
 
 

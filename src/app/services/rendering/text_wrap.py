@@ -15,6 +15,7 @@ Microsoft YaHei 这类字体里是全角（advance = font-size），拉丁字母
 余量算进行内盒的 advance；估算漏掉它就会**多塞字**——dushu 的电子书简介 fs=12 /
 字距 1px，一行的 16 个字差 16px，正好差两个字（`归档文档 axure_rp8_plan.md` §9.19）。
 """
+
 from __future__ import annotations
 
 import unicodedata
@@ -52,6 +53,7 @@ _TEXT_COMPONENT_STATUSES = {
     "fail",
     "unknown",
     "not-evaluated",
+    "not-required",
 }
 
 
@@ -80,7 +82,7 @@ class TextAcceptance:
         )
         if "fail" in statuses:
             return "blocked-fail"
-        if statuses.count("pass") == len(statuses):
+        if all(status in {"pass", "not-required"} for status in statuses):
             return "pass"
         if "partial" in statuses:
             return "blocked-partial"
@@ -110,15 +112,13 @@ def char_width(ch: str, font_size: float) -> float:
     return font_size * _LATIN_EM
 
 
-def estimate_width(text: str, font_size: float,
-                   letter_spacing: float = 0.0) -> float:
+def estimate_width(text: str, font_size: float, letter_spacing: float = 0.0) -> float:
     """整串文本的估算宽度（px）。
 
     `letter_spacing` 是 CSS 的 computed `letter-spacing`（px，可负）：CSS 在**每个
     字符后面**都补一份，行内盒的 advance 也把它算进去，所以这里按 `len(text)` 份加。
     """
-    return (sum(char_width(ch, font_size) for ch in text)
-            + letter_spacing * len(text))
+    return sum(char_width(ch, font_size) for ch in text) + letter_spacing * len(text)
 
 
 def letter_spacing_of(spec: dict) -> float:
@@ -167,12 +167,17 @@ def _pick_cut(current: list, breaks: list, nxt: str) -> int:
         breaks.pop()
         cut = breaks[-1]
     if bad_start(cut):
-        return len(current)      # 连一个合法断点都没有：整行硬断（浏览器也是溢出）
+        return len(current)  # 连一个合法断点都没有：整行硬断（浏览器也是溢出）
     return cut
 
 
-def ellipsize(line: str, width: float, font_size: float, mark: str = "\u2026",
-              letter_spacing: float = 0.0) -> str:
+def ellipsize(
+    line: str,
+    width: float,
+    font_size: float,
+    mark: str = "\u2026",
+    letter_spacing: float = 0.0,
+) -> str:
     """截到连 mark 一起放得下为止（从行尾逐个去掉字符）。"""
     line = line.rstrip()
     while line and estimate_width(line + mark, font_size, letter_spacing) > width:
@@ -180,9 +185,13 @@ def ellipsize(line: str, width: float, font_size: float, mark: str = "\u2026",
     return (line + mark) if line else mark
 
 
-def wrap_lines(text: str, width: float, font_size: float,
-               max_lines: int | None = None,
-               letter_spacing: float = 0.0) -> list[str] | None:
+def wrap_lines(
+    text: str,
+    width: float,
+    font_size: float,
+    max_lines: int | None = None,
+    letter_spacing: float = 0.0,
+) -> list[str] | None:
     """把 text 折成每行不超过 width 的行；不需要折行时返回 None。
 
     max_lines 给定时，超出的行整行丢弃、末行补省略号（对应 CSS 的
@@ -193,7 +202,7 @@ def wrap_lines(text: str, width: float, font_size: float,
     lines: list[str] = []
     current: list[str] = []
     current_w = 0.0
-    breaks: list[int] = []              # 在 breaks[-1] 处收行（current[:cut]）是合法的
+    breaks: list[int] = []  # 在 breaks[-1] 处收行（current[:cut]）是合法的
     for ch in text:
         cw = char_width(ch, font_size) + letter_spacing
         if current and current_w + cw > width:
@@ -215,8 +224,9 @@ def wrap_lines(text: str, width: float, font_size: float,
         return None
     if max_lines and len(lines) > max_lines:
         lines = lines[:max_lines]
-        lines[-1] = ellipsize(lines[-1], width, font_size,
-                              letter_spacing=letter_spacing)
+        lines[-1] = ellipsize(
+            lines[-1], width, font_size, letter_spacing=letter_spacing
+        )
     return lines
 
 
@@ -262,9 +272,7 @@ def max_lines_of(spec: dict, line_height: int) -> int:
 def wrap_for_spec(spec: dict) -> list[str] | None:
     """需要折行时返回每行文本；否则 None（调用端据此保持老路径逐字节不变）。"""
     measured = [
-        str(line).strip()
-        for line in (spec.get("lines") or [])
-        if str(line).strip()
+        str(line).strip() for line in (spec.get("lines") or []) if str(line).strip()
     ]
     if measured:
         return measured
@@ -280,8 +288,10 @@ def wrap_for_spec(spec: dict) -> list[str] | None:
     font_size = font_size_of(spec)
     letter_spacing = letter_spacing_of(spec)
     body = text.strip()
-    if (width <= 0 or estimate_width(body, font_size, letter_spacing)
-            <= width * _OVERFLOW_RATIO):
+    if (
+        width <= 0
+        or estimate_width(body, font_size, letter_spacing) <= width * _OVERFLOW_RATIO
+    ):
         return None
     line_height = line_height_of(spec, font_size)
     max_lines = max_lines_of(spec, line_height)
@@ -305,9 +315,9 @@ def box_is_own_line(spec: dict) -> bool:
     给它也钉成一行（溢出几个像素）。要分清得让采集端标出「盒宽由内容撑出」。
     """
     if spec.get("lines"):
-        return False                      # IR 自己折过：这是多行块
+        return False  # IR 自己折过：这是多行块
     if str(spec.get("whiteSpace") or "").strip().lower() == "nowrap":
-        return False                      # 页面作者写了 nowrap：走 `_nowrap` 那条路
+        return False  # 页面作者写了 nowrap：走 `_nowrap` 那条路
     text = str(spec.get("text") or "").strip()
     if len(text) < 2:
         return False
@@ -317,8 +327,7 @@ def box_is_own_line(spec: dict) -> bool:
         return False
     if width <= 0:
         return False
-    ratio = estimate_width(text, font_size_of(spec),
-                           letter_spacing_of(spec)) / width
+    ratio = estimate_width(text, font_size_of(spec), letter_spacing_of(spec)) / width
     return _OWN_BOX_RATIO_LO <= ratio <= _OVERFLOW_RATIO
 
 
@@ -342,6 +351,4 @@ def lines_spec_fields(spec: dict, lines: list[str]) -> dict:
         align = "end"
     else:
         align = "start"
-    return {"lines": list(lines),
-            "lineHeight": line_height,
-            "textAlign": align}
+    return {"lines": list(lines), "lineHeight": line_height, "textAlign": align}

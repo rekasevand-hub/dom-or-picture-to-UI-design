@@ -28,6 +28,7 @@ REQUIRED_CLAIMS = {
     "PV-06",
     "PV-07",
     "PV-08",
+    "PV-09",
 }
 
 

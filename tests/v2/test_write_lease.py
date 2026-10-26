@@ -12,6 +12,8 @@ from src.app.services.write_lease import (
     WriterLeaseConflict,
     WriterLeaseLost,
     WriterLeaseStore,
+    acquire_writer_lease,
+    release_writer_lease,
 )
 
 
@@ -55,6 +57,8 @@ class WriterLeaseTests(unittest.TestCase):
                 ttl_seconds=10,
                 clock=clock,
             )
+            self.addCleanup(first_store.close)
+            self.addCleanup(second_store.close)
             first = first_store.acquire()
 
             self.assertEqual(first.generation, 1)
@@ -67,6 +71,7 @@ class WriterLeaseTests(unittest.TestCase):
             second = second_store.acquire()
             self.assertEqual(second.generation, 2)
             self.assertEqual(second.owner_id, "writer-b")
+            second_store.close()
 
     def test_expired_and_wrong_generation_tokens_are_lost(self) -> None:
         with TemporaryDirectory() as raw_dir:
@@ -77,6 +82,7 @@ class WriterLeaseTests(unittest.TestCase):
                 ttl_seconds=5,
                 clock=clock,
             )
+            self.addCleanup(store.close)
             lease = store.acquire()
 
             with self.assertRaises(WriterLeaseLost):
@@ -89,6 +95,7 @@ class WriterLeaseTests(unittest.TestCase):
             resumed = store.acquire()
             self.assertEqual(resumed.generation, 2)
             self.assertEqual(store.assert_current(resumed), resumed)
+            store.close()
 
     def test_pause_resume_reacquires_only_after_expiry(self) -> None:
         with TemporaryDirectory() as raw_dir:
@@ -99,6 +106,7 @@ class WriterLeaseTests(unittest.TestCase):
                 ttl_seconds=2,
                 clock=clock,
             )
+            self.addCleanup(store.close)
             lease = store.acquire()
             clock.advance(1.5)
             self.assertEqual(store.assert_current(lease), lease)
@@ -108,6 +116,7 @@ class WriterLeaseTests(unittest.TestCase):
                 store.assert_current(lease)
             renewed = store.acquire()
             self.assertGreater(renewed.generation, lease.generation)
+            store.close()
 
     def test_failed_commit_preserves_the_current_lease(self) -> None:
         with TemporaryDirectory() as raw_dir:
@@ -127,6 +136,7 @@ class WriterLeaseTests(unittest.TestCase):
             current = store.acquire()
             before_failure = path.read_bytes()
             clock.advance(11)
+            store.close()
             partitioned = WriterLeaseStore(
                 path,
                 owner_id="writer-b",
@@ -134,18 +144,22 @@ class WriterLeaseTests(unittest.TestCase):
                 clock=clock,
                 before_commit=fail_commit,
             )
+            self.addCleanup(partitioned.close)
 
             with self.assertRaises(WriterLeaseCommitError):
                 partitioned.acquire()
 
             self.assertEqual(path.read_bytes(), before_failure)
-            recovered = WriterLeaseStore(
+            recovered_store = WriterLeaseStore(
                 path,
                 owner_id="writer-c",
                 ttl_seconds=10,
                 clock=clock,
-            ).acquire()
+            )
+            self.addCleanup(recovered_store.close)
+            recovered = recovered_store.acquire()
             self.assertEqual(recovered.generation, current.generation + 1)
+            recovered_store.close()
 
     def test_two_local_processes_cannot_hold_the_same_lease(self) -> None:
         with TemporaryDirectory() as raw_dir:
@@ -174,6 +188,66 @@ class WriterLeaseTests(unittest.TestCase):
                 if process.is_alive():
                     process.terminate()
                     process.join(timeout=5)
+
+    def test_dead_same_owner_process_lease_is_recoverable_before_ttl(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as raw_dir:
+            path = Path(raw_dir) / "writer-lease.json"
+            ready = Path(raw_dir) / "ready.txt"
+            context = multiprocessing.get_context("spawn")
+            process = context.Process(
+                target=_hold_lease_process,
+                args=(str(path), str(ready), 30.0),
+            )
+            process.start()
+            try:
+                deadline = time.monotonic() + 5
+                while not ready.exists() and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                self.assertTrue(ready.exists())
+            finally:
+                process.terminate()
+                process.join(timeout=5)
+
+            recovered_store = WriterLeaseStore(
+                path,
+                owner_id="process-holder",
+                ttl_seconds=30,
+            )
+            self.addCleanup(recovered_store.close)
+            recovered = recovered_store.acquire()
+
+            self.assertEqual(recovered.owner_id, "process-holder")
+            self.assertEqual(recovered.generation, 2)
+            recovered_store.close()
+
+    def test_convenience_acquire_retains_process_ownership_until_release(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as raw_dir:
+            path = Path(raw_dir) / "writer-lease.json"
+            lease = acquire_writer_lease(
+                path,
+                owner_id="helper-owner",
+                ttl_seconds=30,
+            )
+
+            with self.assertRaises(WriterLeaseConflict):
+                acquire_writer_lease(
+                    path,
+                    owner_id="helper-contender",
+                    ttl_seconds=30,
+                )
+
+            release_writer_lease(path, lease)
+            contender = acquire_writer_lease(
+                path,
+                owner_id="helper-contender",
+                ttl_seconds=30,
+            )
+            self.assertEqual(contender.generation, lease.generation + 1)
+            release_writer_lease(path, contender)
 
 
 if __name__ == "__main__":

@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import json
+import os
 import tempfile
 import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import websockets
 
@@ -14,6 +18,7 @@ from src.app.services.job_namespace import build_job_namespace
 from src.app.services.bridge_config import ClientWriteLimitConfig
 from src.app.services.bridge_server import (
     BridgeHub,
+    CompletedResponse,
     JournalLockError,
     TransactionRecord,
     _allow_legacy_job_ids_from_env,
@@ -190,9 +195,10 @@ class OwnershipReconciliationTests(unittest.TestCase):
                         },
                     },
                     {
-                        "action": "set_text_runs",
+                        "action": "set_text",
                         "params": {
                             "nodeId": "1:4",
+                            "text": "Title",
                             "textRuns": [{"characters": "Title"}],
                         },
                     },
@@ -209,6 +215,100 @@ class OwnershipReconciliationTests(unittest.TestCase):
                 "regionMembership",
                 "textRuns",
             }.issubset(properties)
+        )
+
+    def test_expected_checks_normalize_layout_and_keep_region_context(self) -> None:
+        checks = BridgeHub._expected_checks(
+            "apply_edit_batch",
+            {
+                "actions": [
+                    {
+                        "action": "set_layout_flow",
+                        "params": {
+                            "nodeId": "1:2",
+                            "regionId": "region-a",
+                            "layout": {
+                                "mode": "HORIZONTAL",
+                                "primaryAlign": "CENTER",
+                            },
+                        },
+                    },
+                    {
+                        "action": "set_bounds",
+                        "params": {
+                            "nodeId": "1:3",
+                            "regionId": "region-a",
+                            "x": 1,
+                            "y": 2,
+                            "width": 30,
+                            "height": 40,
+                        },
+                    },
+                    {
+                        "action": "replace_image_fill",
+                        "params": {
+                            "nodeId": "1:1",
+                            "imageBase64": "aW1hZ2U=",
+                            "fillIndex": 1,
+                            "regionId": "region-a",
+                        },
+                    },
+                ]
+            },
+        )
+        layout = next(
+            check for check in checks if check["property"] == "layoutSnapshot"
+        )
+        image = next(
+            check for check in checks if check["property"] == "imageFillSha256"
+        )
+
+        self.assertEqual(
+            layout["expectedValue"],
+            {
+                "layoutMode": "HORIZONTAL",
+                "primaryAxisAlignItems": "CENTER",
+            },
+        )
+        self.assertEqual(layout["regionId"], "region-a")
+        self.assertEqual(image["fillIndex"], 1)
+        self.assertEqual(image["regionId"], "region-a")
+
+    def test_reconciliation_reports_partial_region_failures(self) -> None:
+        hub = BridgeHub(timeout=2)
+        checks = (
+            {
+                "nodeId": "1:1",
+                "action": "set_text",
+                "property": "characters",
+                "regionId": "region-a",
+                "expectedValue": "same",
+            },
+            {
+                "nodeId": "1:2",
+                "action": "set_text",
+                "property": "characters",
+                "regionId": "region-b",
+                "expectedValue": "intended",
+            },
+        )
+
+        reconciliation = hub._evaluate_expected_checks(
+            checks,
+            {
+                "1:1": {"characters": "same"},
+                "1:2": {"characters": "changed"},
+            },
+        )
+
+        self.assertEqual(reconciliation["classification"], "partial-match")
+        self.assertEqual(
+            reconciliation["regions"]["region-a"]["classification"],
+            "matches-intended",
+        )
+        self.assertEqual(
+            reconciliation["regions"]["region-b"]["classification"],
+            "does-not-match-intended",
         )
 
     def test_ownership_reconciliation_is_conservative(self) -> None:
@@ -253,6 +353,77 @@ class OwnershipReconciliationTests(unittest.TestCase):
 
 
 class BridgeProtocolTests(unittest.IsolatedAsyncioTestCase):
+    async def test_plugin_readback_uses_actual_image_bytes_for_expected_hash(
+        self,
+    ) -> None:
+        hub = BridgeHub(timeout=2)
+        calls: list[tuple[str, dict]] = []
+        payload = b"image"
+        expected_hash = hashlib.sha256(payload).hexdigest()
+
+        async def fake_plugin_call(action: str, params: dict):
+            calls.append((action, params))
+            if action == "get_node_tree":
+                return {
+                    "id": "1:1",
+                    "regionMembership": {
+                        "regionId": "region-a",
+                        "member": True,
+                    },
+                }
+            if action == "image_fill_report":
+                return {
+                    "nodeId": "1:1",
+                    "fills": [
+                        {
+                            "nodeId": "1:1",
+                            "fillIndex": 0,
+                            "byteBase64": base64.b64encode(payload).decode(
+                                "ascii"
+                            ),
+                        }
+                    ],
+                }
+            raise AssertionError(action)
+
+        hub._plugin_call = fake_plugin_call
+        expected_checks = (
+            {
+                "nodeId": "1:1",
+                "action": "replace_image_fill",
+                "property": "imageFillSha256",
+                "expectedSha256": expected_hash,
+                "fillIndex": 0,
+            },
+            {
+                "nodeId": "1:1",
+                "action": "set_bounds",
+                "property": "regionMembership",
+                "expectedValue": {
+                    "regionId": "region-a",
+                    "member": True,
+                },
+                "regionId": "region-a",
+            },
+        )
+
+        readback = await hub._plugin_read_node_tree(
+            "1:1",
+            expected_checks=expected_checks,
+        )
+        reconciliation = hub._evaluate_expected_checks(
+            expected_checks,
+            {"1:1": readback},
+        )
+
+        self.assertEqual(calls[0][0], "get_node_tree")
+        self.assertEqual(calls[1][0], "image_fill_report")
+        self.assertEqual(
+            readback["imageFillSha256"],
+            {"0": expected_hash},
+        )
+        self.assertEqual(reconciliation["classification"], "matches-intended")
+
     async def test_wrong_plugin_token_cannot_replace_active_plugin(self) -> None:
         hub = BridgeHub(timeout=2, plugin_token="plugin-secret")
         active = FakeSocket()
@@ -1710,6 +1881,164 @@ class BridgeProtocolTests(unittest.IsolatedAsyncioTestCase):
                 journal_path=journal_path,
             )
             self.assertEqual(len(replayed.completed), 2)
+
+    async def test_journal_compaction_drops_expired_terminal_transactions(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            journal_path = Path(temp_dir) / "bridge-journal.jsonl"
+            hub = BridgeHub(
+                timeout=2,
+                idempotency_ttl=1,
+                max_cache_entries=2,
+                journal_path=journal_path,
+                max_journal_events=8,
+            )
+            expired_at = time.time() - 120
+            for index in range(12):
+                transaction_id = f"expired-write-{index}"
+                response = {
+                    "type": "response",
+                    "result": {
+                        "status": "committed",
+                        "transactionId": transaction_id,
+                        "committed": [],
+                    },
+                }
+                hub.transactions[transaction_id] = TransactionRecord(
+                    client_id="expired-client",
+                    requested_id=f"expired-request-{index}",
+                    transaction_id=transaction_id,
+                    state="committed",
+                    fingerprint=f"fingerprint-{index}",
+                    action="apply_edit_batch",
+                    updated_at=expired_at,
+                    response=response,
+                )
+                hub.completed[(f"expired-client", f"expired-request-{index}")] = (
+                    CompletedResponse(
+                        completed_at=expired_at,
+                        fingerprint=f"fingerprint-{index}",
+                        response=response,
+                        action="apply_edit_batch",
+                        transaction_id=transaction_id,
+                    )
+                )
+
+            hub._evict_completed()
+            hub._compact_journal()
+
+            lines = [
+                line
+                for line in journal_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertLessEqual(len(lines), hub.max_journal_events)
+            self.assertEqual(hub.transactions, {})
+
+    async def test_journal_compaction_preserves_expired_unknown_transaction(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            journal_path = Path(temp_dir) / "bridge-journal.jsonl"
+            hub = BridgeHub(
+                timeout=2,
+                idempotency_ttl=1,
+                journal_path=journal_path,
+                max_journal_events=8,
+            )
+            expired_at = time.time() - 120
+            for transaction_id, state in (
+                ("expired-committed", "committed"),
+                ("expired-unknown", "unknown"),
+            ):
+                hub.transactions[transaction_id] = TransactionRecord(
+                    client_id="protected-client",
+                    requested_id=f"request-{transaction_id}",
+                    transaction_id=transaction_id,
+                    state=state,
+                    fingerprint=f"fingerprint-{transaction_id}",
+                    action="apply_edit_batch",
+                    updated_at=expired_at,
+                    response={
+                        "type": "response",
+                        "requestId": f"request-{transaction_id}",
+                        "result": {
+                            "status": state,
+                            "transactionId": transaction_id,
+                        },
+                    },
+                )
+
+            hub._evict_completed()
+            hub._compact_journal()
+
+            replayed = BridgeHub(
+                timeout=2,
+                idempotency_ttl=1,
+                journal_path=journal_path,
+                max_journal_events=8,
+            )
+            self.assertNotIn("expired-committed", replayed.transactions)
+            self.assertIn("expired-unknown", replayed.transactions)
+            self.assertEqual(
+                replayed.transactions["expired-unknown"].state,
+                "unknown",
+            )
+
+    async def test_journal_compaction_retries_transient_windows_replace_lock(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            journal_path = Path(temp_dir) / "bridge-journal.jsonl"
+            hub = BridgeHub(
+                timeout=2,
+                journal_path=journal_path,
+                max_journal_events=8,
+            )
+            hub._store_completed(
+                ("windows-lock-client", "windows-lock-request"),
+                "fingerprint",
+                {
+                    "type": "response",
+                    "requestId": "windows-lock-request",
+                    "result": {"ok": True},
+                },
+                action="read",
+            )
+            real_replace = os.replace
+            attempts = 0
+
+            def flaky_replace(source, target):
+                nonlocal attempts
+                attempts += 1
+                if attempts < 3:
+                    raise PermissionError(
+                        13,
+                        "Access is denied",
+                        str(target),
+                    )
+                return real_replace(source, target)
+
+            with patch(
+                "src.app.services.bridge_server.os.replace",
+                side_effect=flaky_replace,
+            ):
+                hub._compact_journal()
+
+            self.assertEqual(attempts, 3)
+            self.assertEqual(
+                len(
+                    [
+                        line
+                        for line in journal_path.read_text(
+                            encoding="utf-8"
+                        ).splitlines()
+                        if line.strip()
+                    ]
+                ),
+                1,
+            )
 
     async def test_journal_lock_is_exclusive_until_hub_closes(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

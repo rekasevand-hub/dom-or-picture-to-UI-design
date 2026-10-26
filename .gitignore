@@ -37,6 +37,11 @@ venv/
 
 # Playwright 登录态（含 token，勿提交）
 login_state.json
+closeai_state.json
+
+# Local shell/state artifacts
+$log
+$null
 
 # Output
 output/

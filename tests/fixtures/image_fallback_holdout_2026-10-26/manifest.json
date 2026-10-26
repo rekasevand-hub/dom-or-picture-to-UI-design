@@ -1,0 +1,51 @@
+{
+  "schema_version": "image-fallback-holdout/1.0",
+  "holdout_id": "IMAGE-FALLBACK-HOLDOUT-2026-10-26-R1",
+  "frozen": true,
+  "frozen_at": "2026-10-26T21:30:00+08:00",
+  "purpose": "Fresh image-fallback check after I-004-R2 fixes. No post-run tuning under this manifest.",
+  "source": "A-010 Axure holdout screenshots; not used to tune the image fallback changes in this task",
+  "policy": {
+    "visual_within30_min_pct": 90.0,
+    "critical_text_required": true,
+    "native_text_required": true,
+    "claimed_asset_replacement_required": true,
+    "no_post_run_threshold_change": true,
+    "no_composite_score": true
+  },
+  "samples": [
+    {
+      "sample_id": "AX10-DOM-ASSETS",
+      "image": "tests/fixtures/image_fallback_holdout_2026-10-26/ax10-dom-assets.png",
+      "truth": "tests/fixtures/image_fallback_holdout_2026-10-26/ax10-dom-assets.truth.json",
+      "image_sha256": "a22150581a324550af68fa568eb8673ea9a2ce63ea874fca33590c899d1236e8",
+      "image_size": [
+        900,
+        700
+      ],
+      "expected_asset_count": 3
+    },
+    {
+      "sample_id": "AX10-DOM-TRANSPARENT-CROP",
+      "image": "tests/fixtures/image_fallback_holdout_2026-10-26/ax10-dom-transparent-crop.png",
+      "truth": "tests/fixtures/image_fallback_holdout_2026-10-26/ax10-dom-transparent-crop.truth.json",
+      "image_sha256": "f6153c9cbd34d01382224ead55adf1621b6b282f5c2a48cfc1ed5110d478c295",
+      "image_size": [
+        900,
+        700
+      ],
+      "expected_asset_count": 1
+    },
+    {
+      "sample_id": "AX10-DOM-NESTED-IFRAME",
+      "image": "tests/fixtures/image_fallback_holdout_2026-10-26/ax10-dom-nested-iframe.png",
+      "truth": "tests/fixtures/image_fallback_holdout_2026-10-26/ax10-dom-nested-iframe.truth.json",
+      "image_sha256": "aceb4572eab87eee9ea350c3d6ab6cb741c1aed727c288db5bcbab9ca64d38fa",
+      "image_size": [
+        900,
+        500
+      ],
+      "expected_asset_count": 0
+    }
+  ]
+}

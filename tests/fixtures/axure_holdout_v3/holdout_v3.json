@@ -1,0 +1,108 @@
+{
+  "schema_version": "axure-holdout/3.0",
+  "holdout_id": "axure-holdout/3.0",
+  "task_id": "A-008",
+  "frozen_at": "2026-10-25T22:27:11.7034569+08:00",
+  "purpose": "Fresh untouched A-008 Axure holdout; record every gate before remediation.",
+  "environment": {
+    "axure_executable": "D:\\Program File\\Axure\\Axure RP 8\\AxureRP8.exe",
+    "axure_version": "8.0.0.3400",
+    "python_executable": "C:\\Users\\lzq\\.conda\\envs\\omni\\python.exe"
+  },
+  "tuning_exclusions": [
+    "DQ-R02",
+    "IMG-MVP-01",
+    "DQ-R01",
+    "DQ-R03",
+    "AX-IMG-H01",
+    "AX6-DOM-TEXTFLOW",
+    "AX6-DOM-FONTFALLBACK",
+    "AX6-IMG-OVERLAY"
+  ],
+  "thresholds": {
+    "critical_text_rate": 1.0,
+    "expected_asset_hash_rate": 1.0,
+    "expected_asset_count_exact": true,
+    "page_package_object_match_rate": 1.0,
+    "deterministic_rp_byte_identical": true,
+    "size_match_required": true,
+    "visual_within30_min_pct": 90.0,
+    "forbidden_sample_substitution": true,
+    "composite_score_allowed": false
+  },
+  "samples": [
+    {
+      "sample_id": "AX8-DOM-IFRAME",
+      "input_kind": "dom",
+      "feature_focus": "accessible and sandboxed iframe boundary",
+      "page_name": "A008 Iframe Boundary Axure",
+      "design_path": "output/_p1_canonical_output_fidelity/samples/iframe/12_design.json",
+      "design_sha256": "3cf8f478bb56291ee1551cc963b63dc88ba59f34904cfde000cb86e4e07193e9",
+      "screenshot_path": "output/_p1_canonical_output_fidelity/samples/iframe/00_screenshot.png",
+      "screenshot_sha256": "c87479613929cc504ac2f727b20843eea9fec18960fb88c2c9eeb19317fa13c6",
+      "truth_path": "tests/fixtures/p1/canonical/iframe.truth.json",
+      "truth_sha256": "aab19b2deaa0a439ebb17febbb4ddc48cd99338af8680dd617c703800b42aaf4",
+      "critical_texts": [
+        "Iframe boundary fixture",
+        "This controlled page keeps both an accessible frame and a sandboxed frame visible.",
+        "Accessible iframe content",
+        "Use this page to verify that iframe scope is recorded as evidence rather than merged into the parent DOM."
+      ],
+      "expected_absent_texts": [
+        "Sandboxed iframe content"
+      ],
+      "viewport": {
+        "width": 900,
+        "height": 700
+      },
+      "expected_asset_count": 0
+    },
+    {
+      "sample_id": "AX8-DOM-PARTIAL-ASSET",
+      "input_kind": "dom",
+      "feature_focus": "valid image plus explicit missing-image placeholder",
+      "page_name": "A008 Partial Asset Axure",
+      "design_path": "output/_p1_canonical_output_fidelity_round17/samples/partial-asset/12_design.json",
+      "design_sha256": "617e4d962248deefe10a881138120fcb3175688a842e7a1bf402fb4c6ea3af92",
+      "screenshot_path": "output/_p1_canonical_output_fidelity_round17/samples/partial-asset/00_screenshot.png",
+      "screenshot_sha256": "2ddad77a910f07567b4ea2ae03f10fea2c3abba0ddd0f9932faee7f891760451",
+      "truth_path": "tests/fixtures/p1/canonical/partial_asset.truth.json",
+      "truth_sha256": "03fd90bbdb1d66ce5947edbe0d9225fda87503605d7eccde2cab3908d3815778",
+      "critical_texts": [
+        "Partial asset fixture",
+        "The page declares one valid image and one missing image that must remain explainable."
+      ],
+      "viewport": {
+        "width": 900,
+        "height": 700
+      },
+      "declared_asset_count": 2,
+      "expected_asset_count": 1,
+      "missing_asset_count": 1
+    },
+    {
+      "sample_id": "AX8-DOM-MOBILE320",
+      "input_kind": "dom",
+      "feature_focus": "narrow responsive text wrapping and local image",
+      "page_name": "A008 Mobile 320 Axure",
+      "design_path": "output/_p2_mobile_320_probe_round2/samples/mobile-320/12_design.json",
+      "design_sha256": "2c63cf025bb17400f5f3bcfb605792a3053b53751bc9c36dd3682f5f04a17f22",
+      "screenshot_path": "output/_p2_mobile_320_probe_round2/samples/mobile-320/00_screenshot.png",
+      "screenshot_sha256": "8f20c5f56a8c0805e20795cd881b3e443ca4dac5484b9b1d444ae6e6e4d124cd",
+      "truth_path": "tests/fixtures/p1/canonical/p2/mobile_responsive.truth.json",
+      "truth_sha256": "ff0217cf96acf7ba34dcf9b0b2d1a497ec10bf1f2d3cab8a5379b42457036dca",
+      "critical_texts": [
+        "Mobile matrix",
+        "This responsive fixture checks narrow mobile widths, wrapped text, a local asset and stable native editability.",
+        "Responsive card",
+        "Native text remains available.",
+        "Footer content remains visible."
+      ],
+      "viewport": {
+        "width": 320,
+        "height": 800
+      },
+      "expected_asset_count": 1
+    }
+  ]
+}

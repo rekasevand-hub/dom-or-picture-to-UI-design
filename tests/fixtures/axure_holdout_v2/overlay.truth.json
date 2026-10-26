@@ -1,0 +1,38 @@
+{
+  "schema_version": "image-mvp-truth/1.0",
+  "sample_id": "AX6-IMG-OVERLAY",
+  "description": "Untouched overlay holdout for A-006.",
+  "critical_texts": [
+    "Holdout overlay",
+    "This independent overlay holdout uses a different source aspect ratio, crop anchor and overlay opacity from the calibration fixture.",
+    "The visual policy must validate the result without hiding missing overlay or crop evidence."
+  ],
+  "expected_asset_count": 1,
+  "asset_claim": "reference-only-display",
+  "flow_claim": "candidate-fixed-coordinate",
+  "policy": {
+    "policy_id": "image-figma-mvp-product/1.0",
+    "frozen": true,
+    "visual_within30_min_pct": 90.0,
+    "require_size_match": true,
+    "critical_text_required": true,
+    "native_text_required": true,
+    "claimed_asset_replacement_required": false,
+    "original_asset_identity_required": false,
+    "adaptive_flow_required": false
+  },
+  "image_sha256": "ac8fd6ee2af97f1cd8eb42c43f332d4b52793e349feaa78aaa70e463f3bdc2a7",
+  "image_size": [
+    900,
+    700
+  ],
+  "capture_environment": {
+    "viewport": [
+      900,
+      700
+    ],
+    "device_scale_factor": 1,
+    "locale": "en-US",
+    "timezone": "Asia/Shanghai"
+  }
+}

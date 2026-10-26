@@ -49,6 +49,10 @@ def run_probe(output: str | Path) -> dict[str, Any]:
             "code": "PRECONDITION_FAILED",
             "message": "node modified by collaborator after send",
         },
+        "unknown": {
+            "code": "PLUGIN_OPERATION_FAILED",
+            "message": "unclassified plugin failure",
+        },
     }
     outcomes = {
         name: classify_permission_failure(value).to_dict()
@@ -77,12 +81,17 @@ def run_probe(output: str | Path) -> dict[str, Any]:
         _check("token-revoked", "Revoked token requires authentication repair", outcomes["plugin-token-revoked"]["category"] == "plugin-token-revoked"),
         _check("takeover", "Plugin takeover stops automatic retries", outcomes["plugin-takeover"]["category"] == "plugin-takeover" and outcomes["plugin-takeover"]["no_resend"]),
         _check("post-send-modification", "Post-send modification requires operator review", outcomes["user-modification"]["category"] == "user-modification" and manual.manual_review_required),
+        _check("unknown-no-resend", "Unknown plugin failures remain manual and are never auto-resent", outcomes["unknown"]["category"] == "unknown" and outcomes["unknown"]["no_resend"] and outcomes["unknown"]["manual_review"]),
         _check("no-resend", "Unsafe categories never auto-resend", all(item["no_resend"] for key, item in outcomes.items() if key != "rate-limited")),
         _check("real-plugin-evidence", "Existing real plugin auth/revocation evidence is retained", real_plugin_evidence_present),
     )
     result = {
         "schema": "p5-permission-takeover-probe/1.0",
-        "status": "completed-for-current-scope",
+        "status": (
+            "completed-for-current-scope"
+            if all(item["passed"] for item in checks)
+            else "failed"
+        ),
         "scope": "permission/takeover classification and manual review policy",
         "created_at": "2026-10-22T00:00:00+00:00",
         "profile": PROFILE,

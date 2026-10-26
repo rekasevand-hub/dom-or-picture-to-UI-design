@@ -73,9 +73,11 @@ class FrameCaptureIntegrationTests(unittest.TestCase):
                     "#main-font",
                     "data-p1-font-probe-id",
                 )
-                child_marker = page.frame_locator("#child").locator(
-                    "#child-font"
-                ).get_attribute("data-p1-font-probe-id")
+                child_marker = (
+                    page.frame_locator("#child")
+                    .locator("#child-font")
+                    .get_attribute("data-p1-font-probe-id")
+                )
             finally:
                 browser.close()
 
@@ -92,7 +94,7 @@ class FrameCaptureIntegrationTests(unittest.TestCase):
         self.assertIsNone(main_marker)
         self.assertIsNone(child_marker)
 
-    def test_generic_text_is_marked_for_platform_font_probe(self) -> None:
+    def test_unique_text_styles_are_marked_for_platform_font_probe(self) -> None:
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(headless=True)
             try:
@@ -111,18 +113,27 @@ class FrameCaptureIntegrationTests(unittest.TestCase):
                 explicit = next(
                     item for item in nodes if item.get("text") == "explicit text"
                 )
-                marker = page.get_attribute("#generic", "data-p1-font-probe-id")
+                generic_marker = page.get_attribute("#generic", "data-p1-font-probe-id")
+                explicit_marker = page.get_attribute(
+                    "#explicit", "data-p1-font-probe-id"
+                )
             finally:
                 browser.close()
 
         self.assertTrue(generic.get("fontProbeId", "").startswith("root-"))
         self.assertEqual(
-            marker,
+            generic_marker,
             generic["fontProbeId"],
         )
-        self.assertNotIn("fontProbeId", explicit)
+        self.assertTrue(explicit.get("fontProbeId", "").startswith("root-"))
+        self.assertEqual(
+            explicit_marker,
+            explicit["fontProbeId"],
+        )
 
-    def test_same_origin_frames_are_recursive_and_opaque_frames_are_inventoried(self) -> None:
+    def test_same_origin_frames_are_recursive_and_opaque_frames_are_inventoried(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             other = root / "other"
@@ -199,7 +210,9 @@ class FrameCaptureIntegrationTests(unittest.TestCase):
                     browser = playwright.chromium.launch(headless=True)
                     try:
                         page = browser.new_page(viewport={"width": 1000, "height": 800})
-                        page.goto(f"{main_url}/index.html", wait_until="domcontentloaded")
+                        page.goto(
+                            f"{main_url}/index.html", wait_until="domcontentloaded"
+                        )
                         page.wait_for_timeout(900)
                         snapshot = collect_frame_dom(page, DOM_JS)
                     finally:
@@ -234,7 +247,9 @@ class FrameCaptureIntegrationTests(unittest.TestCase):
         )
         self.assertFalse(sandboxed["accessible"])
         self.assertEqual(sandboxed["opaque_reason"], "sandboxed-opaque-origin")
-        cross = next(item for item in root_children if item["opaque_reason"] == "cross-origin")
+        cross = next(
+            item for item in root_children if item["opaque_reason"] == "cross-origin"
+        )
         self.assertTrue(cross["opaque_frame"])
         self.assertGreater(cross["width"], 0)
         self.assertGreater(cross["height"], 0)
@@ -249,8 +264,12 @@ class FrameCaptureIntegrationTests(unittest.TestCase):
     def test_frame_navigation_changes_capture_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / "a.html").write_text("<!doctype html><p>frame A</p>", encoding="utf-8")
-            (root / "b.html").write_text("<!doctype html><p>frame B</p>", encoding="utf-8")
+            (root / "a.html").write_text(
+                "<!doctype html><p>frame A</p>", encoding="utf-8"
+            )
+            (root / "b.html").write_text(
+                "<!doctype html><p>frame B</p>", encoding="utf-8"
+            )
             (root / "index.html").write_text(
                 """
                 <!doctype html>
@@ -267,7 +286,9 @@ class FrameCaptureIntegrationTests(unittest.TestCase):
                     browser = playwright.chromium.launch(headless=True)
                     try:
                         page = browser.new_page()
-                        page.goto(f"{base_url}/index.html", wait_until="domcontentloaded")
+                        page.goto(
+                            f"{base_url}/index.html", wait_until="domcontentloaded"
+                        )
                         before = capture_frame_state(
                             page,
                             "() => ({ token: 'a' })",
@@ -326,8 +347,7 @@ class FrameCaptureIntegrationTests(unittest.TestCase):
                 server.server_close()
 
         child = next(
-            item for item in snapshot.nodes
-            if item.get("text") == "Offset child"
+            item for item in snapshot.nodes if item.get("text") == "Offset child"
         )
         self.assertAlmostEqual(float(child["x"]), 108.0, delta=1.0)
         self.assertAlmostEqual(float(child["y"]), 128.0, delta=1.0)
@@ -351,26 +371,24 @@ class FrameCaptureIntegrationTests(unittest.TestCase):
                 browser = playwright.chromium.launch(headless=True)
                 try:
                     page = browser.new_page()
-                    page.goto((root / "index.html").resolve().as_uri(),
-                              wait_until="domcontentloaded")
+                    page.goto(
+                        (root / "index.html").resolve().as_uri(),
+                        wait_until="domcontentloaded",
+                    )
                     page.wait_for_timeout(300)
                     snapshot = collect_frame_dom(page, DOM_JS)
                 finally:
                     browser.close()
 
         child = next(
-            item for item in snapshot.nodes
-            if item.get("text") == "Border child"
+            item for item in snapshot.nodes if item.get("text") == "Border child"
         )
         self.assertAlmostEqual(float(child["x"]), 110.0, delta=1.0)
         self.assertAlmostEqual(float(child["y"]), 130.0, delta=1.0)
 
     def test_accessible_child_text_after_main_content_uses_the_real_host(self) -> None:
         fixture = (
-            Path(__file__).resolve().parents[1]
-            / "fixtures"
-            / "p1"
-            / "iframe.html"
+            Path(__file__).resolve().parents[1] / "fixtures" / "p1" / "iframe.html"
         )
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(headless=True)
@@ -383,7 +401,8 @@ class FrameCaptureIntegrationTests(unittest.TestCase):
                 browser.close()
 
         child = next(
-            item for item in snapshot.nodes
+            item
+            for item in snapshot.nodes
             if item.get("text") == "Accessible iframe content"
         )
         self.assertAlmostEqual(float(child["x"]), 18.0, delta=1.0)
@@ -393,10 +412,12 @@ class FrameCaptureIntegrationTests(unittest.TestCase):
 
 class StateDriftClassificationTests(unittest.TestCase):
     def test_explicit_first_party_profile_is_not_renamed_as_full_visible(self) -> None:
-        profile = _capture_profile_id({
-            "chromium": {"capture_profile": "first-party-frame-strict/1.0"},
-            "webkit": {"capture_profile": "first-party-frame-strict/1.0"},
-        })
+        profile = _capture_profile_id(
+            {
+                "chromium": {"capture_profile": "first-party-frame-strict/1.0"},
+                "webkit": {"capture_profile": "first-party-frame-strict/1.0"},
+            }
+        )
 
         self.assertEqual(profile, "first-party-frame-strict/1.0")
 
@@ -423,8 +444,12 @@ class StateDriftClassificationTests(unittest.TestCase):
         with_glyph = [{"tag": "p", "text": "same"}, {"tag": "span", "text": "›"}]
         without_glyph = [{"tag": "p", "text": "same"}]
 
-        self.assertEqual(text_delta(with_glyph, without_glyph)["classification"], "dynamic-glyph")
-        self.assertEqual(text_delta(without_glyph, with_glyph)["classification"], "dynamic-glyph")
+        self.assertEqual(
+            text_delta(with_glyph, without_glyph)["classification"], "dynamic-glyph"
+        )
+        self.assertEqual(
+            text_delta(without_glyph, with_glyph)["classification"], "dynamic-glyph"
+        )
 
     def test_frame_inventory_mismatch_blocks_strict_equality(self) -> None:
         dom = [{"tag": "p", "text": "same"}]
@@ -442,7 +467,9 @@ class StateDriftClassificationTests(unittest.TestCase):
         self.assertFalse(gate["comparable"])
         self.assertEqual(gate["reasons"], ["frame-inventory-mismatch"])
 
-    def test_unrendered_tracking_frames_are_evidence_only_for_strict_state(self) -> None:
+    def test_unrendered_tracking_frames_are_evidence_only_for_strict_state(
+        self,
+    ) -> None:
         dom = [{"tag": "p", "text": "same"}]
         left = {
             "final_url": "https://example.com/",
@@ -485,7 +512,9 @@ class StateDriftClassificationTests(unittest.TestCase):
         self.assertEqual(result["status"], "blank-document")
         self.assertEqual(result["final_url"], "about:blank")
 
-    def test_about_blank_is_failure_after_expected_nonblank_budget_is_exhausted(self) -> None:
+    def test_about_blank_is_failure_after_expected_nonblank_budget_is_exhausted(
+        self,
+    ) -> None:
         result = classify_capture_navigation(
             "https://github.com/login",
             "about:blank",
@@ -514,7 +543,9 @@ class StateDriftClassificationTests(unittest.TestCase):
 
         self.assertEqual(result, "browser-navigation-failed")
 
-    def test_failure_classification_surfaces_glyph_delta_before_frame_scope(self) -> None:
+    def test_failure_classification_surfaces_glyph_delta_before_frame_scope(
+        self,
+    ) -> None:
         gate = {
             "comparable": False,
             "reasons": ["frame-inventory-mismatch", "text-mismatch"],

@@ -976,6 +976,12 @@ class OwnedBatchCoordinator:
                 "jobId": normalized,
                 "reason": "unknown write job",
             }
+        if record.state not in _TERMINAL_STATES:
+            return {
+                "allowed": False,
+                "jobId": normalized,
+                "reason": "cleanup-requires-manual-review",
+            }
         return {
             "allowed": True,
             "jobId": normalized,

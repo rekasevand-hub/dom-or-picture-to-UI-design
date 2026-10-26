@@ -178,6 +178,14 @@
       if (message.type === "plugin-config-saved") {
         saveEl.disabled = false;
         connect();
+        return;
+      }
+      if (message.type === "response") {
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+          errorEl.textContent = "Bridge disconnected before the plugin response.";
+          return;
+        }
+        ws.send(JSON.stringify(message));
       }
     });
 

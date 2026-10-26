@@ -1525,6 +1525,7 @@ class BridgeHub:
                         "action": item_action,
                         "property": "characters",
                         "expectedSha256": BridgeHub._sha256_text(item_params["text"]),
+                        "regionId": str(item_params.get("regionId") or ""),
                     }
                 )
             elif item_action == "set_name" and isinstance(
@@ -1537,6 +1538,7 @@ class BridgeHub:
                         "action": item_action,
                         "property": "name",
                         "expectedSha256": BridgeHub._sha256_text(item_params["name"]),
+                        "regionId": str(item_params.get("regionId") or ""),
                     }
                 )
             elif item_action in {"set_visible", "set_visibility"} and isinstance(
@@ -1549,6 +1551,7 @@ class BridgeHub:
                         "action": item_action,
                         "property": "visible",
                         "expectedValue": item_params["visible"],
+                        "regionId": str(item_params.get("regionId") or ""),
                     }
                 )
             if item_action == "replace_image_fill" and isinstance(
@@ -1568,6 +1571,8 @@ class BridgeHub:
                         "action": item_action,
                         "property": "imageFillSha256",
                         "expectedSha256": hashlib.sha256(payload).hexdigest(),
+                        "fillIndex": int(item_params.get("fillIndex", 0)),
+                        "regionId": str(item_params.get("regionId") or ""),
                     }
                 )
             if item_action in {"set_layout_flow", "set_autolayout"}:
@@ -1578,7 +1583,12 @@ class BridgeHub:
                             "nodeId": node_id,
                             "action": item_action,
                             "property": "layoutSnapshot",
-                            "expectedValue": layout,
+                            "expectedValue": BridgeHub._expected_layout_snapshot(
+                                layout
+                            ),
+                            "regionId": str(
+                                item_params.get("regionId") or ""
+                            ),
                         }
                     )
             bounds = {
@@ -1593,6 +1603,7 @@ class BridgeHub:
                         "action": item_action,
                         "property": "bounds",
                         "expectedValue": bounds,
+                        "regionId": str(item_params.get("regionId") or ""),
                     }
                 )
             if item_action in {"set_text_runs", "set_text"} and isinstance(
@@ -1605,9 +1616,10 @@ class BridgeHub:
                         "action": item_action,
                         "property": "textRuns",
                         "expectedValue": item_params["textRuns"],
+                        "regionId": str(item_params.get("regionId") or ""),
                     }
                 )
-            if item_params.get("regionId"):
+            if item_action == "set_bounds" and item_params.get("regionId"):
                 checks.append(
                     {
                         "nodeId": node_id,
@@ -1617,9 +1629,23 @@ class BridgeHub:
                             "regionId": str(item_params["regionId"]),
                             "member": True,
                         },
+                        "regionId": str(item_params["regionId"]),
                     }
                 )
         return tuple(checks)
+
+    @staticmethod
+    def _expected_layout_snapshot(layout: dict[str, Any]) -> dict[str, Any]:
+        aliases = {
+            "mode": "layoutMode",
+            "wrap": "layoutWrap",
+            "primaryAlign": "primaryAxisAlignItems",
+            "counterAlign": "counterAxisAlignItems",
+        }
+        return {
+            aliases.get(name, name): value
+            for name, value in layout.items()
+        }
 
     @staticmethod
     def _sha256_text(value: str) -> str:
@@ -1655,12 +1681,22 @@ class BridgeHub:
                 continue
             actual = node.get(property_name)
             if "expectedSha256" in check:
+                if property_name == "imageFillSha256":
+                    fill_index = str(check.get("fillIndex", 0))
+                    if isinstance(actual, dict):
+                        actual = actual.get(fill_index)
+                    elif fill_index != "0":
+                        actual = None
                 if not isinstance(actual, str):
                     result["status"] = "unknown"
                     unknown += 1
                     results.append(result)
                     continue
-                actual_hash = self._sha256_text(actual)
+                actual_hash = (
+                    actual
+                    if property_name == "imageFillSha256"
+                    else self._sha256_text(actual)
+                )
                 is_match = hmac.compare_digest(
                     actual_hash,
                     str(check["expectedSha256"]),
@@ -1668,18 +1704,16 @@ class BridgeHub:
                 result["actualSha256"] = actual_hash
                 result["expectedSha256"] = check["expectedSha256"]
             else:
-                if property_name == "layoutSnapshot" and isinstance(
+                is_match = self._expected_value_matches(
+                    property_name,
                     check.get("expectedValue"),
-                    dict,
-                ):
-                    is_match = isinstance(actual, dict) and all(
-                        actual.get(name) == value
-                        for name, value in check["expectedValue"].items()
-                    )
-                else:
-                    is_match = actual == check.get("expectedValue")
+                    actual,
+                )
                 result["actualValue"] = actual
                 result["expectedValue"] = check.get("expectedValue")
+            region_id = str(check.get("regionId") or "")
+            if region_id:
+                result["regionId"] = region_id
             result["status"] = "matched" if is_match else "mismatched"
             if is_match:
                 matched += 1
@@ -1687,23 +1721,81 @@ class BridgeHub:
                 mismatched += 1
             results.append(result)
 
-        if not expected_checks:
-            classification = "indeterminate"
-        elif matched == len(expected_checks):
-            classification = "matches-intended"
-        elif matched > 0:
-            classification = "partial-match"
-        elif mismatched > 0:
-            classification = "does-not-match-intended"
-        else:
-            classification = "indeterminate"
+        classification = self._expected_classification(
+            matched,
+            mismatched,
+            unknown,
+            len(expected_checks),
+        )
+        regions: dict[str, dict[str, Any]] = {}
+        for result in results:
+            region_id = str(result.get("regionId") or "")
+            if not region_id:
+                continue
+            region = regions.setdefault(
+                region_id,
+                {"matched": 0, "mismatched": 0, "unknown": 0},
+            )
+            status = result["status"]
+            if status in region:
+                region[status] += 1
+        for region_id, counts in regions.items():
+            counts["classification"] = self._expected_classification(
+                counts["matched"],
+                counts["mismatched"],
+                counts["unknown"],
+                counts["matched"] + counts["mismatched"] + counts["unknown"],
+            )
         return {
             "classification": classification,
             "matched": matched,
             "mismatched": mismatched,
             "unknown": unknown,
             "checks": results,
+            "regions": regions,
         }
+
+    @staticmethod
+    def _expected_value_matches(property_name: str, expected: Any, actual: Any) -> bool:
+        if property_name == "layoutSnapshot" and isinstance(expected, dict):
+            return isinstance(actual, dict) and all(
+                actual.get(name) == value for name, value in expected.items()
+            )
+        if property_name == "textRuns" and isinstance(expected, list):
+            if not isinstance(actual, list) or len(actual) != len(expected):
+                return False
+            for expected_run, actual_run in zip(expected, actual, strict=True):
+                if isinstance(expected_run, dict):
+                    if not isinstance(actual_run, dict) or not all(
+                        actual_run.get(name) == value
+                        for name, value in expected_run.items()
+                    ):
+                        return False
+                elif expected_run != actual_run:
+                    return False
+            return True
+        if property_name == "regionMembership" and isinstance(expected, dict):
+            return isinstance(actual, dict) and all(
+                actual.get(name) == value for name, value in expected.items()
+            )
+        return actual == expected
+
+    @staticmethod
+    def _expected_classification(
+        matched: int,
+        mismatched: int,
+        unknown: int,
+        total: int,
+    ) -> str:
+        if total == 0:
+            return "indeterminate"
+        if matched == total:
+            return "matches-intended"
+        if matched > 0:
+            return "partial-match"
+        if mismatched > 0:
+            return "does-not-match-intended"
+        return "indeterminate"
 
     @staticmethod
     def _evaluate_ownership_readback(
@@ -1768,7 +1860,10 @@ class BridgeHub:
                 readback = {}
                 for node_id in transaction.reconciliation_targets:
                     try:
-                        result = await self._plugin_read_node_tree(node_id)
+                        result = await self._plugin_read_node_tree(
+                            node_id,
+                            expected_checks=transaction.expected_checks,
+                        )
                         readback[node_id] = (
                             result
                             if isinstance(result, dict)
@@ -1859,11 +1954,56 @@ class BridgeHub:
             )
             self._maybe_compact_journal()
 
-    async def _plugin_read_node_tree(self, node_id: str) -> Any:
-        return await self._plugin_call(
+    async def _plugin_read_node_tree(
+        self,
+        node_id: str,
+        *,
+        expected_checks: tuple[dict[str, Any], ...] = (),
+    ) -> Any:
+        result = await self._plugin_call(
             "get_node_tree",
             {"nodeId": node_id, "depth": 3},
         )
+        needs_image_bytes = any(
+            str(check.get("nodeId") or "") == node_id
+            and check.get("property") == "imageFillSha256"
+            for check in expected_checks
+        )
+        if not needs_image_bytes or not isinstance(result, dict):
+            return result
+        try:
+            report = await self._plugin_call(
+                "image_fill_report",
+                {"nodeId": node_id},
+            )
+            hashes = self._image_fill_hashes(report, node_id)
+        except Exception as exc:  # noqa: BLE001 - expected state stays unknown
+            result["imageFillReadbackError"] = str(exc)
+            return result
+        if hashes:
+            result["imageFillSha256"] = hashes
+        return result
+
+    @staticmethod
+    def _image_fill_hashes(report: Any, node_id: str) -> dict[str, str]:
+        if not isinstance(report, dict):
+            return {}
+        hashes: dict[str, str] = {}
+        for fill in report.get("fills") or ():
+            if not isinstance(fill, dict):
+                continue
+            if str(fill.get("nodeId") or "") != node_id:
+                continue
+            encoded = fill.get("byteBase64")
+            if not isinstance(encoded, str) or not encoded:
+                continue
+            try:
+                payload = base64.b64decode(encoded, validate=True)
+            except (ValueError, TypeError):
+                continue
+            fill_index = str(fill.get("fillIndex", 0))
+            hashes[fill_index] = hashlib.sha256(payload).hexdigest()
+        return hashes
 
     async def _plugin_call(
         self,
@@ -2031,6 +2171,24 @@ class BridgeHub:
                     }
                 )
 
+        protected = [
+            event for event in events if self._journal_event_is_protected(event)
+        ]
+        if len(protected) > self.max_journal_events:
+            raise OSError(
+                "bridge journal protected events exceed max_journal_events: "
+                f"{len(protected)} > {self.max_journal_events}"
+            )
+        optional = [
+            event for event in events if not self._journal_event_is_protected(event)
+        ]
+        optional.sort(
+            key=lambda event: float(event.get("recordedAt") or 0),
+            reverse=True,
+        )
+        events = protected + optional[: self.max_journal_events - len(protected)]
+        events.sort(key=lambda event: float(event.get("recordedAt") or 0))
+
         temporary_path = self.journal_path.with_name(self.journal_path.name + ".tmp")
         with temporary_path.open("w", encoding="utf-8", newline="\n") as handle:
             for event in events:
@@ -2045,8 +2203,45 @@ class BridgeHub:
                 handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary_path, self.journal_path)
+        self._replace_journal_file(temporary_path, self.journal_path)
         self._journal_event_count = len(events)
+
+    @staticmethod
+    def _journal_event_is_protected(event: dict[str, Any]) -> bool:
+        if event.get("event") == "intent":
+            return True
+        state = str(
+            event.get("transactionState")
+            or event.get("state")
+            or ""
+        )
+        if not state and isinstance(event.get("response"), dict):
+            state = BridgeHub._transaction_state(
+                str(event.get("action") or ""),
+                event["response"],
+            )
+        return state not in {"committed", "rejected", "completed"}
+
+    @staticmethod
+    def _replace_journal_file(source: Path, target: Path) -> None:
+        try:
+            for attempt in range(1, 6):
+                try:
+                    os.replace(source, target)
+                    return
+                except OSError as exc:
+                    sharing_violation = (
+                        getattr(exc, "winerror", None) in {5, 32}
+                        or exc.errno in {13, 32}
+                    )
+                    if not sharing_violation or attempt == 5:
+                        raise
+                    time.sleep(0.02 * attempt)
+        finally:
+            try:
+                source.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def _evict_completed(self, now: float | None = None) -> None:
         now = time.time() if now is None else now
@@ -2063,6 +2258,20 @@ class BridgeHub:
                 key=lambda key: self.completed[key].completed_at,
             )
             self.completed.pop(oldest, None)
+        self._evict_terminal_transactions(now)
+
+    def _evict_terminal_transactions(self, now: float) -> None:
+        terminal_states = {"committed", "rejected", "completed"}
+        expired = [
+            transaction_id
+            for transaction_id, transaction in self.transactions.items()
+            if transaction.state in terminal_states
+            and now - transaction.updated_at > self.idempotency_ttl
+            and (transaction.client_id, transaction.requested_id)
+            not in self.completed
+        ]
+        for transaction_id in expired:
+            self.transactions.pop(transaction_id, None)
 
     @staticmethod
     def _wire_request_id(client_id: str, requested_id: str) -> str:

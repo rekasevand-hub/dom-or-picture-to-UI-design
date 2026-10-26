@@ -66,7 +66,7 @@ CSS 15 → 53，antd 106 → 142）。
 """
 from __future__ import annotations
 
-from typing import Any, Iterable
+from typing import Any
 
 __all__ = [
     "GEOMETRY_TOLERANCE",
@@ -680,6 +680,22 @@ def infer_container(node: dict, children: list[dict],
     else:
         css_bail = "display-not-layout-container:%s" % display
 
+    # Grid/wrap/reverse retain two-dimensional or ordering semantics that a
+    # one-dimensional geometry fallback cannot represent safely. Keep the
+    # subtree at fixed coordinates instead of guessing a linear stack.
+    if spec is None and css_bail in {
+        "grid-unsupported",
+        "wrap-unsupported",
+        "reverse-unsupported",
+    }:
+        return {
+            "layout": None,
+            "bail": f"{css_bail};fixed-fallback-required",
+            "children": [],
+            "mode": None,
+            "css_bail": css_bail,
+            "detail": f"{css_bail};fixed-fallback-required",
+        }
     if spec is None:
         spec = _geometry_stack(node, children, rects, flow)
     if spec is None:

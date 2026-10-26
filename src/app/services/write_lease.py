@@ -6,6 +6,7 @@ import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Lock
 from typing import Any, Callable
 
 
@@ -81,34 +82,49 @@ class WriterLeaseStore:
         self._clock = clock or time.time
         self._before_commit = before_commit
         self._lock_path = self.path.with_name(self.path.name + ".lock")
+        # Held for the writer's lifetime so process death is distinguishable
+        # from an unexpired lease left behind by a crashed local writer.
+        self._owner_lock = _FileLock(
+            self.path.with_name(self.path.name + ".owner")
+        )
 
     def acquire(self) -> WriterLease:
-        with _FileLock(self._lock_path):
-            now = self._clock()
-            previous = self._read_state()
-            if (
-                previous is not None
-                and previous.get("status") == "active"
-                and float(previous["expires_at"]) > now
-            ):
-                raise WriterLeaseConflict(
-                    f"write lease is owned by {previous.get('owner_id')!r} "
-                    f"until {previous.get('expires_at')}"
+        acquired_owner_lock = False
+        if not self._owner_lock.held:
+            self._owner_lock.acquire()
+            acquired_owner_lock = True
+        try:
+            with _FileLock(self._lock_path):
+                now = self._clock()
+                previous = self._read_state()
+                if (
+                    previous is not None
+                    and previous.get("status") == "active"
+                    and float(previous["expires_at"]) > now
+                    and not acquired_owner_lock
+                ):
+                    raise WriterLeaseConflict(
+                        f"write lease is owned by {previous.get('owner_id')!r} "
+                        f"until {previous.get('expires_at')}"
+                    )
+                generation = int((previous or {}).get("generation") or 0) + 1
+                lease = WriterLease(
+                    owner_id=self.owner_id,
+                    generation=generation,
+                    expires_at=now + self.ttl_seconds,
                 )
-            generation = int((previous or {}).get("generation") or 0) + 1
-            lease = WriterLease(
-                owner_id=self.owner_id,
-                generation=generation,
-                expires_at=now + self.ttl_seconds,
-            )
-            self._commit(
-                {
-                    **lease.to_dict(),
-                    "status": "active",
-                    "updated_at": now,
-                }
-            )
-            return lease
+                self._commit(
+                    {
+                        **lease.to_dict(),
+                        "status": "active",
+                        "updated_at": now,
+                    }
+                )
+                return lease
+        except Exception:
+            if acquired_owner_lock:
+                self._owner_lock.release()
+            raise
 
     def assert_current(self, token: WriterLease) -> WriterLease:
         with _FileLock(self._lock_path):
@@ -141,18 +157,24 @@ class WriterLeaseStore:
             return renewed
 
     def release(self, token: WriterLease) -> None:
-        with _FileLock(self._lock_path):
-            now = self._clock()
-            current = self._current_lease(now)
-            if current != token:
-                raise WriterLeaseLost("cannot release a stale writer lease")
-            self._commit(
-                {
-                    **token.to_dict(),
-                    "status": "released",
-                    "updated_at": now,
-                }
-            )
+        try:
+            with _FileLock(self._lock_path):
+                now = self._clock()
+                current = self._current_lease(now)
+                if current != token:
+                    raise WriterLeaseLost("cannot release a stale writer lease")
+                self._commit(
+                    {
+                        **token.to_dict(),
+                        "status": "released",
+                        "updated_at": now,
+                    }
+                )
+        finally:
+            self._owner_lock.release()
+
+    def close(self) -> None:
+        self._owner_lock.release()
 
     def _current_lease(self, now: float) -> WriterLease:
         state = self._read_state()
@@ -214,7 +236,11 @@ class _FileLock:
         self.path = path
         self.handle: Any | None = None
 
-    def __enter__(self) -> "_FileLock":
+    @property
+    def held(self) -> bool:
+        return self.handle is not None
+
+    def acquire(self) -> "_FileLock":
         self.path.parent.mkdir(parents=True, exist_ok=True)
         handle = self.path.open("a+b")
         try:
@@ -239,7 +265,7 @@ class _FileLock:
         self.handle = handle
         return self
 
-    def __exit__(self, exc_type, exc, traceback) -> None:
+    def release(self) -> None:
         handle = self.handle
         self.handle = None
         if handle is None:
@@ -257,6 +283,16 @@ class _FileLock:
         finally:
             handle.close()
 
+    def __enter__(self) -> "_FileLock":
+        return self.acquire()
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        self.release()
+
+
+_RETAINED_LEASE_STORES: dict[str, WriterLeaseStore] = {}
+_RETAINED_LEASE_STORES_LOCK = Lock()
+
 
 def acquire_writer_lease(
     path: str | Path,
@@ -265,12 +301,32 @@ def acquire_writer_lease(
     ttl_seconds: float = 300.0,
     clock: Callable[[], float] | None = None,
 ) -> WriterLease:
-    return WriterLeaseStore(
-        path,
-        owner_id=owner_id,
-        ttl_seconds=ttl_seconds,
-        clock=clock,
-    ).acquire()
+    resolved_path = Path(path).expanduser().resolve()
+    key = str(resolved_path)
+    with _RETAINED_LEASE_STORES_LOCK:
+        store = _RETAINED_LEASE_STORES.get(key)
+        if store is None:
+            store = WriterLeaseStore(
+                resolved_path,
+                owner_id=owner_id,
+                ttl_seconds=ttl_seconds,
+                clock=clock,
+            )
+        lease = store.acquire()
+        _RETAINED_LEASE_STORES[key] = store
+        return lease
+
+
+def release_writer_lease(path: str | Path, token: WriterLease) -> None:
+    key = str(Path(path).expanduser().resolve())
+    with _RETAINED_LEASE_STORES_LOCK:
+        store = _RETAINED_LEASE_STORES.get(key)
+        if store is None:
+            raise WriterLeaseLost("writer lease has no retained local owner")
+        try:
+            store.release(token)
+        finally:
+            _RETAINED_LEASE_STORES.pop(key, None)
 
 
 def assert_current_lease(

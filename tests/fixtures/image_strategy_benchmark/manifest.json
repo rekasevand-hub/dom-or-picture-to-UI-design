@@ -1,0 +1,69 @@
+{
+  "schema_version": "image-strategy-benchmark/1.0",
+  "frozen": true,
+  "corpus_id": "IMAGE-STRATEGY-CORPUS-2026-10-26-R1",
+  "samples": [
+    {
+      "sample_id": "IMG-MVP-01",
+      "image": "tests/fixtures/image_mvp/simple_dashboard_v1.png",
+      "image_sha256": "7f39efc5e69b9ba16367aa19a1ccb1e3ea1681824419c93f0f9a3478e5153df4",
+      "image_size": [
+        1200,
+        800
+      ],
+      "truth": "tests/fixtures/image_mvp/simple_dashboard_v1.truth.json",
+      "truth_sha256": "942852b2c07d40b1da3bdaa93c7d9b015ede09655fd83a1c6de4785ad03c7c53",
+      "critical_text_count": 14,
+      "expected_asset_count": 1
+    }
+  ],
+  "environment": {
+    "python_executable": "C:\\Users\\lzq\\.conda\\envs\\omni\\python.exe",
+    "python_version": "3.12.0",
+    "opencv_version": "4.10.0",
+    "easyocr_version": "1.7.2",
+    "grounding_model": "qwen3-vl-plus",
+    "source_viewport": [
+      1200,
+      800
+    ],
+    "device_scale_factor": 1,
+    "locale": "en-US",
+    "timezone": "Asia/Shanghai",
+    "export_scale": 1,
+    "readback_depth": 8
+  },
+  "strategies": [
+    "grounding-only",
+    "cv-fallback",
+    "grounding-cv-hybrid"
+  ],
+  "thresholds": {
+    "visual_within30_min_pct": 90.0,
+    "critical_text_regression_allowed": false,
+    "native_text_required": true,
+    "claimed_asset_replacement_required": true,
+    "hybrid_wall_time_max_seconds": 180.0,
+    "hybrid_max_grounding_ratio": 2.0,
+    "hybrid_grounding_calls_max": 1
+  },
+  "provenance_requirements": [
+    "requested_route",
+    "ordered_attempts",
+    "selected_strategy",
+    "all_fallback_reasons",
+    "all_hybrid_added_candidates",
+    "all_hybrid_skipped_candidates",
+    "candidate_authority",
+    "verified_false_for_candidates",
+    "no_original_asset_claim",
+    "no_adaptive_flow_claim"
+  ],
+  "decision_policy": {
+    "adopt_only_if_all_gates_pass": true,
+    "composite_score_allowed": false,
+    "default_on_reject": "grounding-default-cv-fallback-only",
+    "evidence_scope": "one-owned-screenshot-one-figma-document",
+    "generalization_claim_allowed": false
+  }
+}

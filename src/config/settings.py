@@ -82,6 +82,8 @@ class Config:
     playwright_viewport_width: int = field(default_factory=lambda: int(os.getenv("PLAYWRIGHT_VIEWPORT_WIDTH", "1440")))
     playwright_viewport_height: int = field(default_factory=lambda: int(os.getenv("PLAYWRIGHT_VIEWPORT_HEIGHT", "900")))
     playwright_headless: bool = field(default_factory=lambda: os.getenv("PLAYWRIGHT_HEADLESS", "true").lower() in ("1", "true", "yes"))
+    playwright_locale: str = field(default_factory=lambda: os.getenv("PLAYWRIGHT_LOCALE", "zh-CN"))
+    playwright_timezone: str = field(default_factory=lambda: os.getenv("PLAYWRIGHT_TIMEZONE", "Asia/Shanghai"))
     playwright_storage_state: str | None = field(default_factory=lambda: _env_opt("PLAYWRIGHT_STORAGE_STATE"))
     # 真实浏览器会话降级：持久化用户目录优先（可复用已登录/已过验证的会话），
     # 其次 storage_state，最后退回全新有头 Chromium。验证码/人机验证不自动破解。

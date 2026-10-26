@@ -117,6 +117,7 @@ def run_probe(output: str | Path) -> dict[str, Any]:
 
     before_partition = lease_path.read_bytes()
     clock.advance(11)
+    store.close()
 
     def fail_commit(stage: str) -> None:
         if stage == "before-commit":
@@ -135,12 +136,14 @@ def run_probe(output: str | Path) -> dict[str, Any]:
     except WriterLeaseCommitError:
         partition_rejected = True
     partition_preserved = lease_path.read_bytes() == before_partition
-    recovered = WriterLeaseStore(
+    recovered_store = WriterLeaseStore(
         lease_path,
         owner_id="probe-recovered",
         ttl_seconds=10,
         clock=clock,
-    ).acquire()
+    )
+    recovered = recovered_store.acquire()
+    recovered_store.close()
 
     journal_failure = asyncio.run(_journal_failure_probe(working / "journal-failure"))
     unknown_resend = asyncio.run(_unknown_resend_probe(working / "unknown-resend"))

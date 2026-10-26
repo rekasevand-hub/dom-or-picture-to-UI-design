@@ -2,12 +2,20 @@
 
 **版本：1.1.0 冻结发版（2026-10-17）**
 
-从网页 DOM 或界面截图提取结构、样式与文字，生成可编辑原型：
+从两类输入生成可编辑设计产物：
 
-- **DOM → SVG**：像素级离线验证稿
-- **DOM → Figma**：通过本地 WebSocket 桥实时写入 Figma
-- **DOM → Axure RP 8**：直接生成 `.rp` 文件，支持多输入多页
-- **截图 → VLM / CV → SVG / Figma / Axure**：语义结构提取链路
+- **产品输入族**：DOM、image（用户截图或页面截图）
+- **产品输出目标**：Figma、Axure
+- **当前优先路线**：`DOM → Figma`、`image → Figma`（均限已声明证据范围）
+- **当前产品阶段**：A-011 Axure current scope 通过
+- **下一步任务**：等待选择 Axure 能力扩展或生产准入
+- **后续路线**：A-006/A-008 保持历史失败；A-010 泛化声明仅限冻结三样本
+
+Grounding、CV 和 hybrid 是 image 输入下的实现策略，不是与 DOM
+并列的产品路线。当前 `auto/dom/grounding/cv` 参数只用于控制实现层选择。
+image → Figma 已完成首个 owned-screenshot current-scope MVP：Grounding 默认、
+真实 Figma 写入/回读/导出、critical text、原生文本编辑和 reference-only 图片
+显示替换均有证据。该结论不表示任意截图或生产环境已通过。
 
 本版为冻结源码版本：`tests/`、旧 `docs/`、历史 `HANDOFF_*.md`、`DESIGN.md`、`PLAN.md` 已移出项目并归档。回归结果、修复结论与剩余风险见 `HANDOFF_2026-10-17_release.md`。
 
@@ -15,13 +23,13 @@
 
 | 能力 | 状态 | 说明 |
 |---|---|---|
-| DOM 直出 | 可用 | Playwright 抓真实 DOM + computed style，不调用视觉模型 |
+| DOM 直出 | 当前范围可用 | Playwright 抓真实 DOM + computed style，不调用视觉模型 |
 | SVG 输出 | 可用 | 无外部设计工具依赖，适合离线验收 |
-| Figma 输出 | 可用 | 需要先启动 bridge server 并运行 Figma 开发插件 |
-| Axure RP 8 输出 | 可用 | 从零生成 `.rp`，不是骨架改写 |
-| 多输入多页 | 可用 | 重复 `--url` / `--image`；当前仅 `--tool axure` 支持 |
-| VLM grounding | 可用，需密钥 | 截图/URL 语义结构提取，需 `VISION_API_KEY` |
-| CV + OmniParser | 可用，需外部模型 | 需本地 OmniParser 权重，模型不随源码包发布 |
+| Figma 输出 | DOM 路线当前范围可用 | 需要先启动 bridge server 并运行 Figma 开发插件 |
+| Axure RP 8 输出 | DOM/image 路线 current-scope 通过 | 从零生成确定性 `.rp`；真实 open/reopen publish 与独立 HTML 验收仅限 DQ-R02 和 IMG-MVP-01 |
+| 多输入多页 | Axure 实现可用 | 重复 `--url` / `--image`；当前仅 `--tool axure` 支持 |
+| VLM grounding | image 当前范围可用 | 截图/URL 语义结构候选，需 `VISION_API_KEY`；MVP 使用确定性像素样式层 |
+| CV + OmniParser | image 兜底策略 | 需本地 OmniParser/OCR 依赖；仅在 Grounding 服务或配置不可用时进入 |
 | 即时设计 / 墨刀 | 桩实现 | 适配器存在，但尚未接入正式 API |
 
 ## 环境要求
@@ -94,7 +102,7 @@ TEXT_MODEL=deepseek-v4-flash
 | `PROTOTYPE_TOOL` | `svg` / `figma` / `jsdesign` / `mockingbot` / `axure` |
 | `OUTPUT_DIR` | 中间产物与原型输出目录 |
 | `ROUTE` | `auto` / `dom` / `grounding` / `cv` |
-| `VISION_API_KEY` | `grounding` / `cv` 必需 |
+| `VISION_API_KEY` | `grounding` 必需；`cv` 兜底本身使用本地视觉/OCR 依赖 |
 | `figma_bridge.config.json` | Figma bridge 监听、journal、超时、写节流、认证和 legacy 策略 |
 | `PLAYWRIGHT_HEADLESS` | URL 采集是否无头 |
 | `PLAYWRIGHT_STORAGE_STATE` | 复用登录态 JSON |
@@ -123,25 +131,147 @@ C:\Users\lzq\.conda\envs\omni\python.exe `
   --plugin-token-file .\secrets\plugin-token.txt
 ```
 
-## 路线选择
+## 产品路线与实现策略
 
-| 路线 | 输入 | 是否调用模型 | 适用场景 |
-|---|---|---|---|
-| `dom` | URL | 否 | 首选。几何、颜色、字体、文本位置最准 |
-| `grounding` | URL / 截图 | 是 | 无 DOM 或需要语义结构 |
-| `cv` | URL / 截图 | 是 | OmniParser 像素结构 + VLM 语义 |
-| `auto` | URL / 截图 | 视回退而定 | URL 优先 DOM；失败后按配置回退 |
+产品规划只使用“输入族 × 输出目标”：
 
-说明：
+| 输入族 | 输出目标 | 状态 |
+|---|---|---|
+| DOM | Figma | 当前优先路线；仅限已声明证据范围 |
+| image | Figma | current-scope MVP；一个 owned 截图和真实 Figma 样本已通过 |
+| DOM | Axure | `pass-current-scope`（DQ-R02；单页真实 `.rp`、reopen publish 与独立验收通过） |
+| image | Axure | `pass-current-scope`（IMG-MVP-01；真实 `.rp`、reopen publish 与独立验收通过） |
+
+Axure 共享边界与 DOM 路线 current-scope 已通过。DQ-R02 生成了 647,034 字节
+的确定性 `.rp`，Axure RP 8.0.0.3400 打开、重新打开并发布成功；页面为
+`A002 DQ-R02 DOM Axure`，469 个 widget，54 个创建时图片载荷，独立发布验收
+通过 3/3 关键文本、30/30 去重图片哈希和 99.3772% within-30 视觉门槛。
+
+这仍是单一样本结论。Axure 不支持 runtime image replacement、原生
+letter-spacing、Auto Layout、clip 和交互重建；44 个显示图是 reference-only
+裁片，10 个图标是 generated approximation，均不冒充原图。Figma 验收不能转为
+Axure 结论。证据见
+`docs/v2_mentor/AXURE_DOM_ACCEPTANCE_2026-10-25.md`。
+
+Image → Axure 也已复用同一 image MVP 与 shared IR 完成 current scope：
+IMG-MVP-01 生成 58,296 字节确定性 `.rp`，22 个 widget，14/14 critical text，
+1/1 reference-only 图片载荷，Axure published within-30 `96.5720%`。Axure
+不支持 runtime replacement，产物只有 creation-time ImageBox。证据见
+`docs/v2_mentor/AXURE_IMAGE_ACCEPTANCE_2026-10-25.md`。
+
+A-005 已将覆盖扩展到 DQ-R01、DQ-R03 和 AX-IMG-H01。冻结输入首先暴露了
+DQ-R01 IR/asset 绑定、DQ-R03 布局和 AX-IMG-H01 OCR/asset 缺陷；TDD 修复后
+三个样本在阈值不变的情况下均通过，但同一 holdout 参与了修复，因此结果为
+`partial-post-holdout-tuning`，不能作为干净泛化结论。见
+`docs/v2_mentor/AXURE_HOLDOUT_ACCEPTANCE_2026-10-25.md`。
+
+A-006 使用全新的 AX6-DOM-TEXTFLOW、AX6-DOM-FONTFALLBACK 和
+AX6-IMG-OVERLAY。Font fallback 与 overlay 样本通过；mixed text flow 的发布
+文本/资产/视觉也通过，但 `.rp` 中多出一个未投影的空 `360x96` Rect，导致
+page/object mapping 硬门槛失败。总体结果为 `fail-unseen-holdout`，本轮未修复。
+见 `docs/v2_mentor/AXURE_HOLDOUT_V2_ACCEPTANCE_2026-10-25.md`。
+
+A-007 已确认该 Rect 是样式文本的派生背景层，不是幽灵或外来模板对象。
+比较器现在只对已匹配 Text 的源外框做一对一辅助层归因；A-007 重新生成的
+`.rp` 与 A-006 字节哈希完全一致，因此没有视觉变化或重新发布。由于 A-006
+仍是修复前的干净失败，泛化结论必须等待 A-008 的新 untouched holdout。见
+`docs/v2_mentor/AXURE_EXTRA_RECT_ATTRIBUTION_2026-10-25.md`。
+
+A-008 使用全新的 iframe、partial-asset 和 320px mobile 样本，结果为
+`fail-unseen-holdout`。Mobile 样本通过；iframe 样本的三个 `.rp`/发布/
+重开门禁通过，但参考图审查发现 iframe 正文没有可见呈现，标题与 iframe
+文本重叠，自动化 label-only critical text 没有捕获这一点。Partial-asset
+输出与参考图 100% 一致且 2/2 图片哈希匹配，但冻结 manifest 只预期 1 个
+资产，因此成为评估契约冲突而非干净 product fail。A-009 需先修复上游
+iframe 子坐标和可见区域验收，再做新的 holdout。见
+`docs/v2_mentor/AXURE_FRESH_HOLDOUT_A008_2026-10-25.md`。
+
+A-009 已完成当前范围修复。iframe 坐标代码本身没有新改动；采集器的现有
+回归已把 `Accessible iframe content` 放在 `(18,133)`，A-008 使用的是历史
+DesignSpec `(16,37)`。A-009 从当前采集器重新生成输入，并为 Axure 验收新增
+`critical_regions` ink 门禁：旧 A-008 渲染现在会被正确拒绝，repaired 渲染
+在 iframe 内容区域保持 `7.01923%` ink。Partial-asset 契约更正为 2 个声明/
+显示资产，且缺失原图 provenance 仍单独保留。两套 repaired 产物均确定性、
+conformance、发布/重开和验收通过。见
+`docs/v2_mentor/AXURE_A009_RENDERED_REGION_REPAIR_2026-10-25.md`。
+
+A-010 使用全新的 assets、transparent-crop 和 nested-iframe 三组样本，结果为
+`pass-unseen-holdout`。三份 `.rp` 均确定性且对象图无 mismatch；critical text、
+资产哈希、visible critical regions、within-30 和参考图审查全部通过；六次
+Axure 发布均为 `RESULT=OK`，重开后的页面 HTML 一致。该结论只覆盖冻结
+三样本，不代表任意 DOM、Auto Layout、runtime replacement 或生产环境已通过。
+见 `docs/v2_mentor/AXURE_FRESH_HOLDOUT_A010_2026-10-25.md`。
+
+A-011 已完成当前范围 exit review，结论为 `pass-current-scope`：受控
+`DOM -> Axure` 与命名 image 样本路线关闭，独立验收、确定性和 open/reopen
+publish 均有证据。A-006/A-008 历史失败与 A-007/A-009 remediation 分开保留。
+任意 DOM/image、Auto Layout、runtime replacement、clip、原生字距、交互、
+save-back 和生产准入仍明确不声明。下一步需要显式选择能力扩展或生产准入。
+见 `docs/v2_mentor/AXURE_CURRENT_SCOPE_EXIT_REVIEW_2026-10-25.md`。
+
+上述路线内的结构解析策略：
+
+| 策略 | 输入 | 角色 |
+|---|---|---|
+| `dom` | URL | DOM 输入的可信结构来源 |
+| `grounding` | URL / image | image 输入的默认解析策略 |
+| `cv` | URL / image | 仅在 Grounding VLM 不可用时使用的兜底 |
+| hybrid | URL / image | 仅限基准实验；证明更优前不得成为默认 |
+
+`--route` 和 `ROUTE` 是上述策略的实现层开关，不是产品路线命名。
+当前 image `auto` 默认 Grounding。仅 Grounding 服务不可用或视觉模型配置缺失时
+才进入 CV；Grounding 返回非法 JSON 或普通下游错误不会静默切换。
+
+实现层说明：
 
 - `dom` 只接受 URL。
-- 截图输入使用 `auto` 时，如果没有 `VISION_API_KEY`，会直接报错，因为最终仍需要 VLM 生成 DesignSpec。
-- `auto` 对 URL 先做页面状态判定：
-  - `content`：目标内容可访问，按 `dom → grounding → cv` 走。
-  - `soft_block`：无头浏览器被重定向/反爬/验证码挡住，但真实浏览器会话仍可能看到内容。依次尝试 `PLAYWRIGHT_USER_DATA_DIR` 持久化会话、`PLAYWRIGHT_STORAGE_STATE`、有头 Chromium；拿到内容后自动转为“自主截图 → 截图复刻”链路。
-  - `hard_login`：目标页面本身需要登录，截图也只能看到登录页。停止并提示用户先导出登录态，或手动上传目标页截图。只有二维码/手机号登录、没有密码框的登录页也会按“登录路由/标题 + 登录引导文案”识别。
+- 截图输入使用 `auto` 时，如果没有 `VISION_API_KEY`，会尝试本地 CV 兜底；
+  缺少 OmniParser/OCR 依赖时失败关闭。
+- image 当前范围使用确定性、固定坐标、像素采样的呈现层，不再依赖第二次
+  VLM 自由改写 bbox/style。
+- URL 输入先做页面状态判定：
+  - `content`：目标内容可访问。当前实现层候选链为 `dom → grounding → cv`，
+    但产品层应表达为“DOM 优先；DOM 不可用或显式请求时进入 image 策略”。
+  - `soft_block`：无头浏览器被重定向/反爬/验证码挡住，但真实浏览器会话仍可能看到内容。依次尝试 `PLAYWRIGHT_USER_DATA_DIR` 持久化会话、`PLAYWRIGHT_STORAGE_STATE`、有头 Chromium；拿到内容后转为页面截图输入。
+  - `hard_login`：目标页面本身需要登录，截图也只能看到登录页。停止并提示用户先导出登录态，或手动上传目标页截图。
 - 显式 `--route dom` 不会静默降级；被拦截时直接报错，并提示改用 `--route auto`。
 - 验证码/人机验证不会自动破解；视为需要用户处理或手动上传截图的情况。
+
+## Image → Figma MVP
+
+可复现入口：
+
+```powershell
+C:\Users\lzq\.conda\envs\omni\python.exe scripts/image_figma_mvp.py `
+  --image tests/fixtures/image_mvp/simple_dashboard_v1.png `
+  --truth tests/fixtures/image_mvp/simple_dashboard_v1.truth.json `
+  --out output/_image_figma_mvp_2026-10-25_next `
+  --prepare-only
+
+C:\Users\lzq\.conda\envs\omni\python.exe scripts/image_figma_mvp.py `
+  --image tests/fixtures/image_mvp/simple_dashboard_v1.png `
+  --truth tests/fixtures/image_mvp/simple_dashboard_v1.truth.json `
+  --out output/_image_figma_mvp_2026-10-25_next `
+  --reuse-prepared `
+  --origin-x 24000 `
+  --origin-y 0
+```
+
+当前范围结果：
+
+- Frame `77:4851`，`1200×800`；
+- critical text `14/14`；
+- native text edit/restore pass；
+- reference-only image display replace/restore pass；
+- Figma export within-30 `96.533125%`，冻结产品门槛 `90%`；
+- 图片原图身份、原始字体、DPR/viewport、hidden regions 和 adaptive flow
+  均不声称已验证。
+
+证据：
+
+- `docs/v2_mentor/IMAGE_FIGMA_MVP_ACCEPTANCE_2026-10-25.md`
+- `docs/v2_mentor/IMAGE_FIGMA_MVP_LEDGER_2026-10-25.md`
+- `output/_image_figma_mvp_2026-10-25_r4/acceptance.json`
 
 ## DOM 结构诊断
 
@@ -212,6 +342,39 @@ output/_axure_dom/prototype.rp
 
 用 Axure RP 8 打开即可。不要把 `assets/axure/rp8/` 删除，Axure 写入层依赖其中的文档模板。
 
+A-002 的可复现证据入口：
+
+```powershell
+C:\Users\lzq\.conda\envs\omni\python.exe scripts/axure_dom_output.py `
+  --design output/_dom_figma_generated_icons_2026-10-25_r1/design.json `
+  --ir output/_axure_shared_ir_2026-10-25_r1/DQ-R02-figma.ir.json `
+  --out output/_axure_dom_acceptance_next `
+  --source-kind dom `
+  --page-name "A002 DQ-R02 DOM Axure" `
+  --generate-twice
+```
+
+发布后用 `scripts/axure_acceptance.py` 读取 Axure HTML、原截图与 `.rp`
+对象图，独立生成 `acceptance.json`。完整命令和当前限制见
+`docs/v2_mentor/AXURE_DOM_ACCEPTANCE_2026-10-25.md`。
+
+### Image → Axure RP 8
+
+复用 image MVP 已准备的 DesignSpec，不在 Axure 路线重复图片理解：
+
+```powershell
+C:\Users\lzq\.conda\envs\omni\python.exe scripts/image_axure_mvp.py `
+  --design output/_image_figma_mvp_2026-10-25_r4/figma_design.json `
+  --ir output/_axure_shared_ir_2026-10-25_r1/IMG-MVP-01-figma.ir.json `
+  --out output/_axure_image_acceptance_next `
+  --page-name "A003 IMG-MVP-01 Image Axure" `
+  --generate-twice
+```
+
+Axure 的图片能力只到 creation-time `ImageBox`。不允许把 Figma runtime image
+replacement 结果转移到 Axure。完整发布和 14 项关键文本验收命令见
+`docs/v2_mentor/AXURE_IMAGE_ACCEPTANCE_2026-10-25.md`。
+
 多输入多页：
 
 ```powershell
@@ -281,7 +444,8 @@ python -m src.main `
   --output-dir output/_image_grounding
 ```
 
-`grounding` / `cv` 都需要 `VISION_API_KEY`。
+`grounding` 需要 `VISION_API_KEY`。`cv` 使用本地 OmniParser/OCR 依赖；
+当前 image MVP 的确定性呈现层不需要第二次 VLM 调用。
 
 CV 路线还需要本地 OmniParser：
 
@@ -410,7 +574,7 @@ scripts/                               运维、重放、Axure 调试脚本
 |---|---|
 | `--url URL` | 网页输入，可重复；重复时生成多页 |
 | `--image PATH` | 截图输入，可重复；重复时生成多页 |
-| `--route {auto,dom,grounding,cv}` | 结构来源路线 |
+| `--route {auto,dom,grounding,cv}` | 实现层结构策略，不是产品路线 |
 | `--tool {svg,figma,jsdesign,mockingbot,axure}` | 输出工具 |
 | `--output-dir PATH` | 输出目录 |
 | `--storage-state PATH` | 复用 Playwright 登录态 |
@@ -418,14 +582,14 @@ scripts/                               运维、重放、Axure 调试脚本
 | `--headed-fallback` / `--no-headed-fallback` | 无头被拦截时是否用有头 Chromium 重试（默认开） |
 | `--login-state PATH` | 交互登录并导出登录态，不跑管线 |
 | `--interactive` | 交互式向导 |
-| `--pick-crops` | grounding/cv 像素链路手工框选，写 `manual_crops.json` |
+| `--pick-crops` | image 解析策略的手工像素框选，写 `manual_crops.json` |
 | `--debug` | 输出调试日志 |
 | `--fast` / `--enrich` | 已废弃，仅为旧脚本兼容保留 |
 
 ## 已知限制
 
 - `jsdesign`、`mockingbot` 仍是桩实现，不要用于正式交付。
-- `grounding` / `cv` 依赖外部模型密钥；`cv` 还依赖本地 OmniParser 权重。
+- image 输入策略依赖外部模型密钥；其中 CV 兜底还依赖本地 OmniParser 权重。
 - Figma 输出要求 bridge server 和插件同时在线；桥接未启动会报 `WinError 10061`。
 - 多输入多页当前只支持 Axure；SVG / Figma 会把多页输入明确拒绝。
 - 反爬/验证码不会自动破解；真实会话仍看不到目标内容时，请手动上传截图或先处理登录。
@@ -477,6 +641,8 @@ scripts/                               运维、重放、Axure 调试脚本
 - `R5-EXP-05`（四维验收硬门禁与页面汇总）：`completed-for-current-scope`，19 case × 11 条记录、22/22 检查、30/30 变异拒绝；关键项闭包阻断，面积不参与发布分数；见 `docs/v2_mentor/R5_EXP_05_ACCEPTANCE_GATE.md`
 - `R5-EXP-06`（IR 持久化、TTL、迁移与重放）：`completed-for-current-scope`，12 case、54 事件、21/21 检查、32/32 变异拒绝；写前失败零副作用，TTL/迁移/replay 语义分离；见 `docs/v2_mentor/R5_EXP_06_IR_PERSISTENCE.md`
 - R5 收口审计：6/6 current-scope、118/118 检查、123/123 结构化变异拒绝、0 verified；见 `docs/v2_mentor/R5_CURRENT_SCOPE_AUDIT.md`
+- Image I-004/I-005：CV fallback 已完成一次真实 Figma 路由与写回验收，但结果在 critical text、structure 与 asset 三项 `blocked-fail`；同一冻结样本上的 Grounding + CV conservative hybrid 无独立改善且耗时更高，决策为 `reject-hybrid`，Grounding 保持默认。见 `docs/v2_mentor/IMAGE_CV_HYBRID_BENCHMARK_2026-10-26.md`
+- Image I-004-R2：完整 `PreciseAgent` CV fallback 路径在 owned sample 通过真实 Figma 门禁；随后冻结的三样本 holdout 为 `0/3`，因此 CV fallback 仅保留为 availability fallback，质量泛化结论不成立。见 `docs/v2_mentor/IMAGE_CV_FALLBACK_PRODUCT_ACCEPTANCE_2026-10-26.md`
 - R5 生产切片：`P0-CONTRACT-CORE` 已实现当前范围；`P1-EVIDENCE-ADAPTER` 已完成 shadow、frame 子文档作用域、两轴 outcome、S07 条件候选、有限 barrier、first-party scope、独立 frame boundary 与 S06 导航时间线当前范围；旧 round3 strict 3/7、content 5/7 冻结，新 profile equivalent 2 / different 3 / inconclusive 2；真实 Figma 写入、生产存储与检测器校准仍未准入；见 `docs/v2_mentor/R5_PRODUCTION_BACKLOG.md`
 - R5-P5/P4 门禁：门禁矩阵、冲突交付、输出硬门禁、PARTIAL release gate、single-writer lease、local-pilot store、backup/restore、metric contract 与 frozen dry run 已完成当前范围；真实 1h rehearsal、fixed-registry pilot 和 1h/24h/7d cloud soak 未执行，生产决策为 `not-admitted`；见 `docs/v2_mentor/R5_PRODUCTION_ADMISSION_DECISION.md` 与 `docs/v2_mentor/20261022问题文档.md`
 - P0 纯合同核心：`src/app/services/contracts/` + 20/20 单测；未接默认渲染或 bridge；见 `docs/v2_mentor/P0_CONTRACT_CORE.md`

@@ -1,0 +1,84 @@
+{
+  "schema_version": "axure-holdout/1.0",
+  "holdout_id": "axure-holdout/1.0",
+  "frozen_at": "2026-10-25T21:28:07.3489630+08:00",
+  "purpose": "Freeze Axure generalization samples before A-005 measurement.",
+  "tuning_exclusions": [
+    {
+      "sample_id": "DQ-R02",
+      "reason": "Used for A-002 DOM -> Axure tuning and acceptance."
+    },
+    {
+      "sample_id": "IMG-MVP-01",
+      "reason": "Used for A-003 image -> Axure tuning and acceptance."
+    }
+  ],
+  "environment": {
+    "axure_executable": "D:\\Program File\\Axure\\Axure RP 8\\AxureRP8.exe",
+    "axure_version": "8.0.0.3400",
+    "python_executable": "C:\\Users\\lzq\\.conda\\envs\\omni\\python.exe"
+  },
+  "thresholds": {
+    "critical_text_rate": 1.0,
+    "page_package_object_match_rate": 1.0,
+    "expected_image_hash_rate": 1.0,
+    "deterministic_rp_byte_identical": true,
+    "visual_within30_min_pct": 90.0,
+    "size_match_required": true,
+    "forbidden_sample_substitution": true,
+    "composite_score_allowed": false
+  },
+  "samples": [
+    {
+      "sample_id": "DQ-R01",
+      "input_kind": "dom",
+      "site": "React",
+      "page_name": "A005 DQ-R01 React Axure",
+      "corpus_manifest": "tests/fixtures/dom_quality/real_site_corpus_v1.json",
+      "corpus_manifest_sha256": "0448c3ef6db4231aea17deb9af14813302e586a2fab4e743a2960061f8fcc145",
+      "capture_root": "output/_dom_quality_corpus_verify_2026-10-25",
+      "dom_path": "output/_dom_quality_corpus_verify_2026-10-25/DQ-R01/00_dom.json",
+      "dom_sha256": "ac99866e8f97f964a91e977ac988d7cf1cabbb4229d48642139e0943e5e91f68",
+      "screenshot_path": "output/_dom_quality_corpus_verify_2026-10-25/DQ-R01/00_screenshot.png",
+      "screenshot_sha256": "7bbb30ad375c533c3f50f2253a7d1ce2c9f5900b8bd369eb6c7ea3ec6957e9c3",
+      "critical_texts": [
+        "React",
+        "The library for web and native user interfaces",
+        "Learn React"
+      ]
+    },
+    {
+      "sample_id": "DQ-R03",
+      "input_kind": "dom",
+      "site": "Shoelace",
+      "page_name": "A005 DQ-R03 Shoelace Axure",
+      "corpus_manifest": "tests/fixtures/dom_quality/real_site_corpus_v1.json",
+      "corpus_manifest_sha256": "0448c3ef6db4231aea17deb9af14813302e586a2fab4e743a2960061f8fcc145",
+      "capture_root": "output/_dom_quality_corpus_verify_2026-10-25",
+      "dom_path": "output/_dom_quality_corpus_verify_2026-10-25/DQ-R03/00_dom.json",
+      "dom_sha256": "160351b55245a39301c1e3d817959476526f49b9fe5ade03bb22719da3ae98b5",
+      "screenshot_path": "output/_dom_quality_corpus_verify_2026-10-25/DQ-R03/00_screenshot.png",
+      "screenshot_sha256": "97ec38cf984d6ed05f3c0ce651ca8eb208e8cce9dde1431a0e12951eda6773ae",
+      "critical_texts": [
+        "Shoelace",
+        "web components",
+        "Web Awesome"
+      ]
+    },
+    {
+      "sample_id": "AX-IMG-H01",
+      "input_kind": "image",
+      "site": "Asset evidence fixture",
+      "page_name": "A005 AX-IMG-H01 Image Axure",
+      "image_path": "tests/fixtures/axure_holdout/image_asset_evidence.png",
+      "image_sha256": "a22150581a324550af68fa568eb8673ea9a2ce63ea874fca33590c899d1236e8",
+      "truth_path": "tests/fixtures/axure_holdout/image_asset_evidence.truth.json",
+      "truth_sha256": "e104cfcc963f9ea40d167904f3e41650b8a70d54d07bc22d1cc215fb36c1cacd",
+      "critical_texts": [
+        "Asset evidence fixture",
+        "The page contains an image element, a CSS background image, and an inline SVG.",
+        "Ordinary text keeps the page classifiable while the three visual assets remain separate evidence targets."
+      ]
+    }
+  ]
+}

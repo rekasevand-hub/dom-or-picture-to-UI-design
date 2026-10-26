@@ -1,19 +1,29 @@
 # -*- coding: utf-8 -*-
 """精准复刻 Agent：capture -> 路由 -> provider -> PageGraph -> SoM -> DesignSpec -> 渲染。
 
-三条平行链路（显式 route 即主处理方向，仅 auto 做回退）：
-- dom       : DOM 真实结构 -> computed style 规则直出 DesignSpec，不调 VLM（秒级、无需 VISION_API_KEY）；
-- grounding : VLM 语义链：多模态模型看图出结构 -> SoM -> VLM 生成 DesignSpec；
-- cv        : OmniParser 纯像素出结构 -> 与 grounding 相同的 VLM 语义链。
+实现层策略（显式 route 即主处理方向，仅 auto 做回退）：
+- dom       : DOM 真实结构 -> computed style 规则直出 DesignSpec；
+- grounding : VLM 看图输出结构候选；image MVP 再从截图像素确定性生成 DesignSpec；
+- cv        : OmniParser/EasyOCR 输出候选，复用同一确定性 image MVP 呈现层。
 """
 
 from __future__ import annotations
-import json, logging, time
+import json
+import logging
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from src.app.services.structure.graph import assign_ids, assign_parent_depth, save_graph
-from src.app.services.structure.router import route_order
+from src.app.services.structure.image_contract import (
+    inspect_image_reference,
+    recover_image_region_candidates,
+    recover_image_text_candidates,
+)
+from src.app.services.structure.router import (
+    grounding_fallback_reason,
+    route_order,
+)
 from src.app.services.structure.providers.base import ProviderContext
 from src.app.services.som.annotate import annotate_som
 from src.app.version import app_version
@@ -123,19 +133,11 @@ class PreciseAgent:
         out.mkdir(parents=True, exist_ok=True)
         t0 = time.time()
 
-        # grounding/cv 是 VLM 语义链，未配视觉密钥就无法枚举/生成，提前报错；
-        # DOM 直出（route=dom，或 auto URL 有 DOM 时落到 dom）不需要密钥。
-        if route not in ("auto", "dom") and not cfg.vision_api_key:
+        # Grounding needs the VLM. CV can now feed the deterministic image
+        # presentation layer without a second VLM call.
+        if route == "grounding" and not cfg.vision_api_key:
             raise ValueError(
-                "VISION_API_KEY 未配置：路线 "
-                + route
-                + " 需要多模态模型做结构枚举与 DesignSpec 语义生成"
-                "（只有 DOM 直出不需要视觉密钥）"
-            )
-        if not url and image and route == "auto" and not cfg.vision_api_key:
-            raise ValueError(
-                "VISION_API_KEY 未配置：图片输入的 auto 只剩 cv 兜底，而 cv 的 DesignSpec"
-                "仍需多模态模型；请配置密钥或改用旧流程 ReconstructAgent"
+                "VISION_API_KEY 未配置：路线 " + route + " 需要多模态模型做结构枚举"
             )
 
         requested_route = route
@@ -229,31 +231,91 @@ class PreciseAgent:
         have_dom = bool(ctx.dom_path)
         requested = route if route != "auto" else None
         chain = route_order(input_kind, requested, cfg, have_dom)
-        if screenshot_only and not cfg.vision_api_key:
-            raise ValueError(
-                "已自动降级到自主截图路线，但 VISION_API_KEY 未配置：截图复刻仍需"
-                "多模态模型生成 DesignSpec；请配置密钥，或先处理登录/反爬后重试 DOM"
-            )
-        # URL 输入但 DOM 缺失、又无视觉密钥时，auto 只剩 cv（仍需 VLM），提前报错。
-        if not cfg.vision_api_key and set(chain) == {"cv"}:
-            raise ValueError(
-                "VISION_API_KEY 未配置：当前输入没有 DOM 可直出，cv 的 DesignSpec 需要多模态模型密钥"
-            )
         fallbacks, graph = list(capture_fallbacks), None
+        strategy_attempts: list[dict] = []
+        image_reference = None
+        image_strategy = None
+        if input_kind == "image":
+            image_reference = inspect_image_reference(image)
+            (out / "image_reference.json").write_text(
+                json.dumps(image_reference, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            if requested is None and not cfg.vision_api_key and chain[0] == "cv":
+                strategy_attempts.append(
+                    {
+                        "strategy": "grounding",
+                        "status": "unavailable",
+                        "reason": "grounding-config-missing",
+                    }
+                )
+                fallbacks.append(
+                    {"from": "grounding", "reason": "grounding-config-missing"}
+                )
 
         for r in chain:
             try:
                 provider = _build_provider(cfg, r)
                 ctx.route = r
                 graph = provider.run(ctx)
+                strategy_attempts.append({"strategy": r, "status": "selected"})
                 break
             except Exception as exc:
                 if requested:
                     raise
+                if input_kind == "image" and r == "grounding":
+                    reason = grounding_fallback_reason(exc)
+                    if reason is None:
+                        raise
+                    strategy_attempts.append(
+                        {
+                            "strategy": r,
+                            "status": "unavailable",
+                            "reason": reason,
+                        }
+                    )
+                    fallbacks.append({"from": r, "reason": reason})
+                    continue
+                strategy_attempts.append(
+                    {
+                        "strategy": r,
+                        "status": "failed",
+                        "reason": str(exc),
+                    }
+                )
                 fallbacks.append({"from": r, "reason": str(exc)})
         if graph is None:
             raise RuntimeError(
                 "auto 全部路线失败: " + json.dumps(fallbacks, ensure_ascii=False)
+            )
+
+        if image_reference is not None:
+            image_strategy = {
+                "requested": requested_route,
+                "selected": graph["route"],
+                "attempts": strategy_attempts,
+                "fallback_used": any(
+                    attempt.get("status") == "unavailable"
+                    for attempt in strategy_attempts[:-1]
+                ),
+                "policy": "grounding-default-cv-only-when-unavailable",
+            }
+
+        ocr_supplement = None
+        image_region_recovery = None
+        if image_reference is not None:
+            graph, ocr_supplement = recover_image_text_candidates(graph, image)
+            (out / "ocr_supplement.json").write_text(
+                json.dumps(ocr_supplement, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            graph, image_region_recovery = recover_image_region_candidates(
+                graph,
+                image,
+            )
+            (out / "image_region_recovery.json").write_text(
+                json.dumps(image_region_recovery, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
             )
 
         assign_ids(graph)
@@ -262,15 +324,25 @@ class PreciseAgent:
         graph["provenance"]["capture"] = capture_meta or {}
         graph["provenance"]["page_state"] = page_state
         graph["provenance"]["requested_route"] = requested_route
+        if image_reference is not None and image_strategy is not None:
+            graph["provenance"]["input_kind"] = "image"
+            graph["provenance"]["reference"] = image_reference
+            graph["provenance"]["strategy"] = image_strategy
+            if ocr_supplement is not None:
+                graph["provenance"]["ocr_supplement"] = {
+                    "status": ocr_supplement.get("status"),
+                    "source": ocr_supplement.get("source"),
+                    "added_count": ocr_supplement.get("added_count"),
+                    "observation_count": ocr_supplement.get("observation_count"),
+                }
+            if image_region_recovery is not None:
+                graph["provenance"]["image_region_recovery"] = {
+                    "status": image_region_recovery.get("status"),
+                    "source": image_region_recovery.get("source"),
+                    "added_count": image_region_recovery.get("added_count"),
+                }
         save_graph(graph, str(out / "10_pagegraph.json"))
         annotate_som(graph, str(out))
-
-        from src.app.utils.image_utils import load_image as _li
-        from src.app.services.llm.llm_service import generate_som_design
-        from src.app.services.som.direct_design import (
-            build_direct_design,
-            try_build_direct_design,
-        )
 
         som_json = json.loads((out / "11_som.json").read_text(encoding="utf-8"))
         # 人工框选的“权威像素区”：--pick-crops 在采集后弹出框选窗口（写 manual_crops.json），
@@ -302,12 +374,52 @@ class PreciseAgent:
                 "screenshot_only": screenshot_only,
                 "page_state": page_state,
                 "capture": capture_meta,
+                "input_kind": input_kind,
+                **(
+                    {
+                        "imageMVP": {
+                            "presentation": (
+                                f"{graph['route']}-pixel-sampled-fixed-coordinate"
+                            ),
+                            "reference_id": image_reference["reference_id"],
+                            "strategy": image_strategy,
+                            "ocr_supplement": {
+                                "status": ocr_supplement.get("status"),
+                                "source": ocr_supplement.get("source"),
+                                "added_count": ocr_supplement.get("added_count"),
+                            },
+                        },
+                        "ocr_supplement": {
+                            "status": ocr_supplement.get("status"),
+                            "source": ocr_supplement.get("source"),
+                            "added_count": ocr_supplement.get("added_count"),
+                            "observation_count": ocr_supplement.get(
+                                "observation_count"
+                            ),
+                        },
+                        "image_region_recovery": {
+                            "status": image_region_recovery.get("status"),
+                            "source": image_region_recovery.get("source"),
+                            "added_count": image_region_recovery.get("added_count"),
+                        },
+                    }
+                    if image_reference is not None
+                    else {}
+                ),
             },
             counts={
                 "containers": len(graph["containers"]),
                 "elements": len(graph["elements"]),
             },
             delivery_acceptance=delivery_acceptance,
+            image_contract=(
+                {
+                    "reference": image_reference,
+                    "strategy": image_strategy,
+                }
+                if image_reference is not None and image_strategy is not None
+                else None
+            ),
         )
         return graph
 
@@ -356,6 +468,13 @@ class PreciseAgent:
             )
             if key in manifest
         }
+        provenance = som_json.get("provenance") or {}
+        image_contract = None
+        if provenance.get("input_kind") == "image":
+            image_contract = {
+                "reference": provenance.get("reference"),
+                "strategy": provenance.get("strategy"),
+            }
         return self._design_and_render(
             som_json,
             image=image,
@@ -369,6 +488,7 @@ class PreciseAgent:
             extra_manifest=extra,
             counts={"containers": len(containers), "elements": len(elements)},
             delivery_acceptance=delivery_acceptance,
+            image_contract=image_contract,
         )
 
     def run_many(
@@ -596,9 +716,9 @@ class PreciseAgent:
         try:
             from dataclasses import replace
 
-            RenderingController(
-                replace(self.config, delivery_profile="legacy")
-            ).render(design, "svg")
+            RenderingController(replace(self.config, delivery_profile="legacy")).render(
+                design, "svg"
+            )
             rasterize_svg(
                 svg,
                 render,
@@ -622,6 +742,7 @@ class PreciseAgent:
         title: str | None = None,
         extra_manifest: dict | None = None,
         delivery_acceptance: DeliveryAcceptance | None = None,
+        image_contract: dict | None = None,
     ) -> dict:
         """设计 → 贴像素底 → 回填像素 → 渲染 → 写 manifest（采集与重渲染共用）。返回 DesignSpec。"""
         cfg = self.config
@@ -646,14 +767,15 @@ class PreciseAgent:
         # Auto Layout 施工图要 DOM 父子关系（pIdx）与布局字段，都在采集产物里；
         # 缺（老目录、非 dom 路线）就整条链路不动，输出与以前逐字节相同。
         capture_meta = (som_json.get("provenance") or {}).get("capture") or {}
-        capture_meta.setdefault("device_scale_factor", cfg.device_scale_factor)
-        capture_meta.setdefault(
-            "viewport",
-            {
-                "width": cfg.playwright_viewport_width,
-                "height": cfg.playwright_viewport_height,
-            },
-        )
+        if image_contract is None:
+            capture_meta.setdefault("device_scale_factor", cfg.device_scale_factor)
+            capture_meta.setdefault(
+                "viewport",
+                {
+                    "width": cfg.playwright_viewport_width,
+                    "height": cfg.playwright_viewport_height,
+                },
+            )
         screenshot_only = bool(capture_meta.get("screenshot_only"))
         dom_nodes = None
         dom_path = out / "00_dom.json"
@@ -662,21 +784,40 @@ class PreciseAgent:
                 dom_nodes = json.loads(dom_path.read_text(encoding="utf-8"))
             except (OSError, ValueError):  # noqa: PERF203 - 坏文件不影响出稿
                 dom_nodes = None
-        design = try_build_direct_design(som_json, profile, dom_nodes)
-        if design is None and route == "dom":
-            logger.warning(
-                "DOM 路线 computed style 覆盖不足，仍按规则直出（不回落 VLM）"
+        image_ir = None
+        if image_contract is not None:
+            from src.app.services.structure.image_contract import (
+                build_image_design,
+                build_image_ir,
             )
-            design = build_direct_design(som_json, profile, dom_nodes)
-        if design is None:
-            if not cfg.vision_api_key:
-                raise ValueError(
-                    "VISION_API_KEY 未配置：grounding/cv 的 DesignSpec 生成需要多模态模型密钥"
-                )
-            from src.app.utils.image_utils import encode_image_base64
 
-            b64 = encode_image_base64(_li(image))
-            design = generate_som_design(som_json, b64, cfg, output_dir=str(out))
+            design = build_image_design(
+                som_json,
+                image_contract["reference"],
+                sample_id=str((image_contract["reference"].get("reference_id") or "")),
+            )
+            image_ir = build_image_ir(
+                som_json,
+                design,
+                image_contract["reference"],
+                image_contract["strategy"],
+            )
+        else:
+            design = try_build_direct_design(som_json, profile, dom_nodes)
+            if design is None and route == "dom":
+                logger.warning(
+                    "DOM 路线 computed style 覆盖不足，仍按规则直出（不回落 VLM）"
+                )
+                design = build_direct_design(som_json, profile, dom_nodes)
+            if design is None:
+                if not cfg.vision_api_key:
+                    raise ValueError(
+                        "VISION_API_KEY 未配置：grounding/cv 的 DesignSpec 生成需要多模态模型密钥"
+                    )
+                from src.app.utils.image_utils import encode_image_base64
+
+                b64 = encode_image_base64(_li(image))
+                design = generate_som_design(som_json, b64, cfg, output_dir=str(out))
         # 人工框选的“权威像素区”（manual_crops.json，与路线无关）：按原图像素 1:1 裁图
         # 贴成像素底、被它完全盖住的图元丢弃（见 design_crops.apply_crops_to_design）。
         from src.app.services.som.crop_picker import load_manual_crops
@@ -695,6 +836,11 @@ class PreciseAgent:
         (out / "12_design.json").write_text(
             json.dumps(design, ensure_ascii=False, indent=1), encoding="utf-8"
         )
+        if image_ir is not None:
+            (out / "image_ir.json").write_text(
+                json.dumps(image_ir, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
 
         from src.app.controllers.rendering_controller import RenderingController
 
@@ -740,6 +886,17 @@ class PreciseAgent:
         for key, value in (extra_manifest or {}).items():
             if key != "fallbacks":
                 manifest[key] = value
+        if image_contract is not None:
+            manifest["input_kind"] = "image"
+            manifest["imageMVP"] = {
+                "presentation": f"{route}-pixel-sampled-fixed-coordinate",
+                "reference_id": image_contract["reference"]["reference_id"],
+                "reference_sha256": image_contract["reference"]["input"]["sha256"],
+                "strategy": image_contract["strategy"],
+                "flow": "candidate-fixed-coordinate",
+                "asset_claim": "display-replacement-only",
+                "original_asset_claimed": False,
+            }
         (out / "manifest.json").write_text(
             json.dumps(manifest, ensure_ascii=False, indent=1), encoding="utf-8"
         )

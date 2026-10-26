@@ -225,6 +225,11 @@ def run_soak() -> dict[str, Any]:
             "removed": 0,
             "failed": [{"nodeId": "FRAME:4", "error": "locked"}],
         }
+        ledger.record_bridge_outcome(
+            cleanup_failure_job,
+            "committed",
+            {"status": "committed", "transactionId": cleanup_failure_job},
+        )
         coordinator_a.cleanup_job(cleanup_failure_job)
 
         duplicate_conflicts = 0

@@ -68,6 +68,29 @@ class CollaborationReconciliationTests(unittest.TestCase):
         self.assertFalse(conflict.resend_allowed)
         self.assertFalse(deleted.resend_allowed)
 
+    def test_partial_state_and_authoritative_attribution_are_distinct(self) -> None:
+        partial = reconciliation_policy(
+            {"transactionId": "tx-partial", "state": "unknown"},
+            {
+                "status": "partial-match",
+                "owned_node_ids": ["1:4", "1:5"],
+            },
+            {"status": "unavailable"},
+        )
+        authoritative = reconciliation_policy(
+            {"transactionId": "tx-authoritative", "state": "unknown"},
+            {"status": "matches", "owned_node_ids": ["1:6"]},
+            {"status": "authoritative", "actor": "alice", "revision": "42"},
+        )
+
+        self.assertEqual(
+            partial.recommendation,
+            "operator-reconcile-partial-state",
+        )
+        self.assertFalse(partial.resend_allowed)
+        self.assertEqual(authoritative.actor, "alice")
+        self.assertEqual(authoritative.revision, "42")
+
     def test_probe_keeps_collaboration_claims_bounded(self) -> None:
         with tempfile.TemporaryDirectory() as raw_dir:
             result = run_probe(Path(raw_dir))
