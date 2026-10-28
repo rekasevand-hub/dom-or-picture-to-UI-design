@@ -22,6 +22,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import logging
+import os
 import re
 
 from src.app.services.som.design_crops import (
@@ -38,6 +39,7 @@ from src.app.services.structure.asset_metadata import (
 )
 from src.app.services.structure.asset_fusion import fuse_asset_record
 from src.app.services.structure.text_model import build_text_model
+from src.app.services.structure.visual_assets import build_visual_assets
 from src.app.utils.style_utils import css_color_to_hex
 from src.config.settings import Config
 
@@ -63,6 +65,42 @@ def _geometry(item: dict) -> tuple[int, int, int, int]:
         max(1, int(round(float(w)))),
         max(1, int(round(float(h)))),
     )
+
+
+def _visual_asset_manifest(som_json: dict) -> dict:
+    rows = []
+    for item in som_json.get("elements") or []:
+        if not isinstance(item, dict):
+            continue
+        record = (item.get("assetIdentity") or {}).get("asset_record") or {}
+        source = record.get("source_identity") or {}
+        if not isinstance(source, dict):
+            continue
+        url = str(source.get("source_url") or "").strip()
+        if not url:
+            continue
+        rows.append(
+            {
+                "source_url": url,
+                "status": source.get("status"),
+                "sha256": source.get("sha256"),
+                "locator": source.get("locator"),
+                "mime": source.get("mime"),
+            }
+        )
+    return {"assets": rows}
+
+
+def _pseudo_visual_style(asset: dict) -> dict:
+    source = asset.get("style") or {}
+    style: dict = {}
+    text_color = css_color_to_hex(source.get("color"))
+    if text_color:
+        style["textColor"] = text_color
+    matcher = re.search(r"(\d+(?:\.\d+)?)px", str(source.get("font") or ""))
+    style["fontSize"] = int(round(float(matcher.group(1)))) if matcher else 16
+    style["fontWeight"] = "700" if re.search(r"\b(?:700|bold)\b", str(source.get("font") or ""), re.I) else "400"
+    return style
 
 
 def _carry_clip(out: dict, item: dict) -> None:
@@ -699,6 +737,16 @@ def build_direct_design(som_json: dict, profile=None, dom_nodes=None) -> dict:
             screenshot_sha256 = None
     elements: list[dict] = []
     backdrops: list[dict] = []  # 浮层像素底，渲染端在同 z 时最后画（见文末）
+    visual_assets = None
+    if (
+        isinstance(dom_nodes, list)
+        and os.getenv("DOM_VISUAL_ASSETS_V2", "false").strip().lower()
+        in {"1", "true", "yes"}
+    ):
+        visual_assets = build_visual_assets(
+            dom_nodes,
+            _visual_asset_manifest(som_json),
+        )
     skipped_containers = 0  # 透明且无边框（凭空造不出框）的容器
     drawn_containers = 0  # 真有 fill/border 的容器（像素底另外计）
 
@@ -1079,6 +1127,92 @@ def build_direct_design(som_json: dict, profile=None, dom_nodes=None) -> dict:
                     generated_candidates=generated_candidates,
                 )
         elements.append(element)
+
+    if visual_assets is not None:
+        for asset_index, asset in enumerate(visual_assets.get("assets") or []):
+            dom_index = asset.get("domIndex")
+            if not isinstance(dom_index, int) or not 0 <= dom_index < len(dom_nodes):
+                continue
+            source_node = dom_nodes[dom_index]
+            if (
+                asset.get("kind") == "background-image"
+                and not str(source_node.get("text") or "")
+                and not source_node.get("richRuns")
+                and source_node.get("bgImage")
+            ):
+                # The existing DOM image path already materialized this leaf.
+                continue
+            bbox = asset.get("bbox") or []
+            if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+                continue
+            x, y, w, h = _geometry({"bbox": list(bbox)})
+            common = {
+                "id": str(asset.get("visualAssetId") or f"visual-{asset_index}"),
+                "x": x,
+                "y": y,
+                "width": w,
+                "height": h,
+                "overlay": str((asset.get("style") or {}).get("position") or "") == "absolute",
+                "zIndex": int(source_node.get("zIndex") or 0),
+                "source": asset.get("sourceKind") or "dom:visual",
+                "visualAssetId": str(asset.get("visualAssetId") or ""),
+                "domIndex": dom_index,
+            }
+            if asset.get("visualFallbackReason"):
+                common["visualFallbackReason"] = asset["visualFallbackReason"]
+            if asset.get("kind") == "text":
+                element = {
+                    **common,
+                    "type": "text",
+                    "text": str(asset.get("text") or ""),
+                    "style": _pseudo_visual_style(asset),
+                    **(
+                        {"pseudoElement": asset["pseudo"]}
+                        if asset.get("pseudo")
+                        else {}
+                    ),
+                    **(
+                        {"geometrySource": asset["geometrySource"]}
+                        if asset.get("geometrySource")
+                        else {}
+                    ),
+                }
+                elements.append(element)
+                continue
+            if asset.get("kind") == "gradient":
+                gradient = asset.get("gradient") or {}
+                stops = gradient.get("stops") or []
+                element = {
+                    **common,
+                    "type": "container",
+                    "text": "",
+                    "style": {"fillColor": stops[0] if stops else "transparent"},
+                    "gradient": dict(gradient),
+                }
+                elements.append(element)
+                continue
+            b64 = None
+            if image_path:
+                b64 = _crop_image_b64(
+                    image_path,
+                    x,
+                    y,
+                    w,
+                    h,
+                    canvas["width"],
+                    canvas["height"],
+                    pixel_ratio=pixel_ratio,
+                )
+            element = {
+                **common,
+                "type": "image" if b64 else "rectangle",
+                "text": "",
+                "style": {"fillColor": "transparent"},
+            }
+            if b64:
+                element["imageBase64"] = b64
+                element["displaySourceCrop"] = True
+            elements.append(element)
 
     if dom_nodes:
         kept_by_dom_clip: list[dict] = []

@@ -856,6 +856,31 @@ DOM_JS = r"""
         if (url) bgUrls.push(url.slice(0, 20000));
       }
     }
+    const backgroundLayers = [];
+    {
+      const rawBg = String(cs.backgroundImage || '');
+      const sizes = String(cs.backgroundSize || '').split(',');
+      const positions = String(cs.backgroundPosition || '').split(',');
+      const repeats = String(cs.backgroundRepeat || '').split(',');
+      if (/gradient\(/i.test(rawBg)) {
+        backgroundLayers.push({
+          kind: 'gradient',
+          css: rawBg.slice(0, 4000),
+        });
+      }
+      bgUrls.forEach((url) => {
+        const layerIndex = backgroundLayers.length;
+        backgroundLayers.push({
+          kind: 'image',
+          source: url,
+          size: String(sizes[layerIndex] || sizes[0] || 'auto').trim(),
+          position: String(
+            positions[layerIndex] || positions[0] || '0% 0%',
+          ).trim(),
+          repeat: String(repeats[layerIndex] || repeats[0] || 'repeat').trim(),
+        });
+      });
+    }
     // 非均匀边框（表格行的 1px 分隔线：四边里只有 1~2 边有，简写作 "0px 1px 1px 0px"）。
     // computed borderWidth 简写在四边不一致时既可能是空串、也可能是带 0 的多值——
     // 只判“空串”会让整排分隔线一直采不到（真实页 9 条行线）。这里逐边读 used 值，
@@ -1080,6 +1105,7 @@ DOM_JS = r"""
     if (iconBox) rec.iconBox = true;
     if (bgImage) rec.bgImage = true;
     if (bgUrls.length) rec.bgUrls = bgUrls;
+    if (backgroundLayers.length) rec.backgroundLayers = backgroundLayers;
     if (edges) rec.edges = edges;
     // 图标标识随节点带出（只给判定成图标的节点写，避免上千个节点都挂一份 class）
     if (iconBox && clsRaw) rec.cls = clsRaw.slice(0, 160);
