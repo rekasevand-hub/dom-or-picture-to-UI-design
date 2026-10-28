@@ -78,6 +78,29 @@ Replay hashes:
 | 国家数据 | `3178f9c29c003ba858e5e7713d4039788cf4a1452dcc2999f02fef7698413141` | `2724d73d88e659d6acf3c8c8c2ff3efb4e022b96f09466fdca40d8598fa51e07` |
 | 小米 | `a18d0f288ac0debc2ef39d4dbbc6c81ae7020c0f9bb21e5e74d8c868c57040ea` | `04a31025d8a01f6f21fec0a349ecb71ac38a77733125f80ab708afe6546404b5` |
 
+## P0 Route Benchmark
+
+The dedicated P0 driver replayed each frozen bundle twice and evaluated redirect,
+content, image coverage, geometry, and clipping independently:
+
+| Page | Bundle SHA-256 | Route quality | DOM images | Design images | Figma fills | Text nodes |
+|---|---|---|---|---|---|---|
+| 21ic | `2164924de2d95fc202203e77e6b987209c93b3a4ffb46792bd644fd2812c3a70` | warn | 67 | 61 | 0 | 160 |
+| IT之家 | `0b5ce3abac9d5df4b158e5cfb894b6e53e5022626bf6f2557459b2e9028c62e1` | warn | 19 | 8 | 0 | 54 |
+| 国家数据 | `2d5c4bbc03ea04f9e8795d58b38ecfbc76e0ff3bd6a126c0d1b7c7f79b667490` | warn | 33 | 5 | 0 | 14 |
+| 小米 | `3bdc8ce6f5f4d4233ff659f538a573710c8d02ea973ad9938aaee35cd16dd055` | warn | 36 | 23 | 0 | 32 |
+
+Aggregate result:
+
+- cases: 4
+- deterministic replay pairs: 4/4
+- route-quality failures: 0
+- route-quality warnings: 4
+- Figma fills: 0, because no plugin readback was available
+
+IT之家 has an image-coverage warning. 国家数据 has SPA path and image-coverage
+warnings. No route-quality failure was hidden by the aggregate report.
+
 ## Unseen Holdouts
 
 The URLs were frozen before execution in
@@ -134,6 +157,13 @@ C:\Users\lzq\.conda\envs\omni\python.exe scripts/replay_dom_capture.py `
 C:\Users\lzq\.conda\envs\omni\python.exe scripts/dom_visual_benchmark.py `
   --case "IT之家=output/_dom_visual_benchmark_20261029/it-home-r2=output/_dom_visual_benchmark_20261029/it-home-r2" `
   --out output/_dom_visual_benchmark_20261029/result.json
+
+C:\Users\lzq\.conda\envs\omni\python.exe scripts/benchmark_dom_route.py `
+  --case "IT之家=D:/LLM-Data/Figma_auto_agent/output/_dom_visual_benchmark_20261029/it-home-r2" `
+  --case "21ic=D:/LLM-Data/Figma_auto_agent/output/_dom_visual_benchmark_20261029/bbs21" `
+  --case "国家数据=D:/LLM-Data/Figma_auto_agent/output/_dom_visual_benchmark_20261029/stats" `
+  --case "小米=D:/LLM-Data/Figma_auto_agent/output/_dom_visual_benchmark_20261029/xiaomi" `
+  --out output/_dom_visual_benchmark_20261029/dom-route-benchmark.json
 ```
 
 ## Decision
@@ -141,8 +171,9 @@ C:\Users\lzq\.conda\envs\omni\python.exe scripts/dom_visual_benchmark.py `
 - Versioned capture bundle: adopted
 - Layer tree: adopted
 - Offline replay: adopted
-- Asset materialization: adopted behind `DOM_VISUAL_ASSETS_V2=false`
-- Route-quality gate: rejected for default enablement until real Figma and holdout gates pass
+- Asset materialization: adopted behind `DOM_NETWORK_ASSET_RECOVERY=false` and
+  `DOM_VISUAL_ASSETS_V2=false`
+- Route-quality gate: adopted in report-only mode; strict gate remains false
 - Default behavior changed: no
 - Remaining risks: Figma plugin disconnect, one failed unseen capture, no real image-fill readback, P1 visual metrics only partially evaluated
 - Reproduction commands: listed above
