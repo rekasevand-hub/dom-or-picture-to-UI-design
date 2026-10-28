@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import base64
+import tempfile
+from pathlib import Path
+
+from playwright.sync_api import sync_playwright
 
 from src.app.services.structure.asset_metadata import parse_data_uri_asset
+from src.app.services.structure.capture import DOM_JS
 from src.app.services.structure.svg_materialization import (
     classify_svg_source,
     materialize_svg_assets,
@@ -94,3 +99,25 @@ def test_safe_svg_materializes_content_addressed_png_display_payload(tmp_path):
     assert (tmp_path / row["sanitizedVectorPath"]).is_file()
     assert (tmp_path / row["displayPayloadPath"]).is_file()
     assert row["displayPayloadPath"].endswith(".png")
+
+
+def test_dom_capture_retains_inline_svg_source():
+    with tempfile.TemporaryDirectory() as tmp:
+        fixture = Path(tmp) / "inline-svg.html"
+        fixture.write_text(
+            "<!doctype html><svg id='icon' width='24' height='16' "
+            "viewBox='0 0 24 16'><path d='M0 0 L24 16'/></svg>",
+            encoding="utf-8",
+        )
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            try:
+                page = browser.new_page(viewport={"width": 200, "height": 100})
+                page.goto(fixture.resolve().as_uri(), wait_until="domcontentloaded")
+                nodes = page.evaluate(DOM_JS)
+            finally:
+                browser.close()
+
+    svg = next(node for node in nodes if node.get("tag") == "svg")
+    assert "<svg" in svg["svgSource"]
+    assert "viewBox" in svg["svgSource"]

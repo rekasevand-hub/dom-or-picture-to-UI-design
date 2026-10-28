@@ -1013,6 +1013,11 @@ DOM_JS = r"""
       const assetSrc = String(el.src || el.getAttribute('src') || '').trim();
       if (assetSrc) rec.assetSrc = assetSrc.slice(0, 20000);
     }
+    if (String(el.tagName).toLowerCase() === 'svg') {
+      try {
+        rec.svgSource = el.outerHTML.slice(0, 200000);
+      } catch (e) {}
+    }
     if (inlineImageBoundaryNode(el)) rec.inlineImageBoundary = true;
     if (el.tagName === 'LI') {
       const marker = String(cs.listStyleType || '').toLowerCase();
