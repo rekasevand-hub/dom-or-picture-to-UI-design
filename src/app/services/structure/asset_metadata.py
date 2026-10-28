@@ -508,11 +508,15 @@ def parse_data_uri_asset(source: str) -> dict:
     except Exception:
         raw = b""
     natural_size = None
+    svg_policy = None
     if mime.lower() == "image/svg+xml":
-        match = _SVG_SIZE.search(raw) or _SVG_VIEWBOX.search(raw)
-        if match:
-            natural_size = [float(match.group(1)), float(match.group(2))]
-    return {
+        from src.app.services.structure.svg_materialization import (
+            classify_svg_source,
+        )
+
+        svg_policy = classify_svg_source(raw, page_url="")
+        natural_size = svg_policy.get("naturalSize")
+    result = {
         "source_kind": "data-uri",
         "source": value,
         "sha256": _sha256(raw),
@@ -521,6 +525,15 @@ def parse_data_uri_asset(source: str) -> dict:
         "natural_size": natural_size,
         "bytes": raw,
     }
+    if svg_policy:
+        result.update(
+            {
+                "svg_mode": svg_policy.get("mode"),
+                "svg_reasons": list(svg_policy.get("reasons") or []),
+                "svg_sanitized_sha256": svg_policy.get("sanitizedSha256"),
+            }
+        )
+    return result
 
 
 def object_fit_source_rect(

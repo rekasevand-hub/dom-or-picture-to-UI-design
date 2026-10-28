@@ -24,6 +24,7 @@ import hashlib
 import logging
 import os
 import re
+from pathlib import Path
 
 from src.app.services.som.design_crops import (
     covers as _covers,
@@ -40,6 +41,7 @@ from src.app.services.structure.asset_metadata import (
 from src.app.services.structure.asset_fusion import fuse_asset_record
 from src.app.services.structure.text_model import build_text_model
 from src.app.services.structure.visual_assets import build_visual_assets
+from src.app.services.structure.svg_materialization import materialize_svg_assets
 from src.app.utils.style_utils import css_color_to_hex
 from src.config.settings import Config
 
@@ -747,6 +749,23 @@ def build_direct_design(som_json: dict, profile=None, dom_nodes=None) -> dict:
             dom_nodes,
             _visual_asset_manifest(som_json),
         )
+    svg_assets_by_dom: dict[int, dict] = {}
+    if (
+        isinstance(dom_nodes, list)
+        and image_path
+        and os.getenv("DOM_SVG_MATERIALIZATION_V2", "false").strip().lower()
+        in {"1", "true", "yes"}
+    ):
+        svg_manifest = materialize_svg_assets(
+            dom_nodes,
+            Path(image_path).parent / "svg_materialization",
+            page_url=str(provenance.get("url") or ""),
+        )
+        svg_assets_by_dom = {
+            int(row["domIndex"]): row
+            for row in svg_manifest.get("assets", [])
+            if isinstance(row, dict) and isinstance(row.get("domIndex"), int)
+        }
     skipped_containers = 0  # 透明且无边框（凭空造不出框）的容器
     drawn_containers = 0  # 真有 fill/border 的容器（像素底另外计）
 
@@ -1057,7 +1076,18 @@ def build_direct_design(som_json: dict, profile=None, dom_nodes=None) -> dict:
         # 真实像素只能从原截图裁（antd 图标字体在顶层栏/侧栏/分页上大量使用）。
         if etype in ("image", "avatar") or e.get("iconCrop"):
             b64 = None
-            if image_path:
+            svg_asset = svg_assets_by_dom.get(
+                int(e["domIndex"]) if isinstance(e.get("domIndex"), int) else -1
+            )
+            if svg_asset and svg_asset.get("displayPayloadPath"):
+                payload_path = (
+                    Path(image_path).parent
+                    / "svg_materialization"
+                    / str(svg_asset["displayPayloadPath"])
+                )
+                if payload_path.is_file():
+                    b64 = base64.b64encode(payload_path.read_bytes()).decode("ascii")
+            if b64 is None and image_path:
                 b64 = _crop_image_b64(
                     image_path,
                     x,
@@ -1090,6 +1120,17 @@ def build_direct_design(som_json: dict, profile=None, dom_nodes=None) -> dict:
                         element["displayPayload"] = dict(enriched["display_payload"])
                         element["replacement"] = dict(enriched["replacement"])
                     image_backfilled += 1
+            if svg_asset:
+                for key in (
+                    "mode",
+                    "originalVectorPath",
+                    "sanitizedVectorPath",
+                    "displayPayloadPath",
+                    "displayMode",
+                    "visualFallbackReason",
+                ):
+                    if svg_asset.get(key):
+                        element[key] = svg_asset[key]
             asset_identity = element.get("assetIdentity") or {}
             record = asset_identity.get("asset_record")
             if not isinstance(record, dict):
