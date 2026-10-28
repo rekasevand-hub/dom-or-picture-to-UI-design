@@ -18,7 +18,11 @@ from src.app.services.job_namespace import (
     build_job_namespace,
     validate_job_namespace,
 )
-from src.app.services.rendering.adapter_base import PrototypeAdapter, _offset_box
+from src.app.services.rendering.adapter_base import (
+    PrototypeAdapter,
+    _offset_box,
+    _single_line_text,
+)
 from src.app.services.rendering.write_job_ledger import CompensationScope
 
 logger = logging.getLogger(__name__)
@@ -528,6 +532,15 @@ class FigmaBridgeAdapter(PrototypeAdapter):
             self.ws = None
             logger.info("已断开 Figma 桥接服务器")
 
+    def _discard_connection(self) -> None:
+        ws = self.ws
+        self.ws = None
+        if ws is not None:
+            try:
+                ws.close()
+            except Exception:  # noqa: BLE001 - the peer already closed
+                pass
+
     def _send(
         self,
         action: str,
@@ -545,9 +558,35 @@ class FigmaBridgeAdapter(PrototypeAdapter):
             "requestId": request_id,
         }
         self.ws.send(json.dumps(payload, ensure_ascii=False))
-        response = self.ws.recv()
+        try:
+            response = self.ws.recv()
+        except self._websocket.WebSocketConnectionClosedException as exc:
+            self._discard_connection()
+            raise FigmaBridgeError(
+                "Figma 桥接连接在响应前关闭，写入结果未知",
+                code="BRIDGE_DISCONNECTED",
+                outcome="unknown",
+                request_id=request_id,
+            ) from exc
+        if response is None or response == "" or response == b"":
+            self._discard_connection()
+            raise FigmaBridgeError(
+                "Figma 桥接连接返回空响应，写入结果未知",
+                code="BRIDGE_EMPTY_RESPONSE",
+                outcome="unknown",
+                request_id=request_id,
+            )
         logger.info(f"收到桥接响应: {response!r}")
-        data = json.loads(response)
+        try:
+            data = json.loads(response)
+        except (TypeError, ValueError) as exc:
+            self._discard_connection()
+            raise FigmaBridgeError(
+                "Figma 桥接返回了无法解析的响应，写入结果未知",
+                code="BRIDGE_RESPONSE_INVALID",
+                outcome="unknown",
+                request_id=request_id,
+            ) from exc
         returned_id = str(data.get("requestId") or "")
         if returned_id and returned_id != request_id:
             raise RuntimeError(
@@ -701,16 +740,44 @@ class FigmaBridgeAdapter(PrototypeAdapter):
         measured browser line, ``textEmBox`` already starts at the real line
         top, so applying both shifts glyphs by different amounts per font size.
         """
+        browser_measured = (
+            spec.get("baselineSource") == "browser-measured"
+            or bool(spec.get("measuredLines"))
+        )
         lines = spec.get("lines")
-        if int(spec.get("textEmLines") or 0) != 1:
+        if (
+            not browser_measured
+            and not _single_line_text(spec)
+            and int(spec.get("textEmLines") or 0) != 1
+        ):
             return local_spec
-        if isinstance(lines, list) and len(lines) > 1:
+        if (
+            isinstance(lines, list)
+            and len(lines) > 1
+            and not _single_line_text(spec)
+            and not browser_measured
+        ):
             return local_spec
         measured = _offset_box(spec.get("textEmBox"), origin)
         if measured is None:
             return local_spec
-        rendered = {**local_spec, "y": measured[1]}
-        rendered.pop("lineHeight", None)
+        rich_runs = spec.get("richRuns")
+        rich_origin = isinstance(rich_runs, list) and len(rich_runs) > 1
+        rendered = {
+            **local_spec,
+            "x": local_spec.get("x", 0) if rich_origin else measured[0],
+            "y": measured[1],
+        }
+        if browser_measured:
+            rendered["baselineSource"] = "browser-measured"
+            if isinstance(spec.get("lineBoxes"), list):
+                rendered["lineBoxes"] = [
+                    list(box)
+                    for box in spec["lineBoxes"]
+                    if isinstance(box, (list, tuple)) and len(box) == 4
+                ]
+        if _single_line_text(spec):
+            rendered.pop("lineHeight", None)
         return rendered
 
     def create_image(

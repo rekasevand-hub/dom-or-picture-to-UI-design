@@ -9,6 +9,7 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 from src.app import tuning
+from src.app.services.rendering.text_layout import layout_text
 from src.app.services.rendering.text_wrap import lines_spec_fields, wrap_for_spec
 
 
@@ -58,6 +59,60 @@ def _offset_box(box: Any, origin: tuple[int, int]) -> list[int] | None:
     except (TypeError, ValueError):
         return None
     return [x - origin[0], y - origin[1], w, h]
+
+
+def _measured_control_text_box(
+    spec: dict[str, Any],
+) -> tuple[int, int, int] | None:
+    """Measured first-line origin for a single-line or nowrap control."""
+    try:
+        measured_lines = int(spec.get("textEmLines") or 0)
+    except (TypeError, ValueError):
+        measured_lines = 0
+    nowrap = str(spec.get("whiteSpace") or "").strip().lower() == "nowrap"
+    if measured_lines != 1 and not nowrap:
+        return None
+    box = spec.get("textEmBox")
+    if not box:
+        return None
+    try:
+        x, y, _w, h = (int(v) for v in box)
+    except (TypeError, ValueError):
+        return None
+    return x, y, h
+
+
+def _control_text_anchor(
+    *,
+    has_text_box: bool,
+    has_run_box: bool,
+    has_measured_box: bool,
+) -> str:
+    return (
+        "start"
+        if has_text_box or has_run_box or has_measured_box
+        else "middle"
+    )
+
+
+def _single_line_text(spec: dict[str, Any]) -> bool:
+    """Whether Figma should keep this text on one auto-width line."""
+    if spec.get("singleLine"):
+        return True
+    try:
+        measured_lines = int(spec.get("textEmLines") or 0)
+        explicit_max_lines = int(spec.get("maxLines") or 0)
+    except (TypeError, ValueError):
+        return False
+    lines = spec.get("lines")
+    if isinstance(lines, list) and len(lines) > 1:
+        return False
+    return (
+        measured_lines == 1
+        and explicit_max_lines < 1
+        and not spec.get("clip")
+        and not spec.get("clipToBounds")
+    )
 
 
 class PrototypeAdapter(ABC):
@@ -245,7 +300,7 @@ class PrototypeAdapter(ABC):
                     **spec_out,
                     "parentId": parent_id,
                     "applyStyle": True,
-                    "clipsContent": False,
+                    "clipsContent": bool(spec.get("clipToBounds")),
                     "name": spec.get("name") or "Container",
                 }
                 if fill:
@@ -307,6 +362,17 @@ class PrototypeAdapter(ABC):
                     }
                     self.create_rectangle(bg_spec, parent_id=parent_id)
                 text_spec = self._text_render_spec(spec, spec_out, origin)
+                single_line = _single_line_text({**spec, **style})
+                if single_line:
+                    text_spec["singleLine"] = True
+                    text_spec.pop("lines", None)
+                    text_spec.pop("boundedText", None)
+                elif (
+                    text_spec.get("richRuns")
+                    or str(spec.get("whiteSpace") or "").strip().lower() == "nowrap"
+                    or spec.get("clipToBounds")
+                ):
+                    text_spec["boundedText"] = True
                 self.create_text(
                     self._wrap_text_spec(text_spec),
                     parent_id=parent_id,
@@ -342,8 +408,23 @@ class PrototypeAdapter(ABC):
                 # 图标上（dushu 导航按钮图标压首字、「查看更多」左偏 107px）。行框是
                 # 单行这一点在 IR 侧已经判过。
                 tbox = None if run_box else _offset_box(spec.get("textBox"), origin)
+                measured_box = None
                 if tbox is not None:
                     text_x, text_y, text_h = tbox[0], tbox[1], tbox[3]
+                elif (
+                    measured_box := _measured_control_text_box(spec)
+                ) is not None:
+                    text_x = (
+                        spec_out.get("x", 0)
+                        + measured_box[0]
+                        - int(spec.get("x", 0))
+                    )
+                    text_y = (
+                        spec_out.get("y", 0)
+                        + measured_box[1]
+                        - int(spec.get("y", 0))
+                    )
+                    text_h = measured_box[2]
                 elif run_box:
                     text_x, text_y, text_h = (
                         spec_out.get("x", 0),
@@ -369,9 +450,13 @@ class PrototypeAdapter(ABC):
                     "fontStyle": spec.get("fontStyle"),
                     "letterSpacing": spec.get("letterSpacing"),
                     "opacity": spec.get("opacity"),
-                    "textAnchor": "middle"
-                    if (tbox is None and not run_box)
-                    else "start",
+                    "richRuns": spec.get("richRuns"),
+                    "whiteSpace": spec.get("whiteSpace"),
+                    "textAnchor": _control_text_anchor(
+                        has_text_box=tbox is not None,
+                        has_run_box=run_box,
+                        has_measured_box=measured_box is not None,
+                    ),
                 }
                 if str(spec.get("whiteSpace") or "").strip().lower() == "nowrap":
                     # 元素自己的 `white-space:nowrap` 必须跟着标题走：控件的底框被
@@ -379,7 +464,14 @@ class PrototypeAdapter(ABC):
                     # 居中，见上），丢了它窄盒里的标题就会早折一个字符——与
                     # `_button()` 内嵌标题的口径必须一致（真机 A/B 见 plan §9.11）。
                     text_spec["whiteSpace"] = "nowrap"
+                single_line = _single_line_text({**spec, **style})
+                if single_line:
+                    text_spec["singleLine"] = True
+                elif text_spec.get("richRuns") or text_spec.get("whiteSpace") == "nowrap":
+                    text_spec["boundedText"] = True
                 lines = None if (tbox is not None or run_box) else wrap_for_spec(spec)
+                if single_line:
+                    lines = None
                 if lines:
                     # 折行后"控件内居中"这条经验规则不再成立（多行块的排版该跟
                     # 真实页面走）：行首落到盒子左缘，水平对齐改用 DOM 的
@@ -403,6 +495,8 @@ class PrototypeAdapter(ABC):
                     continue
                 done_plan = frames[done]
                 done_rect = self._element_rect(elements[done]) or (0, 0, 0, 0)
+                if done_plan.get("layout") is None:
+                    continue
                 # 子项坐标不再下发：插件在打开 layoutMode 前先快照**每个**子节点当前的
                 # x/y，打开后原样写回（全量复位）。快照永远等于扁平渲染时的落点 ——
                 # 交给 Figma 的 Auto Layout 流式摆放会叠加成员自己的 x/y，整组漂一个
@@ -425,10 +519,36 @@ class PrototypeAdapter(ABC):
         折行结果在 IR 侧就算好（text_wrap），SVG 与 Figma 只是照着画同一份断点，
         免得两边字体度量不同、折出来的行数对不上。
         """
+        measured_lines = spec.get("measuredLines")
+        if (
+            spec.get("richRuns")
+            and _single_line_text(spec)
+            and not measured_lines
+        ):
+            return spec
+        if isinstance(measured_lines, (list, tuple)) and measured_lines:
+            layout = layout_text(spec, measured_lines=measured_lines)
+            return {
+                **spec,
+                "lines": list(layout["lines"]),
+                "lineBoxes": [list(box) for box in layout.get("lineBoxes", [])],
+                "lineHeight": int(layout["lineHeight"]),
+                "textAlign": str(layout["textAlign"]),
+                "source": str(layout["source"]),
+                "baselineSource": str(layout["baselineSource"]),
+                "layoutConfidence": float(layout["confidence"]),
+            }
         lines = wrap_for_spec(spec)
         if not lines:
             return spec
-        return {**spec, **lines_spec_fields(spec, lines)}
+        return {
+            **spec,
+            **lines_spec_fields(spec, lines),
+            # Wrapping or truncation changes character positions. Keeping the old
+            # rich-run offsets would format the wrong glyphs and can reintroduce
+            # overflow in Figma. Prefer readable, bounded plain text in this case.
+            "richRuns": [],
+        }
 
     def _text_render_spec(
         self,
@@ -464,10 +584,18 @@ class PrototypeAdapter(ABC):
     def _clip_rect_of(spec: dict[str, Any]) -> tuple[int, int, int, int] | None:
         """取元素携带的裁剪矩形（页面绝对坐标）；无 / 无效返回 None。"""
         clip = spec.get("clip")
-        if not isinstance(clip, (list, tuple)) or len(clip) != 4:
-            return None
         try:
-            x, y, w, h = (int(v) for v in clip)
+            if isinstance(clip, (list, tuple)) and len(clip) == 4:
+                x, y, w, h = (int(v) for v in clip)
+            elif spec.get("clipToBounds"):
+                x, y, w, h = (
+                    int(spec.get("x", 0)),
+                    int(spec.get("y", 0)),
+                    int(spec.get("width", 0)),
+                    int(spec.get("height", 0)),
+                )
+            else:
+                return None
         except (TypeError, ValueError):
             return None
         if w <= 0 or h <= 0:
@@ -824,12 +952,12 @@ def resolve_frames(
         if reasons is not None:
             reasons[i] = why
 
-    plans: dict[int, tuple[dict, list[tuple[int, dict]]]] = {}
+    plans: dict[int, tuple[dict | None, list[tuple[int, dict]]]] = {}
     for i, el in enumerate(elements):
         layout = el.get("layout")
         children = el.get("layoutChildren")
         if (
-            not isinstance(layout, dict)
+            (layout is not None and not isinstance(layout, dict))
             or not isinstance(children, list)
             or len(children) < 2
         ):

@@ -258,7 +258,7 @@ def max_lines_of(spec: dict, line_height: int) -> int:
         clamp = int(spec.get("maxLines"))
     except (TypeError, ValueError):
         clamp = 0
-    if clamp >= 2:
+    if clamp >= 1:
         return min(clamp, _MAX_LINES_CAP)
     try:
         height = float(spec.get("height") or 0)
@@ -271,19 +271,39 @@ def max_lines_of(spec: dict, line_height: int) -> int:
 
 def wrap_for_spec(spec: dict) -> list[str] | None:
     """需要折行时返回每行文本；否则 None（调用端据此保持老路径逐字节不变）。"""
+    text = str(spec.get("text") or "")
+    try:
+        width = float(spec.get("width") or 0)
+    except (TypeError, ValueError):
+        width = 0.0
+    if spec.get("measuredLines"):
+        from src.app.services.rendering.text_layout import layout_text
+
+        measured_layout = layout_text(spec)
+        return list(measured_layout.get("lines") or []) or None
     measured = [
         str(line).strip() for line in (spec.get("lines") or []) if str(line).strip()
     ]
     if measured:
+        try:
+            clamp = int(spec.get("maxLines") or 0)
+        except (TypeError, ValueError):
+            clamp = 0
+        if clamp > 0 and len(measured) > clamp:
+            measured = measured[:clamp]
+            if width > 0:
+                measured[-1] = ellipsize(
+                    measured[-1],
+                    width,
+                    font_size_of(spec),
+                    letter_spacing=letter_spacing_of(spec),
+                )
         return measured
-    text = str(spec.get("text") or "")
     if len(text) < 2 or spec.get("textLineBox"):
         return None
     if str(spec.get("whiteSpace") or "").strip().lower() == "nowrap":
         return None
-    try:
-        width = float(spec.get("width") or 0)
-    except (TypeError, ValueError):
+    if width <= 0:
         return None
     font_size = font_size_of(spec)
     letter_spacing = letter_spacing_of(spec)
@@ -295,7 +315,11 @@ def wrap_for_spec(spec: dict) -> list[str] | None:
         return None
     line_height = line_height_of(spec, font_size)
     max_lines = max_lines_of(spec, line_height)
-    if max_lines < 2:
+    try:
+        explicit_max_lines = int(spec.get("maxLines") or 0)
+    except (TypeError, ValueError):
+        explicit_max_lines = 0
+    if max_lines < 1 or (max_lines == 1 and explicit_max_lines < 1):
         return None
     return wrap_lines(body, width, font_size, max_lines, letter_spacing)
 
