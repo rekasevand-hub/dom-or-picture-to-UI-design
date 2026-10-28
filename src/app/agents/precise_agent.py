@@ -201,6 +201,15 @@ class PreciseAgent:
                 "requested_url": url,
                 "final_url": page_state.get("final_url"),
                 "page_state": page_state,
+                "device_scale_factor": cap.get(
+                    "device_scale_factor", cfg.device_scale_factor
+                ),
+                "viewport": cap.get("viewport")
+                or {
+                    "width": cfg.playwright_viewport_width,
+                    "height": cfg.playwright_viewport_height,
+                },
+                "canvas_size": [w, h],
                 "screenshot_source": page_state.get("screenshot_source"),
                 "screenshot_only": screenshot_only,
                 "attempts": page_state.get("attempts", []),
@@ -233,6 +242,8 @@ class PreciseAgent:
         chain = route_order(input_kind, requested, cfg, have_dom)
         fallbacks, graph = list(capture_fallbacks), None
         strategy_attempts: list[dict] = []
+        grounding_report = None
+        fallback_observation = None
         image_reference = None
         image_strategy = None
         if input_kind == "image":
@@ -261,6 +272,13 @@ class PreciseAgent:
                 strategy_attempts.append({"strategy": r, "status": "selected"})
                 break
             except Exception as exc:
+                if grounding_report is None and getattr(exc, "report", None) is not None:
+                    report = exc.report
+                    grounding_report = (
+                        report.to_dict()
+                        if hasattr(report, "to_dict")
+                        else dict(report)
+                    )
                 if requested:
                     raise
                 if input_kind == "image" and r == "grounding":
@@ -290,6 +308,31 @@ class PreciseAgent:
             )
 
         if image_reference is not None:
+            from src.app.services.observability.fallback_metrics import (
+                build_fallback_observation,
+            )
+
+            if grounding_report is None:
+                reliability = (
+                    graph.get("provenance", {}).get("grounding_reliability")
+                )
+                if isinstance(reliability, dict):
+                    grounding_report = reliability
+            fallback_observation = build_fallback_observation(
+                requested_route=requested_route,
+                selected_route=graph["route"],
+                attempts=strategy_attempts,
+                grounding_report=grounding_report,
+            )
+            (out / "fallback_observability.json").write_text(
+                json.dumps(
+                    fallback_observation,
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
             image_strategy = {
                 "requested": requested_route,
                 "selected": graph["route"],
@@ -299,6 +342,7 @@ class PreciseAgent:
                     for attempt in strategy_attempts[:-1]
                 ),
                 "policy": "grounding-default-cv-only-when-unavailable",
+                "observability": fallback_observation,
             }
 
         ocr_supplement = None
@@ -383,6 +427,7 @@ class PreciseAgent:
                             ),
                             "reference_id": image_reference["reference_id"],
                             "strategy": image_strategy,
+                            "fallback_observability": fallback_observation,
                             "ocr_supplement": {
                                 "status": ocr_supplement.get("status"),
                                 "source": ocr_supplement.get("source"),
@@ -833,6 +878,33 @@ class PreciseAgent:
             logger.info("人工框选像素底 %d 块已贴上（manual_crops.json）", added)
         # 无论直出还是 VLM 生成，image/avatar 元素按原截图裁剪回填真实像素
         backfill_design_image_crops(design, image)
+        if bool(getattr(cfg, "dom_network_asset_recovery", False)) and route == "dom":
+            from src.app.services.structure.network_asset_recovery import (
+                recover_network_assets,
+            )
+
+            recovery = recover_network_assets(
+                design,
+                page_url=url or "",
+                output_dir=out,
+            )
+            design = recovery.pop("design")
+        from src.app.services.structure.capture_asset_ledger import (
+            build_asset_ledger,
+            update_capture_bundle_assets,
+        )
+
+        asset_ledger = build_asset_ledger(design)
+        (out / "00_assets.json").write_text(
+            json.dumps(asset_ledger, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        if (out / "00_capture_bundle.json").is_file():
+            update_capture_bundle_assets(
+                out,
+                asset_manifest="00_assets.json",
+                asset_counts=asset_ledger,
+            )
         (out / "12_design.json").write_text(
             json.dumps(design, ensure_ascii=False, indent=1), encoding="utf-8"
         )

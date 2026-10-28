@@ -128,6 +128,7 @@ class Config:
     # 1px 位移并重渲染（见 services/rendering/text_align.py）；置 0 关闭。
     text_align: bool = field(default_factory=lambda: os.getenv("TEXT_ALIGN", "true").lower() in ("1", "true", "yes"))
     dom_text_model_v2: bool = field(default_factory=lambda: os.getenv("DOM_TEXT_MODEL_V2", "false").lower() in ("1", "true", "yes"))
+    dom_network_asset_recovery: bool = field(default_factory=lambda: os.getenv("DOM_NETWORK_ASSET_RECOVERY", "false").lower() in ("1", "true", "yes"))
 
     # --- 视觉提取 ---
     cv_resize_long_edge: int = field(default_factory=lambda: int(os.getenv("CV_RESIZE_LONG_EDGE", "1280")))
