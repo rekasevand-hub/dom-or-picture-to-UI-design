@@ -908,6 +908,53 @@ class PreciseAgent:
         (out / "12_design.json").write_text(
             json.dumps(design, ensure_ascii=False, indent=1), encoding="utf-8"
         )
+        if route == "dom":
+            from src.app.services.evidence.dom_route_quality import (
+                DOMRouteQualityError,
+                evaluate_dom_route_quality,
+            )
+
+            bundle_path = out / "00_capture_bundle.json"
+            if bundle_path.is_file():
+                bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+            else:
+                bundle = {
+                    "requested_url": url or "",
+                    "final_url": url or "",
+                    "capture": capture_meta,
+                    "page_state": (extra_manifest or {}).get("page_state") or {},
+                }
+            graph_path = out / "10_pagegraph.json"
+            graph = (
+                json.loads(graph_path.read_text(encoding="utf-8"))
+                if graph_path.is_file()
+                else {}
+            )
+            route_quality = evaluate_dom_route_quality(
+                bundle,
+                dom_nodes or [],
+                graph,
+                design,
+                asset_ledger,
+            )
+            (out / "00_route_quality.json").write_text(
+                json.dumps(route_quality, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            failed_checks = [
+                name
+                for name, check in route_quality["checks"].items()
+                if check.get("status") == "fail"
+            ]
+            if failed_checks:
+                logger.error(
+                    "DOM route quality failed: %s",
+                    ", ".join(failed_checks),
+                )
+                if bool(getattr(cfg, "dom_route_quality_strict", False)):
+                    raise DOMRouteQualityError(
+                        "DOM route quality failed: " + ", ".join(failed_checks)
+                    )
         if image_ir is not None:
             (out / "image_ir.json").write_text(
                 json.dumps(image_ir, ensure_ascii=False, indent=2) + "\n",

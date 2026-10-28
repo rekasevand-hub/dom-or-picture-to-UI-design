@@ -6,9 +6,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
 from PIL import Image
 
 from src.app.agents.precise_agent import PreciseAgent
+from src.app.services.evidence.dom_route_quality import DOMRouteQualityError
 from src.app.services.structure.capture_bundle import write_capture_bundle
 
 
@@ -70,8 +72,19 @@ def _prepare_bundle(root: Path) -> None:
     )
 
 
-def _run_design(root: Path, *, recovery_enabled: bool):
+def _run_design(
+    root: Path,
+    *,
+    recovery_enabled: bool,
+    strict_route_quality: bool = False,
+    regional_redirect: bool = False,
+):
     _prepare_bundle(root)
+    if regional_redirect:
+        bundle_path = root / "00_capture_bundle.json"
+        bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+        bundle["final_url"] = "https://example.test/global/support/"
+        bundle_path.write_text(json.dumps(bundle), encoding="utf-8")
     image = root / "00_screenshot.png"
     original_design = {
         "canvas": {"width": 320, "height": 180, "background": "#ffffff"},
@@ -112,6 +125,7 @@ def _run_design(root: Path, *, recovery_enabled: bool):
         vision_api_key=None,
         delivery_profile="legacy",
         dom_network_asset_recovery=recovery_enabled,
+        dom_route_quality_strict=strict_route_quality,
     )
     som = {
         "image": str(image),
@@ -185,3 +199,13 @@ def test_normal_dom_flow_recovers_once_and_updates_bundle(tmp_path):
     counts = bundle["artifacts"]["assets"]["counts"]
     assert counts["verified_count"] == ledger["verified_count"]
     assert counts["reference_only_count"] == ledger["reference_only_count"]
+
+
+def test_strict_route_quality_fails_before_rendering(tmp_path):
+    with pytest.raises(DOMRouteQualityError, match="redirect"):
+        _run_design(
+            tmp_path,
+            recovery_enabled=False,
+            strict_route_quality=True,
+            regional_redirect=True,
+        )
