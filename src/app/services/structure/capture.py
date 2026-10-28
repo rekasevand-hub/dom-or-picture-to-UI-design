@@ -21,6 +21,7 @@ from src.app.services.structure.capture_state import (
     classify_capture_navigation,
     state_window_is_stable,
 )
+from src.app.services.structure.capture_bundle import write_capture_bundle
 from src.app.services.structure.frames import (
     capture_frame_state,
     collect_frame_dom,
@@ -295,7 +296,126 @@ DOM_JS = r"""
   const pageBg = document.body instanceof Element
     ? getComputedStyle(document.body).backgroundColor
     : 'rgba(0, 0, 0, 0)';
+  const richInlineConsumed = new WeakSet();
+  const richRunStyle = (node) => {
+    const s = getComputedStyle(node);
+    return {
+      fontSize: s.fontSize,
+      fontWeight: s.fontWeight,
+      fontStyle: s.fontStyle,
+      fontFamily: s.fontFamily,
+      textColor: s.color,
+      letterSpacing: s.letterSpacing,
+      textDecoration: s.textDecorationLine,
+    };
+  };
+  const inlineTextOnly = (el) => {
+    const s = getComputedStyle(el);
+    if (!['inline', 'inline-block'].includes(s.display)) return false;
+    if (s.visibility === 'hidden' || s.display === 'none' || s.opacity === '0') {
+      return false;
+    }
+    const bg = (s.backgroundColor || '').replace(/\s+/g, '');
+    const hasPaint = bg && bg !== 'transparent'
+      && bg !== 'rgba(0,0,0,0)' && bg !== 'rgb(0,0,0,0)';
+    if (hasPaint || (parseFloat(s.borderTopWidth) || 0) > 0
+        || (parseFloat(s.borderRightWidth) || 0) > 0
+        || (parseFloat(s.borderBottomWidth) || 0) > 0
+        || (parseFloat(s.borderLeftWidth) || 0) > 0) {
+      return false;
+    }
+    for (const child of el.childNodes) {
+      if (child.nodeType === 3) continue;
+      if (child.nodeType !== 1 || !inlineTextOnly(child)) return false;
+    }
+    return true;
+  };
+  const flattenInlineTag = (el) => /^(CODE|KBD|SAMP|VAR|SUB|SUP)$/i.test(el.tagName);
+  const flattenedInlineText = (el) => {
+    if (/^(IMG|SVG|VIDEO|CANVAS|INPUT|BUTTON|SELECT|TEXTAREA)$/i.test(el.tagName)) {
+      return false;
+    }
+    const s = getComputedStyle(el);
+    if (!['inline', 'inline-block'].includes(s.display)) return false;
+    if (s.visibility === 'hidden' || s.display === 'none' || s.opacity === '0') {
+      return false;
+    }
+    // 行内代码、上下标等伪样式不再单独落层：并入父段落文本流，避免离线输出
+    // 重新排版后这些窄层压住正文。图片、控件和块级子树仍保持独立结构。
+    let hasFlattenedDescendant = flattenInlineTag(el);
+    for (const child of el.childNodes) {
+      if (child.nodeType === 3) continue;
+      if (child.nodeType !== 1) return false;
+      if (flattenedInlineText(child)) {
+        hasFlattenedDescendant = true;
+      } else if (!inlineTextOnly(child)) {
+        return false;
+      }
+    }
+    return hasFlattenedDescendant;
+  };
+  const collectRichRuns = (el) => {
+    const runs = [];
+    const parentStyle = richRunStyle(el);
+    const visit = (node, flattenStyle) => {
+      if (node.nodeType === 3) {
+        const value = node.textContent || '';
+        if (value) {
+          runs.push({
+            text: value,
+            style: flattenStyle
+              ? parentStyle
+              : richRunStyle(node.parentElement || el),
+          });
+        }
+        return;
+      }
+      if (node.nodeType !== 1 || node === el) return;
+      const flatten = flattenedInlineText(node);
+      if (!inlineTextOnly(node) && !flatten) return;
+      richInlineConsumed.add(node);
+      for (const child of node.childNodes) visit(child, flattenStyle || flatten);
+    };
+    for (const child of el.childNodes) visit(child, false);
+    while (runs.length && !runs[0].text.trim()) runs.shift();
+    while (runs.length && !runs[runs.length - 1].text.trim()) runs.pop();
+    if (runs.length) {
+      runs[0].text = runs[0].text.replace(/^\s+/, '');
+      runs[runs.length - 1].text = runs[runs.length - 1].text.replace(/\s+$/, '');
+    }
+    const filtered = runs.filter((run) => run.text);
+    let offset = 0;
+    return filtered.map((run) => {
+      const start = offset;
+      offset += run.text.length;
+      return { start, end: offset, text: run.text, style: run.style };
+    });
+  };
+  const ellipsizeText = (value, el, cs) => {
+    const available = Math.max(
+      0,
+      el.clientWidth - (parseFloat(cs.paddingLeft) || 0)
+        - (parseFloat(cs.paddingRight) || 0),
+    );
+    if (available <= 0 || !value) return value;
+    const context = document.createElement('canvas').getContext('2d');
+    if (!context) return value;
+    context.font = `${cs.fontStyle || 'normal'} ${cs.fontWeight || '400'} `
+      + `${cs.fontSize || '16px'} ${cs.fontFamily || 'sans-serif'}`;
+    if (context.measureText(value).width <= available) return value;
+    let lo = 0, hi = value.length;
+    while (lo < hi) {
+      const mid = Math.ceil((lo + hi) / 2);
+      if (context.measureText(value.slice(0, mid) + '…').width <= available) {
+        lo = mid;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    return value.slice(0, lo).trimEnd() + '…';
+  };
   const collect = (el, inShadow) => {
+    if (richInlineConsumed.has(el)) return;
     const cs = getComputedStyle(el);
     if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return;
     const r = el.getBoundingClientRect();
@@ -314,7 +434,20 @@ DOM_JS = r"""
     const ownNodes = Array.from(el.childNodes)
       .filter((n) => n.nodeType === 3 && (n.textContent || '').trim());
     const ownText = ownNodes.map((n) => n.textContent || '').join('').trim();
-    const rawText = hasElementChildren ? ownText : (el.textContent || '').trim();
+    let richRuns = null;
+    if (hasElementChildren && ownText
+        && Array.from(el.children).some(
+          (child) => inlineTextOnly(child) || flattenedInlineText(child),
+        )) {
+      const collected = collectRichRuns(el);
+      if (collected.length) {
+        richRuns = collected;
+      }
+    }
+    let rawText = hasElementChildren ? ownText : (el.textContent || '').trim();
+    if (richRuns) {
+      rawText = richRuns.map((run) => run.text).join('').trim();
+    }
     // <input> 没有子节点，可见文本来自 value；只取会按文本排版的类型
     // （text/search/... 与不带 type）。checkbox/radio 的 value="on" 与密码框的
     // 圆点都不是可见文本，采进来会污染 text。
@@ -742,10 +875,38 @@ DOM_JS = r"""
     if (cs.whiteSpace && cs.whiteSpace !== 'normal') rec.whiteSpace = cs.whiteSpace;
     const lineClamp = (cs.getPropertyValue('-webkit-line-clamp') || '').trim();
     if (lineClamp && lineClamp !== 'none') rec.lineClamp = lineClamp;
+    const overflowX = String(cs.overflowX || 'visible').toLowerCase();
+    const overflowY = String(cs.overflowY || 'visible').toLowerCase();
+    const textOverflow = String(cs.textOverflow || 'clip').toLowerCase();
+    if (overflowX !== 'visible') rec.overflowX = overflowX;
+    if (overflowY !== 'visible') rec.overflowY = overflowY;
+    if (textOverflow !== 'clip') rec.textOverflow = textOverflow;
+    const clipsToBounds = overflowX !== 'visible' || overflowY !== 'visible';
+    if (clipsToBounds) rec.clipToBounds = true;
+    if (clipsToBounds || el.scrollWidth > el.clientWidth + 1
+        || el.scrollHeight > el.clientHeight + 1) {
+      rec.clientWidth = el.clientWidth;
+      rec.clientHeight = el.clientHeight;
+      rec.scrollWidth = el.scrollWidth;
+      rec.scrollHeight = el.scrollHeight;
+    }
+    if (!richRuns && !hasElementChildren
+        && overflowX === 'hidden'
+        && String(cs.whiteSpace || '').toLowerCase() === 'nowrap'
+        && textOverflow === 'ellipsis'
+        && el.scrollWidth > el.clientWidth + 1) {
+      const fullText = visible;
+      const clippedText = ellipsizeText(fullText, el, cs);
+      if (clippedText !== fullText) {
+        rec.text = clippedText;
+        rec.fullText = fullText;
+      }
+    }
     // 祖先裁剪矩形（只有被滚动/隐藏容器切到的节点才带）
     if (clip) rec.clip = clip;
     // 只有“多段直接文本”的节点才带 textRuns：单段节点的 JSON 与老版本逐字节一致
     if (textRuns) rec.textRuns = textRuns;
+    if (richRuns) rec.richRuns = richRuns;
     if (textLines) rec.textLines = textLines;
     // 同理：只有量到「第一行行框」的节点才多带这两个（其余节点 / 老产物逐字节不变）
     if (textEmBox) { rec.textEmBox = textEmBox; rec.textEmLines = textEmLines; }
@@ -1541,16 +1702,16 @@ def _capture_session(
     timeline: NavigationTimeline | None = None
     navigation_timeline: dict | None = None
     navigation_timeline_error: str | None = None
+    viewport = {
+        "width": cfg.playwright_viewport_width,
+        "height": cfg.playwright_viewport_height,
+    }
 
     with sync_playwright() as p:
         browser = None
         context = None
         try:
             browser_type = getattr(p, browser_engine)
-            viewport = {
-                "width": cfg.playwright_viewport_width,
-                "height": cfg.playwright_viewport_height,
-            }
             context_options = _browser_context_options(cfg, viewport)
             if user_data_dir:
                 Path(user_data_dir).mkdir(parents=True, exist_ok=True)
@@ -1850,6 +2011,8 @@ def _capture_session(
         "m0_dom": str(m0_dom_p) if m0_dom_p.exists() else None,
         "width": width,
         "height": height,
+        "device_scale_factor": cfg.device_scale_factor,
+        "viewport": viewport,
         "title": page_title,
         "final_url": final_url,
         "status": status,
@@ -1936,6 +2099,8 @@ def _attempt_record(result: dict) -> dict:
         "diagnostics": result.get("diagnostics"),
         "m0_image": result.get("m0_image"),
         "m0_dom": result.get("m0_dom"),
+        "device_scale_factor": result.get("device_scale_factor"),
+        "viewport": result.get("viewport"),
         "error": result.get("error"),
         "capture_stability": result.get("capture_stability"),
         "navigation": result.get("navigation"),
@@ -2044,6 +2209,24 @@ def capture_page(
     _write_page_state(out, page_state)
     result["page_state"] = page_state
     result["screenshot_only"] = False
+    result["capture_bundle"] = write_capture_bundle(
+        out,
+        requested_url=url,
+        page_state={
+            **page_state,
+            "viewport": result.get("viewport"),
+            "device_scale_factor": result.get("device_scale_factor"),
+            "canvas_size": [result.get("width"), result.get("height")],
+        },
+        artifact_paths={
+            "screenshot": out / "00_screenshot.png",
+            "dom": out / "00_dom.json",
+            "page_state": out / "00_page_state.json",
+            "diagnostics": out / "00_dom_diagnostics.json",
+            "m0_screenshot": out / "00_screenshot_m0.png",
+            "m0_dom": out / "00_dom_m0.json",
+        },
+    )
     return result
 
 
@@ -2216,4 +2399,22 @@ def capture_page_with_fallback(
     result = dict(selected)
     result["page_state"] = page_state
     result["screenshot_only"] = screenshot_only
+    result["capture_bundle"] = write_capture_bundle(
+        out,
+        requested_url=url,
+        page_state={
+            **page_state,
+            "viewport": selected.get("viewport"),
+            "device_scale_factor": selected.get("device_scale_factor"),
+            "canvas_size": [selected.get("width"), selected.get("height")],
+        },
+        artifact_paths={
+            "screenshot": out / "00_screenshot.png",
+            "dom": out / "00_dom.json",
+            "page_state": out / "00_page_state.json",
+            "diagnostics": out / "00_dom_diagnostics.json",
+            "m0_screenshot": out / "00_screenshot_m0.png",
+            "m0_dom": out / "00_dom_m0.json",
+        },
+    )
     return result
