@@ -9,6 +9,7 @@ import os
 import ssl
 import uuid
 from dataclasses import asdict, dataclass, is_dataclass
+from pathlib import Path
 from typing import Any
 
 from src.app.services.bridge_config import load_bridge_config
@@ -877,6 +878,39 @@ class FigmaBridgeAdapter(PrototypeAdapter):
     def image_fill_report(self, node_id: str) -> dict[str, Any]:
         """Return image-fill payload bytes under one explicit root node."""
         return self._send("image_fill_report", {"nodeId": node_id})
+
+    def capture_visual_quality(
+        self,
+        node_id: str,
+        *,
+        reference_png: str | Path,
+        rendered_png: str | Path,
+        design: dict[str, Any],
+        output_dir: str | Path,
+    ) -> dict[str, Any]:
+        """Measure one real Figma export against its source screenshot."""
+        from src.app.services.evidence.dom_visual_quality import (
+            evaluate_dom_visual_quality,
+        )
+
+        readback = self._send(
+            "get_node_tree",
+            {"nodeId": node_id, "depth": 20},
+        )
+        image_report = self.image_fill_report(node_id)
+        result = evaluate_dom_visual_quality(
+            Path(reference_png),
+            Path(rendered_png),
+            design,
+            {**readback, "imageFillReport": image_report},
+        )
+        destination = Path(output_dir)
+        destination.mkdir(parents=True, exist_ok=True)
+        (destination / "visual-quality.json").write_text(
+            json.dumps(result, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        return result
 
     def flush(self) -> None:
         self.disconnect()
