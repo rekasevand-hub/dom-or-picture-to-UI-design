@@ -141,6 +141,8 @@ async function handleAction(action, params) {
       return await fontReport(params);
     case "font_probe":
       return await fontProbe(params);
+    case "resolve_font":
+      return await resolveFont(params);
     case "remove_nodes_by_name":
       return await removeNodesByName(params);
     case "cleanup_owned_job":
@@ -167,6 +169,16 @@ async function handleAction(action, params) {
 // 输入框/描边按钮会是 transparent）——不能直接 parseInt 否则 NaN 会让 set_fills 报错。
 function hexToRgb(hex) {
   if (!hex || typeof hex !== "string") return null;
+  const rgbMatch = hex.trim().match(
+    /^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)(?:\s*,\s*[\d.]+)?\s*\)$/i,
+  );
+  if (rgbMatch) {
+    return {
+      r: Math.max(0, Math.min(255, Number(rgbMatch[1]))) / 255,
+      g: Math.max(0, Math.min(255, Number(rgbMatch[2]))) / 255,
+      b: Math.max(0, Math.min(255, Number(rgbMatch[3]))) / 255,
+    };
+  }
   const s = hex.trim().replace("#", "");
   if (!/^([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(s)) return null;
   const full = s.length === 3 ? s.split("").map((c) => c + c).join("") : s;
@@ -532,6 +544,79 @@ async function loadFirstAvailableFont(fontFamily, fontWeight, strict, fontStyle)
   return DEFAULT_TEXT_FONT;
 }
 
+async function resolveFont(params) {
+  const table = await loadFaceTable();
+  const requestedFamilies = parseFontFamilies(params && params.family);
+  const requestedStyle = String((params && params.style) || "Regular");
+  const requestedWeight = normalizeWeight(params && params.weight);
+  const candidates = [];
+  for (const family of requestedFamilies) {
+    const entry = table.get(family.toLowerCase());
+    if (entry) candidates.push({ requested: family, entry });
+  }
+  if (!candidates.length) {
+    for (const entry of table.values()) candidates.push({ requested: null, entry });
+  }
+  if (!candidates.length) {
+    return {
+      requested: {
+        family: requestedFamilies.join(", "),
+        style: requestedStyle,
+        weight: requestedWeight,
+      },
+      selected: null,
+      status: "blocked",
+      candidateCount: 0,
+    };
+  }
+  const candidate = candidates[0];
+  const entry = candidate.entry;
+  const styles = styleCandidates(requestedWeight, requestedStyle);
+  let selectedStyle = entry.styles.get(requestedStyle.toLowerCase());
+  let status = "exact";
+  if (selectedStyle === undefined) {
+    for (const style of styles) {
+      selectedStyle = entry.styles.get(style.toLowerCase());
+      if (selectedStyle !== undefined) break;
+    }
+    status = "style-fallback";
+  }
+  if (selectedStyle === undefined) {
+    const first = entry.styles.values().next();
+    selectedStyle = first.done ? "Regular" : first.value;
+    status = "style-fallback";
+  }
+  if (candidate.requested === null) {
+    status = "family-fallback";
+  }
+  const selected = { family: entry.family, style: selectedStyle };
+  try {
+    await figma.loadFontAsync(selected);
+  } catch (err) {
+    return {
+      requested: {
+        family: requestedFamilies.join(", "),
+        style: requestedStyle,
+        weight: requestedWeight,
+      },
+      selected,
+      status: "blocked",
+      candidateCount: candidates.length,
+      error: String(err && err.message ? err.message : err),
+    };
+  }
+  return {
+    requested: {
+      family: requestedFamilies.join(", "),
+      style: requestedStyle,
+      weight: requestedWeight,
+    },
+    selected,
+    status,
+    candidateCount: candidates.length,
+  };
+}
+
 // 字距：IR 的 letterSpacing 是 px（可负），Figma 用 {unit:"PIXELS"}。CSS 的
 // `letter-spacing` 本来就以 px 计，两端（Figma / SVG）都按同一口径落。
 function applyLetterSpacing(text, params) {
@@ -559,6 +644,30 @@ async function createText(params) {
   text.fontName = resolvedFont;
   text.characters = params.text || "";
   text.fontSize = params.fontSize || 16;
+  const richRuns = Array.isArray(params.richRuns) ? params.richRuns : [];
+  for (const run of richRuns) {
+    const start = Math.max(0, Math.min(text.characters.length, Number(run.start) || 0));
+    const end = Math.max(start, Math.min(text.characters.length, Number(run.end) || start));
+    if (end <= start) continue;
+    const style = run.style || {};
+    const runFont = await loadFirstAvailableFont(
+      style.fontFamily || params.fontFamily,
+      style.fontWeight === undefined ? params.fontWeightValue : style.fontWeight,
+      params.fontPolicy === "strict",
+      style.fontStyle || params.fontStyle,
+    );
+    try { text.setRangeFontName(start, end, runFont); } catch (err) {}
+    const runSize = Number(style.fontSize);
+    if (runSize > 0) {
+      try { text.setRangeFontSize(start, end, runSize); } catch (err) {}
+    }
+    const runColor = hexToRgb(style.textColor || params.textColor);
+    if (runColor) {
+      try {
+        text.setRangeFills(start, end, [{ type: "SOLID", color: runColor }]);
+      } catch (err) {}
+    }
+  }
   // CSS line-height affects the glyph position even for single-line text.
   // Apply it before the single/multi-line branches so Figma does not use its
   // default line box for one-line blocks.
@@ -576,6 +685,21 @@ async function createText(params) {
   // 先挂树再定位：x/y 是相对父级的坐标，appendChild 不会保留绝对位置，
   // 先 append 才不会在非原点父级下跳位。
   appendToParent(text, params);
+  const singleLine = !!params.singleLine;
+  const boundedText = !!params.boundedText && !singleLine;
+  if (boundedText) {
+    try {
+      text.textAutoResize = "NONE";
+      text.resize(
+        Math.max(1, Number(params.width) || text.width),
+        Math.max(1, Number(params.height) || text.height),
+      );
+    } catch (err) {}
+  } else if (singleLine) {
+    try {
+      text.textAutoResize = "WIDTH_AND_HEIGHT";
+    } catch (err) {}
+  }
   const lines = params.lines;
   if (lines && lines.length > 1) {
     // 折行文本：断点已经由 IR（text_wrap）按估算字宽算好，这里只负责落地。
@@ -584,7 +708,7 @@ async function createText(params) {
     text.characters = lines.join("\n");
     const boxWidth = params.width || text.width;
     try {
-      text.textAutoResize = "HEIGHT";
+      text.textAutoResize = boundedText ? "NONE" : "HEIGHT";
       text.resize(boxWidth, text.height);
     } catch (err) {}
     const align = params.textAlign === "center" ? "CENTER"
@@ -1625,7 +1749,14 @@ async function setAutoLayout(params) {
   // 打开 layoutMode 的瞬间 Figma 会立刻按自己的算法重排子节点。先快照每个子节点
   // 当前（扁平绝对定位时代的）x/y，等布局打开后原样写回 —— 快照就是「不开 Auto
   // Layout」时的落点，写回后与扁平渲染逐像素相同。
-  const before = children.map((child) => [child.x, child.y]);
+  const parentBox = node.absoluteBoundingBox;
+  const before = children.map((child) => {
+    const childBox = child.absoluteBoundingBox;
+    if (parentBox && childBox) {
+      return [childBox.x - parentBox.x, childBox.y - parentBox.y];
+    }
+    return [child.x, child.y];
+  });
   node.layoutMode = layoutMode;
   node.primaryAxisSizingMode = "FIXED";
   node.counterAxisSizingMode = "FIXED";

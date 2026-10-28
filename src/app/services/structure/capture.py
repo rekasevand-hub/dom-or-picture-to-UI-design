@@ -22,6 +22,7 @@ from src.app.services.structure.capture_state import (
     state_window_is_stable,
 )
 from src.app.services.structure.capture_bundle import write_capture_bundle
+from src.app.services.structure.font_bundle import build_font_manifest
 from src.app.services.structure.frames import (
     capture_frame_state,
     collect_frame_dom,
@@ -1209,6 +1210,46 @@ FONT_READY_JS = r"""
 }
 """
 
+FONT_RESOURCES_JS = r"""
+() => {
+  const faces = [];
+  try {
+    for (const face of document.fonts || []) {
+      faces.push({
+        family: String(face.family || ''),
+        style: String(face.style || 'normal'),
+        weight: String(face.weight || '400'),
+        stretch: String(face.stretch || 'normal'),
+        status: String(face.status || 'unknown'),
+        unicodeRange: String(face.unicodeRange || ''),
+      });
+    }
+  } catch (e) {}
+  const resources = [];
+  try {
+    for (const entry of performance.getEntriesByType('resource') || []) {
+      const url = String(entry.name || '');
+      if (!/\.(woff2?|ttf|otf|eot)(?:[?#].*)?$/i.test(url)
+          && String(entry.initiatorType || '').toLowerCase() !== 'css') continue;
+      resources.push({
+        source_url: url,
+        initiatorType: String(entry.initiatorType || ''),
+        transferSize: Number(entry.transferSize || 0),
+        encodedBodySize: Number(entry.encodedBodySize || 0),
+        decodedBodySize: Number(entry.decodedBodySize || 0),
+        startTime: Number(entry.startTime || 0),
+        responseEnd: Number(entry.responseEnd || 0),
+      });
+    }
+  } catch (e) {}
+  return faces.map((face, index) => ({
+    ...face,
+    ...(resources[index] || {}),
+    source_status: resources[index] ? 'reference-only' : 'unavailable',
+  }));
+}
+"""
+
 
 def _resolve_storage_state(path_value: str | None) -> str | None:
     """校验 Playwright storageState JSON；文件缺失时提前报错，避免启动浏览器后才发现。"""
@@ -1861,6 +1902,7 @@ def _capture_session(
     frame_snapshot_errors: list[dict] = []
     frame_capture_truncated = False
     font_resolution: dict[str, Any] = {}
+    font_resources: list[dict] = []
     blocked_frame_documents: list[dict] = []
     timeline: NavigationTimeline | None = None
     navigation_timeline: dict | None = None
@@ -2014,6 +2056,10 @@ def _capture_session(
                         )
                         nodes = frame_snapshot.nodes
                         font_resolution = frame_snapshot.font_resolution
+                        try:
+                            font_resources = page.evaluate(FONT_RESOURCES_JS)
+                        except Exception:  # noqa: BLE001 - font evidence is optional
+                            font_resources = []
                         frame_inventory = (
                             timeline.enrich_frame_inventory(frame_snapshot.inventory)
                             if timeline is not None
@@ -2187,6 +2233,7 @@ def _capture_session(
         "frame_snapshot_errors": frame_snapshot_errors,
         "frame_capture_truncated": frame_capture_truncated,
         "font_resolution": font_resolution,
+        "font_resources": font_resources,
         "navigation_timeline": navigation_timeline,
         "navigation_timeline_error": navigation_timeline_error,
         "capture_profile": (
@@ -2296,6 +2343,25 @@ def _write_page_state(out: Path, page_state: dict) -> None:
     )
 
 
+def _write_font_manifest(out: Path, result: dict) -> dict | None:
+    dom_path = out / "00_dom.json"
+    if not dom_path.is_file():
+        return None
+    try:
+        nodes = json.loads(dom_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    resources = result.get("font_resources")
+    if not isinstance(resources, list):
+        resources = []
+    manifest = build_font_manifest(resources, nodes)
+    (out / "00_fonts.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return manifest
+
+
 def _real_session_candidates(cfg: "Config", storage_state: str | None) -> list[tuple]:
     """真实会话候选：持久化用户目录 > 登录态 JSON > 全新有头浏览器。"""
     candidates = []
@@ -2383,6 +2449,7 @@ def capture_page(
     _write_page_state(out, page_state)
     result["page_state"] = page_state
     result["screenshot_only"] = False
+    result["font_manifest"] = _write_font_manifest(out, result)
     result["capture_bundle"] = write_capture_bundle(
         out,
         requested_url=url,
@@ -2400,6 +2467,7 @@ def capture_page(
             "m0_screenshot": out / "00_screenshot_m0.png",
             "m0_dom": out / "00_dom_m0.json",
             "layer_tree": out / "00_layer_tree.json",
+            "fonts": out / "00_fonts.json",
         },
     )
     return result
@@ -2574,6 +2642,7 @@ def capture_page_with_fallback(
     result = dict(selected)
     result["page_state"] = page_state
     result["screenshot_only"] = screenshot_only
+    result["font_manifest"] = _write_font_manifest(out, result)
     result["capture_bundle"] = write_capture_bundle(
         out,
         requested_url=url,
@@ -2591,6 +2660,7 @@ def capture_page_with_fallback(
             "m0_screenshot": out / "00_screenshot_m0.png",
             "m0_dom": out / "00_dom_m0.json",
             "layer_tree": out / "00_layer_tree.json",
+            "fonts": out / "00_fonts.json",
         },
     )
     return result

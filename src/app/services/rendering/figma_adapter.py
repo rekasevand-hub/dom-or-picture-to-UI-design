@@ -728,6 +728,22 @@ class FigmaBridgeAdapter(PrototypeAdapter):
         params = _with_parent(spec, parent_id)
         return self._send("create_text", params)
 
+    def resolve_font(
+        self,
+        family: str,
+        style: str,
+        weight: str | int,
+    ) -> dict[str, Any]:
+        """Ask the bridge for one explicit, auditable Figma font choice."""
+        return self._send(
+            "resolve_font",
+            {
+                "family": str(family or ""),
+                "style": str(style or "Regular"),
+                "weight": weight,
+            },
+        )
+
     def _text_render_spec(
         self,
         spec: dict[str, Any],
