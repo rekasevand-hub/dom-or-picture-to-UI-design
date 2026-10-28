@@ -28,6 +28,7 @@ from src.app.services.structure.frames import (
     summarize_frame_inventory,
 )
 from src.app.services.structure.font_provenance import PlatformFontProbe
+from src.app.services.structure.layer_tree import build_layer_tree
 from src.app.services.structure.navigation_timeline import NavigationTimeline
 
 logger = logging.getLogger(__name__)
@@ -414,6 +415,85 @@ DOM_JS = r"""
     }
     return value.slice(0, lo).trimEnd() + '…';
   };
+  const styleSnapshotFor = (el, cs) => {
+    const snapshot = {};
+    const put = (key, value) => {
+      if (value !== null && value !== undefined && value !== '') {
+        snapshot[key] = value;
+      }
+    };
+    if (cs.display && cs.display !== 'block') put('display', cs.display);
+    if (cs.position && cs.position !== 'static') put('position', cs.position);
+    const inset = {};
+    for (const side of ['top', 'right', 'bottom', 'left']) {
+      const value = cs[side];
+      if (value && value !== 'auto') inset[side] = value;
+    }
+    if (Object.keys(inset).length) snapshot.inset = inset;
+    if (cs.visibility && cs.visibility !== 'visible') {
+      put('visibility', cs.visibility);
+    }
+    if (cs.direction && cs.direction !== 'ltr') put('direction', cs.direction);
+    if (cs.flexDirection && cs.flexDirection !== 'row') {
+      put('flexDirection', cs.flexDirection);
+    }
+    if (cs.flexWrap && cs.flexWrap !== 'nowrap') put('flexWrap', cs.flexWrap);
+    if (cs.justifyContent && cs.justifyContent !== 'normal') {
+      put('justifyContent', cs.justifyContent);
+    }
+    if (cs.alignItems && cs.alignItems !== 'normal') {
+      put('alignItems', cs.alignItems);
+    }
+    if (cs.alignSelf && cs.alignSelf !== 'auto') put('alignSelf', cs.alignSelf);
+    if ((parseFloat(cs.rowGap) || 0) > 0) put('rowGap', cs.rowGap);
+    if ((parseFloat(cs.columnGap) || 0) > 0) put('columnGap', cs.columnGap);
+    if (cs.gridTemplateColumns && cs.gridTemplateColumns !== 'none') {
+      put('gridTemplateColumns', cs.gridTemplateColumns);
+    }
+    if (cs.gridTemplateRows && cs.gridTemplateRows !== 'none') {
+      put('gridTemplateRows', cs.gridTemplateRows);
+    }
+    if (cs.transform && cs.transform !== 'none') {
+      put('transform', cs.transform);
+      if (cs.transformOrigin) put('transformOrigin', cs.transformOrigin);
+    }
+    if (cs.textDecorationLine && cs.textDecorationLine !== 'none') {
+      put('textDecorationLine', cs.textDecorationLine);
+    }
+    const customProperties = {};
+    for (let i = 0; i < cs.length; i++) {
+      const name = cs.item(i);
+      if (!name || !name.startsWith('--')) continue;
+      const value = String(cs.getPropertyValue(name) || '').trim();
+      if (value) customProperties[name] = value;
+    }
+    if (Object.keys(customProperties).length) {
+      snapshot.customProperties = customProperties;
+    }
+    return snapshot;
+  };
+  const pseudoStyleSnapshot = (el, which) => {
+    let cs;
+    try {
+      cs = getComputedStyle(el, which);
+    } catch (e) {
+      return null;
+    }
+    const content = String(cs.content || 'none').trim();
+    if (!content || content === 'none' || content === 'normal') return null;
+    return {
+      content: content,
+      display: cs.display,
+      position: cs.position,
+      color: cs.color,
+      backgroundColor: cs.backgroundColor,
+      font: cs.font,
+      width: cs.width,
+      height: cs.height,
+      transform: cs.transform,
+      zIndex: cs.zIndex,
+    };
+  };
   const collect = (el, inShadow) => {
     if (richInlineConsumed.has(el)) return;
     const cs = getComputedStyle(el);
@@ -771,6 +851,9 @@ DOM_JS = r"""
       if (hit !== undefined) { parentIdx = hit; break; }
     }
     const isContainer = hasElementChildren;
+    const styleSnapshot = styleSnapshotFor(el, cs);
+    const pseudoBefore = pseudoStyleSnapshot(el, '::before');
+    const pseudoAfter = pseudoStyleSnapshot(el, '::after');
     // A srcdoc document without a doctype is rendered in quirks mode.  In
     // Chromium its default text face is the generic sans-serif face even
     // though getComputedStyle(fontFamily) reports "Times New Roman"; using
@@ -819,6 +902,10 @@ DOM_JS = r"""
       position: cs.position, zIndex: parseInt(cs.zIndex, 10) || 0,
       interactive: /^(A|BUTTON|INPUT|SELECT|TEXTAREA)$/.test(el.tagName)
     };
+    if (el.id) rec.id = el.id.slice(0, 200);
+    rec.styleSnapshot = styleSnapshot;
+    if (pseudoBefore) rec.pseudoBefore = pseudoBefore;
+    if (pseudoAfter) rec.pseudoAfter = pseudoAfter;
     if (borderStyle) rec.borderStyle = borderStyle;
     if (_wid.some((value) => value > 0)) {
       rec.borderTopWidth = _bw.t;
@@ -2081,6 +2168,17 @@ def _promote_attempt(result: dict, out: Path) -> None:
         target = out / "00_dom_m0.json"
         if Path(m0_dom).resolve() != target.resolve():
             shutil.copyfile(m0_dom, target)
+    dom_target = out / "00_dom.json"
+    if dom_target.is_file():
+        try:
+            nodes = json.loads(dom_target.read_text(encoding="utf-8"))
+            layer_tree = build_layer_tree(nodes)
+            (out / "00_layer_tree.json").write_text(
+                json.dumps(layer_tree, ensure_ascii=False, indent=1) + "\n",
+                encoding="utf-8",
+            )
+        except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            logger.warning("层级树生成失败：%s", exc)
 
 
 def _attempt_record(result: dict) -> dict:
@@ -2225,6 +2323,7 @@ def capture_page(
             "diagnostics": out / "00_dom_diagnostics.json",
             "m0_screenshot": out / "00_screenshot_m0.png",
             "m0_dom": out / "00_dom_m0.json",
+            "layer_tree": out / "00_layer_tree.json",
         },
     )
     return result
@@ -2415,6 +2514,7 @@ def capture_page_with_fallback(
             "diagnostics": out / "00_dom_diagnostics.json",
             "m0_screenshot": out / "00_screenshot_m0.png",
             "m0_dom": out / "00_dom_m0.json",
+            "layer_tree": out / "00_layer_tree.json",
         },
     )
     return result
