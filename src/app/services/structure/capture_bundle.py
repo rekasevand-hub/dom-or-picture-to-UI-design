@@ -240,3 +240,29 @@ def load_capture_bundle(output_dir: Path) -> dict[str, Any]:
                 f"expected {expected_bytes}, got {artifact_path.stat().st_size}"
             )
     return manifest
+
+
+def capture_bundle_artifact_path(
+    output_dir: Path,
+    bundle: Mapping[str, Any],
+    role: str,
+) -> Path:
+    root = Path(output_dir).resolve()
+    artifacts = bundle.get("artifacts")
+    if not isinstance(artifacts, Mapping):
+        raise CaptureBundleError("capture bundle artifacts are missing")
+    entry = artifacts.get(role)
+    if not isinstance(entry, Mapping):
+        raise CaptureBundleError(f"capture bundle artifact is missing: {role}")
+    path_value = entry.get("path")
+    if not isinstance(path_value, str) or not path_value:
+        raise CaptureBundleError(f"artifact path is missing: {role}")
+    relative = _relative_artifact_path(root, path_value)
+    artifact_path = (root / relative).resolve()
+    try:
+        artifact_path.relative_to(root)
+    except ValueError as exc:
+        raise CaptureBundleError(
+            f"artifact path is outside the capture bundle: {path_value}"
+        ) from exc
+    return artifact_path
