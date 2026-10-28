@@ -130,3 +130,32 @@ def test_load_bundle_rejects_artifact_path_traversal(tmp_path):
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     with pytest.raises(CaptureBundleError, match="traversal"):
         load_capture_bundle(tmp_path)
+
+
+def test_write_bundle_supports_relative_output_directory(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    output = Path("relative-bundle")
+    output.mkdir()
+    (output / "00_screenshot.png").write_bytes(b"png")
+    (output / "00_dom.json").write_text("[]", encoding="utf-8")
+    (output / "00_page_state.json").write_text(
+        json.dumps({"kind": "content", "screenshot_only": False}),
+        encoding="utf-8",
+    )
+
+    manifest = write_capture_bundle(
+        output,
+        requested_url="https://example.test/",
+        page_state={
+            "final_url": "https://example.test/",
+            "kind": "content",
+            "screenshot_only": False,
+        },
+        artifact_paths={
+            "screenshot": output / "00_screenshot.png",
+            "dom": output / "00_dom.json",
+            "page_state": output / "00_page_state.json",
+        },
+    )
+
+    assert manifest["artifacts"]["screenshot"]["path"] == "00_screenshot.png"

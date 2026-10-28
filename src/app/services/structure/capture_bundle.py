@@ -47,6 +47,13 @@ def _relative_artifact_path(root: Path, path: str | Path) -> Path:
             raise CaptureBundleError(
                 f"artifact path is outside the capture bundle: {path}"
             ) from exc
+    else:
+        try:
+            resolved_relative = candidate.resolve().relative_to(root)
+        except ValueError:
+            resolved_relative = None
+        if resolved_relative is not None:
+            candidate = resolved_relative
     if ".." in candidate.parts:
         raise CaptureBundleError(f"artifact path traversal is not allowed: {path}")
     return candidate
