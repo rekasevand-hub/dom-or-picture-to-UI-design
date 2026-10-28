@@ -332,6 +332,30 @@ DOM_JS = r"""
     return true;
   };
   const flattenInlineTag = (el) => /^(CODE|KBD|SAMP|VAR|SUB|SUP)$/i.test(el.tagName);
+  const inlineImageBoundaryNode = (node) => {
+    if (!node || !['IMG', 'SVG'].includes(node.tagName)) return false;
+    const style = getComputedStyle(node);
+    if (!['inline', 'inline-block'].includes(style.display)) return false;
+    const parent = node.parentElement;
+    if (!parent) return false;
+    return Array.from(parent.childNodes).some(
+      (child) => child.nodeType === 3 && (child.textContent || '').trim(),
+    );
+  };
+  const semanticTextRoleHint = (el) => {
+    const tag = el.tagName.toLowerCase();
+    if (tag === 'input' || tag === 'textarea') return 'input-value';
+    if (tag === 'figcaption' || tag === 'caption') return 'caption';
+    let current = el;
+    while (current) {
+      const name = current.tagName.toLowerCase();
+      const role = (current.getAttribute('role') || '').toLowerCase();
+      if (/^h[1-6]$/.test(name) || role === 'heading') return 'heading';
+      if (name === 'button' || role === 'button') return 'button-label';
+      current = current.parentElement;
+    }
+    return '';
+  };
   const flattenedInlineText = (el) => {
     if (/^(IMG|SVG|VIDEO|CANVAS|INPUT|BUTTON|SELECT|TEXTAREA)$/i.test(el.tagName)) {
       return false;
@@ -363,6 +387,7 @@ DOM_JS = r"""
         const value = node.textContent || '';
         if (value) {
           runs.push({
+            kind: 'text',
             text: value,
             style: flattenStyle
               ? parentStyle
@@ -372,24 +397,56 @@ DOM_JS = r"""
         return;
       }
       if (node.nodeType !== 1 || node === el) return;
+      if (inlineImageBoundaryNode(node)) {
+        runs.push({
+          kind: 'inline-image',
+          text: '',
+          style: richRunStyle(node),
+          tag: node.tagName.toLowerCase(),
+          assetSrc: String(
+            node.currentSrc || node.src || node.getAttribute('src') || '',
+          ).slice(0, 20000),
+        });
+        return;
+      }
       const flatten = flattenedInlineText(node);
       if (!inlineTextOnly(node) && !flatten) return;
       richInlineConsumed.add(node);
       for (const child of node.childNodes) visit(child, flattenStyle || flatten);
     };
     for (const child of el.childNodes) visit(child, false);
-    while (runs.length && !runs[0].text.trim()) runs.shift();
-    while (runs.length && !runs[runs.length - 1].text.trim()) runs.pop();
-    if (runs.length) {
+    while (runs.length && runs[0].kind === 'text' && !runs[0].text.trim()) {
+      runs.shift();
+    }
+    while (
+      runs.length
+      && runs[runs.length - 1].kind === 'text'
+      && !runs[runs.length - 1].text.trim()
+    ) {
+      runs.pop();
+    }
+    if (runs.length && runs[0].kind === 'text') {
       runs[0].text = runs[0].text.replace(/^\s+/, '');
+    }
+    if (runs.length && runs[runs.length - 1].kind === 'text') {
       runs[runs.length - 1].text = runs[runs.length - 1].text.replace(/\s+$/, '');
     }
-    const filtered = runs.filter((run) => run.text);
+    const filtered = runs.filter(
+      (run) => run.text || run.kind === 'inline-image',
+    );
     let offset = 0;
     return filtered.map((run) => {
       const start = offset;
       offset += run.text.length;
-      return { start, end: offset, text: run.text, style: run.style };
+      return {
+        kind: run.kind,
+        start,
+        end: offset,
+        text: run.text,
+        style: run.style,
+        ...(run.assetSrc ? { assetSrc: run.assetSrc } : {}),
+        ...(run.tag ? { tag: run.tag } : {}),
+      };
     });
   };
   const ellipsizeText = (value, el, cs) => {
@@ -517,7 +574,8 @@ DOM_JS = r"""
     let richRuns = null;
     if (hasElementChildren && ownText
         && Array.from(el.children).some(
-          (child) => inlineTextOnly(child) || flattenedInlineText(child),
+          (child) => inlineTextOnly(child) || flattenedInlineText(child)
+            || inlineImageBoundaryNode(child),
         )) {
       const collected = collectRichRuns(el);
       if (collected.length) {
@@ -902,6 +960,10 @@ DOM_JS = r"""
       position: cs.position, zIndex: parseInt(cs.zIndex, 10) || 0,
       interactive: /^(A|BUTTON|INPUT|SELECT|TEXTAREA)$/.test(el.tagName)
     };
+    const textRoleHint = semanticTextRoleHint(el);
+    if (textRoleHint && (hasText || placeholder || isTextField)) {
+      rec.textRoleHint = textRoleHint;
+    }
     if (el.id) rec.id = el.id.slice(0, 200);
     rec.styleSnapshot = styleSnapshot;
     if (pseudoBefore) rec.pseudoBefore = pseudoBefore;
@@ -924,6 +986,20 @@ DOM_JS = r"""
                && (el.getAttribute('type') || '').toLowerCase() === 'image') {
       const assetSrc = String(el.src || el.getAttribute('src') || '').trim();
       if (assetSrc) rec.assetSrc = assetSrc.slice(0, 20000);
+    }
+    if (inlineImageBoundaryNode(el)) rec.inlineImageBoundary = true;
+    if (el.tagName === 'LI') {
+      const marker = String(cs.listStyleType || '').toLowerCase();
+      let markerType = '';
+      if (/(decimal|roman|alpha)/.test(marker)) markerType = 'ordered';
+      else if (/(disc|circle|square)/.test(marker)) markerType = 'unordered';
+      if (markerType && marker !== 'none') {
+        let level = 1;
+        for (let p = el.parentElement; p; p = p.parentElement) {
+          if (p.tagName === 'LI') level += 1;
+        }
+        rec.listMarker = {type: markerType, level: level};
+      }
     }
     // 只有 Shadow DOM 里的节点才带这个标记（普通页面 DOM JSON 形状不变），
     // 用于结构诊断与分层调试：哪些可见内容原先完全抓不到。

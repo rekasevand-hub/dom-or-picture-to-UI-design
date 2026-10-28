@@ -19,6 +19,19 @@ def _env_opt(name: str) -> str | None:
     return value if value and value.strip() else None
 
 
+def _vision_base_urls_default() -> tuple[str, ...]:
+    configured = os.getenv("VISION_BASE_URLS", "")
+    if configured.strip():
+        values = tuple(
+            item.strip().rstrip("/")
+            for item in configured.split(",")
+            if item.strip()
+        )
+        if values:
+            return values
+    return (os.getenv("VISION_BASE_URL", "https://www.acctoken.com/v1").strip().rstrip("/"),)
+
+
 def _bridge_url_default() -> str:
     from src.app.services.bridge_config import load_bridge_config
 
@@ -58,11 +71,23 @@ class Config:
 
     # --- 新流程视觉/文本模型（acctoken 网关，OpenAI 兼容） ---
     vision_base_url: str = field(default_factory=lambda: os.getenv("VISION_BASE_URL", "https://www.acctoken.com/v1"))
+    vision_base_urls: tuple[str, ...] = field(default_factory=_vision_base_urls_default)
     vision_api_key: str | None = field(default_factory=lambda: _env_opt("VISION_API_KEY"))
     vision_model: str = field(default_factory=lambda: os.getenv("VISION_MODEL", "qwen3-vl-plus"))
     vision_native_grounding: bool = field(default_factory=lambda: os.getenv("VISION_NATIVE_GROUNDING", "false").lower() in ("1", "true", "yes"))
     vision_max_tokens: int = field(default_factory=lambda: int(os.getenv("VISION_MAX_TOKENS", "16000")))
     vision_timeout: int = field(default_factory=lambda: int(os.getenv("VISION_TIMEOUT", "120")))
+    vision_max_image_bytes: int = field(default_factory=lambda: int(os.getenv("VISION_MAX_IMAGE_BYTES", str(25 * 1024 * 1024))))
+    vision_max_response_bytes: int = field(default_factory=lambda: int(os.getenv("VISION_MAX_RESPONSE_BYTES", str(5 * 1024 * 1024))))
+    vision_max_attempts: int = field(default_factory=lambda: int(os.getenv("VISION_MAX_ATTEMPTS", "3")))
+    vision_retry_base_ms: int = field(default_factory=lambda: int(os.getenv("VISION_RETRY_BASE_MS", "250")))
+    vision_max_backoff_ms: int = field(default_factory=lambda: int(os.getenv("VISION_MAX_BACKOFF_MS", "4000")))
+    vision_jitter_ratio: float = field(default_factory=lambda: float(os.getenv("VISION_JITTER_RATIO", "0.25")))
+    vision_breaker_failure_threshold: int = field(default_factory=lambda: int(os.getenv("VISION_BREAKER_FAILURE_THRESHOLD", "3")))
+    vision_breaker_cooldown_seconds: float = field(default_factory=lambda: float(os.getenv("VISION_BREAKER_COOLDOWN_SECONDS", "30")))
+    vision_cache_max_entries: int = field(default_factory=lambda: int(os.getenv("VISION_CACHE_MAX_ENTRIES", "64")))
+    vision_cache_ttl_seconds: float = field(default_factory=lambda: float(os.getenv("VISION_CACHE_TTL_SECONDS", "300")))
+    vision_cache_namespace: str = field(default_factory=lambda: os.getenv("VISION_CACHE_NAMESPACE", "default"))
     text_base_url: str = field(default_factory=lambda: os.getenv("TEXT_BASE_URL", "https://www.acctoken.com/v1"))
     text_api_key: str | None = field(default_factory=lambda: _env_opt("TEXT_API_KEY"))
     text_model: str = field(default_factory=lambda: os.getenv("TEXT_MODEL", "deepseek-v4-flash"))
@@ -102,6 +127,7 @@ class Config:
     # 文本基线的像素级微调（±1px）：渲染一遍 → 与截图逐元素比 → 只接受明确变好的
     # 1px 位移并重渲染（见 services/rendering/text_align.py）；置 0 关闭。
     text_align: bool = field(default_factory=lambda: os.getenv("TEXT_ALIGN", "true").lower() in ("1", "true", "yes"))
+    dom_text_model_v2: bool = field(default_factory=lambda: os.getenv("DOM_TEXT_MODEL_V2", "false").lower() in ("1", "true", "yes"))
 
     # --- 视觉提取 ---
     cv_resize_long_edge: int = field(default_factory=lambda: int(os.getenv("CV_RESIZE_LONG_EDGE", "1280")))

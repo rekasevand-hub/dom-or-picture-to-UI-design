@@ -22,6 +22,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import logging
+import re
 
 from src.app.services.som.design_crops import (
     covers as _covers,
@@ -36,7 +37,9 @@ from src.app.services.structure.asset_metadata import (
     build_asset_record,
 )
 from src.app.services.structure.asset_fusion import fuse_asset_record
+from src.app.services.structure.text_model import build_text_model
 from src.app.utils.style_utils import css_color_to_hex
+from src.config.settings import Config
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +79,98 @@ def _carry_clip(out: dict, item: dict) -> None:
         out["clip"] = [int(round(float(v))) for v in clip]
     except (TypeError, ValueError):
         pass
+
+
+def _apply_clipped_text_lines(
+    style: dict,
+    *,
+    element_type: str,
+    x: int,
+    y: int,
+    width: int,
+    height: int,
+    clip: list[int] | None,
+) -> None:
+    """Limit overflowing text to the part that survives an ancestor clip.
+
+    The text's own DOM box may be much taller than the visible scroll/clip box. Keeping
+    all measured lines would make SVG/Figma paint the overflow into neighbouring cards.
+    We only derive a line cap here; both renderers still use the shared text_wrap path.
+    """
+    if element_type != "text" or not clip or len(clip) != 4:
+        return
+    try:
+        clip_x, clip_y, clip_w, clip_h = (int(value) for value in clip)
+        line_height = float(style.get("lineHeight") or 0)
+        if line_height <= 0:
+            line_height = max(1.0, float(style.get("fontSize") or 16) * 1.4)
+        visible_top = max(y, clip_y)
+        visible_bottom = min(y + height, clip_y + clip_h)
+        visible_height = visible_bottom - visible_top
+        if visible_height <= 0 or visible_height >= height - 1:
+            return
+        if x + width <= clip_x or x >= clip_x + clip_w:
+            return
+        max_lines = max(1, int((visible_height + 0.5) // line_height))
+        existing = int(style.get("maxLines") or 0)
+        if existing > 0:
+            max_lines = min(max_lines, existing)
+        style["maxLines"] = max_lines
+    except (TypeError, ValueError):
+        return
+
+
+def _apply_measured_text_geometry(
+    item: dict,
+    x: int,
+    y: int,
+    width: int,
+    height: int,
+    style: dict,
+) -> tuple[int, int, int, int]:
+    """Use the browser text range for paintless mixed-inline text layers."""
+    if item.get("type") != "text":
+        return x, y, width, height
+    rich_runs = item.get("richRuns")
+    if isinstance(rich_runs, list) and len(rich_runs) > 1:
+        return x, y, width, height
+    if style.get("fillColor") or style.get("borderColor"):
+        return x, y, width, height
+    box = item.get("textEmBox")
+    if not isinstance(box, (list, tuple)) or len(box) != 4:
+        return x, y, width, height
+    try:
+        bx, by, bw, bh = (int(round(float(value))) for value in box)
+        measured_lines = int(item.get("textEmLines") or 0)
+    except (TypeError, ValueError):
+        return x, y, width, height
+    if bw <= 0 or bh <= 0 or measured_lines > 2:
+        return x, y, width, height
+    # A wrapper can cover the whole row while its actual text starts after inline
+    # icons. Only adopt the range when that visible offset exists.
+    if bx <= x + 1 and by <= y + 1:
+        return x, y, width, height
+    return bx, by, bw, bh
+
+
+def _normalize_single_line_text(item: dict) -> str:
+    """Collapse source indentation when the browser measured one visual line."""
+    text = str(item.get("text") or "")
+    if not text or item.get("richRuns"):
+        return text
+    try:
+        measured_lines = int(item.get("textEmLines") or 0)
+    except (TypeError, ValueError):
+        measured_lines = 0
+    white_space = str(item.get("whiteSpace") or "").strip().lower()
+    if measured_lines != 1 or white_space in {
+        "pre",
+        "pre-wrap",
+        "pre-line",
+        "break-spaces",
+    }:
+        return text
+    return re.sub(r"[ \t\r\n\f\v]+", " ", text).strip()
 
 
 def _carry_flag(out: dict, item: dict, key: str) -> None:
@@ -250,6 +345,92 @@ def _clamp_clip(el: dict) -> tuple[bool, bool]:
     return True, True
 
 
+def _dom_ancestor_clip(
+    element: dict, dom_nodes
+) -> tuple[list[int] | None, bool]:
+    """Resolve overflow clipping from DOM ancestry when capture metadata is missing."""
+    if not isinstance(dom_nodes, list):
+        return None, False
+    dom_index = element.get("domIndex")
+    if not isinstance(dom_index, int) or not 0 <= dom_index < len(dom_nodes):
+        return None, False
+    clip = element.get("clip")
+    current = (
+        tuple(int(value) for value in clip)
+        if isinstance(clip, (list, tuple)) and len(clip) == 4
+        else None
+    )
+    parent = dom_nodes[dom_index].get("pIdx")
+    seen: set[int] = set()
+    while isinstance(parent, int) and 0 <= parent < len(dom_nodes):
+        if parent in seen:
+            break
+        seen.add(parent)
+        ancestor = dom_nodes[parent]
+        if ancestor.get("clipToBounds"):
+            try:
+                box = (
+                    int(ancestor.get("x") or 0),
+                    int(ancestor.get("y") or 0),
+                    int(ancestor.get("w") or 0),
+                    int(ancestor.get("h") or 0),
+                )
+            except (TypeError, ValueError):
+                box = (0, 0, 0, 0)
+            if box[2] > 0 and box[3] > 0:
+                current = (
+                    _intersect_rect(current, box) if current is not None else box
+                )
+                if current is None:
+                    return None, True
+        parent = ancestor.get("pIdx")
+    return (list(current) if current is not None else None), False
+
+
+def _dom_subtree_has_visible_content(root_index, dom_nodes) -> bool:
+    """Whether a captured DOM subtree contains anything visible to recreate.
+
+    Empty fixed-position portal layers (toast/message roots) can span the viewport
+    while painting nothing. Rasterizing their box would copy unrelated page pixels
+    and cover the real editable layers underneath.
+    """
+    if not isinstance(dom_nodes, list):
+        return True
+    if not isinstance(root_index, int) or not 0 <= root_index < len(dom_nodes):
+        return True
+    children: dict[int, list[int]] = {}
+    for index, node in enumerate(dom_nodes):
+        parent = node.get("pIdx") if isinstance(node, dict) else None
+        if isinstance(parent, int) and 0 <= parent < len(dom_nodes):
+            children.setdefault(parent, []).append(index)
+    stack = [root_index]
+    while stack:
+        index = stack.pop()
+        node = dom_nodes[index]
+        if not isinstance(node, dict):
+            continue
+        tag = str(node.get("tag") or "").lower()
+        if (
+            str(node.get("text") or "").strip()
+            or node.get("iconBox")
+            or node.get("bgImage")
+            or node.get("boxShadow")
+            or node.get("edges")
+            or tag in {"img", "svg", "video", "canvas"}
+        ):
+            return True
+        background = css_color_to_hex(node.get("bg"))
+        if background and background.upper() not in {"#FFFFFF", "#FFFFFE"}:
+            return True
+        try:
+            if float(str(node.get("borderWidth") or "0px").replace("px", "")) > 0:
+                return True
+        except (TypeError, ValueError):
+            pass
+        stack.extend(children.get(index, []))
+    return False
+
+
 def _covered_by_own_plate(rect, plates) -> bool:
     """rect 是否被某块“同框底板”整块盖住（互相覆盖 = 同一块区域）。
 
@@ -400,6 +581,54 @@ def _page_background(dom_nodes) -> str:
     return html_hex
 
 
+def _capture_pixel_ratio(
+    size: list[int],
+    viewport: dict,
+    dom_nodes,
+    declared_ratio,
+) -> int:
+    """Resolve screenshot DPR, including artifacts captured without capture metadata."""
+    try:
+        ratio = max(1, int(declared_ratio or 1))
+    except (TypeError, ValueError):
+        ratio = 1
+    if ratio > 1:
+        return ratio
+
+    try:
+        screenshot_width = int(size[0])
+    except (IndexError, TypeError, ValueError):
+        return ratio
+    if screenshot_width <= 0:
+        return ratio
+
+    logical_widths: list[int] = []
+    if isinstance(dom_nodes, list):
+        for node in dom_nodes:
+            if (
+                not isinstance(node, dict)
+                or str(node.get("tag") or "").lower() != "html"
+            ):
+                continue
+            try:
+                logical_widths.append(int(float(node.get("w") or 0)))
+            except (TypeError, ValueError):
+                pass
+            break
+    try:
+        logical_widths.append(int(viewport.get("width") or 0))
+    except (AttributeError, TypeError, ValueError):
+        pass
+
+    for logical_width in logical_widths:
+        if logical_width <= 1 or logical_width >= screenshot_width:
+            continue
+        candidate = round(screenshot_width / logical_width)
+        if candidate > 1 and abs(screenshot_width - logical_width * candidate) <= 1:
+            return candidate
+    return ratio
+
+
 def build_direct_design(som_json: dict, profile=None, dom_nodes=None) -> dict:
     """按 SoM（含 style 字段）确定性生成 DesignSpec。
 
@@ -415,21 +644,43 @@ def build_direct_design(som_json: dict, profile=None, dom_nodes=None) -> dict:
     带上页面 computed 字体栈（fontFamily），输出端按它渲染文本。
     """
     provenance = som_json.get("provenance") or {}
+    text_model = None
+    text_blocks_by_source: dict[int, dict] = {}
+    inline_consumed_indices: set[int] = set()
+    if isinstance(dom_nodes, list) and Config().dom_text_model_v2:
+        text_model = build_text_model(dom_nodes)
+        text_blocks_by_source = {
+            int(block["sourceIndex"]): block
+            for block in text_model.get("blocks", {}).values()
+            if isinstance(block, dict) and isinstance(block.get("sourceIndex"), int)
+        }
+        inline_consumed_indices = {
+            int(index)
+            for index in text_model.get("inlineConsumedIndices", [])
+            if isinstance(index, int)
+        }
     if profile is None:
         # 与采集端取同一个 profile：url 由 precise_agent 注入 provenance（见该文件）。
         profile = load_profile(provenance.get("url"))
     route = provenance.get("route") or "dom"
     size = som_json.get("size") or [0, 0]
     capture = provenance.get("capture") or {}
-    pixel_ratio = max(1, int(capture.get("device_scale_factor") or 1))
     viewport = capture.get("viewport") or {}
+    pixel_ratio = _capture_pixel_ratio(
+        size,
+        viewport,
+        dom_nodes,
+        capture.get("device_scale_factor"),
+    )
     canvas_size = capture.get("canvas_size")
     if isinstance(canvas_size, (list, tuple)) and len(canvas_size) >= 2:
         logical_width = max(1, int(canvas_size[0]) // pixel_ratio)
         logical_height = max(1, int(canvas_size[1]) // pixel_ratio)
     else:
-        logical_width = int(viewport.get("width") or (int(size[0]) // pixel_ratio))
-        logical_height = int(viewport.get("height") or (int(size[1]) // pixel_ratio))
+        screenshot_width = int(size[0]) // pixel_ratio
+        screenshot_height = int(size[1]) // pixel_ratio
+        logical_width = screenshot_width or int(viewport.get("width") or 1)
+        logical_height = screenshot_height or int(viewport.get("height") or 1)
     canvas = {
         "width": logical_width,
         "height": logical_height,
@@ -464,6 +715,7 @@ def build_direct_design(som_json: dict, profile=None, dom_nodes=None) -> dict:
             if (
                 is_overlay
                 and image_path
+                and _dom_subtree_has_visible_content(c.get("domIndex"), dom_nodes)
                 and not _covered_by_own_plate(_geometry(c), plates)
             ):
                 # 透明浮层容器（antd fixed wrapper 等）没有自身底色，裁原截图对应
@@ -557,6 +809,17 @@ def build_direct_design(som_json: dict, profile=None, dom_nodes=None) -> dict:
             "style": out_style,
         }
         _carry_clip(container_el, c)
+        for key in (
+            "clipToBounds",
+            "overflowX",
+            "overflowY",
+            "clientWidth",
+            "clientHeight",
+            "scrollWidth",
+            "scrollHeight",
+        ):
+            if c.get(key) not in (None, "", 0, False):
+                container_el[key] = c[key]
         _carry_name(container_el, c)
         _carry_dom_index(container_el, c)
         kept_el, was_clamped = _clamp_clip(container_el)
@@ -573,6 +836,25 @@ def build_direct_design(som_json: dict, profile=None, dom_nodes=None) -> dict:
     for e in som_json.get("elements", []):
         style = e.get("style") or {}
         etype = e.get("type") or "rectangle"
+        dom_index = e.get("domIndex")
+        if (
+            text_model is not None
+            and etype == "text"
+            and isinstance(dom_index, int)
+            and dom_index in inline_consumed_indices
+        ):
+            continue
+        text_block = (
+            text_blocks_by_source.get(dom_index)
+            if text_model is not None and etype == "text" and isinstance(dom_index, int)
+            else None
+        )
+        if text_block is not None:
+            e = dict(e)
+            e["text"] = str(text_block.get("text") or e.get("text") or "")
+            measured_lines = text_block.get("measuredLines")
+            if isinstance(measured_lines, list) and measured_lines:
+                e["textLines"] = measured_lines
         x, y, w, h = _geometry(e)
         out_style: dict = {}
         fill = style.get("fillColor")
@@ -616,6 +898,9 @@ def build_direct_design(som_json: dict, profile=None, dom_nodes=None) -> dict:
         _carry_shape_extras(style, out_style)
         if style.get("shadows"):
             out_style["shadows"] = style["shadows"]
+        x, y, w, h = _apply_measured_text_geometry(
+            {**e, "type": etype}, x, y, w, h, out_style
+        )
         is_overlay = bool(e.get("overlay", False))
         element = {
             "id": str(e["id"]),
@@ -624,12 +909,21 @@ def build_direct_design(som_json: dict, profile=None, dom_nodes=None) -> dict:
             "y": y,
             "width": w,
             "height": h,
-            "text": e.get("text") or "",
+            "text": _normalize_single_line_text(e),
             "overlay": is_overlay,
             "zIndex": int(e.get("zIndex") or 0),
             "style": out_style,
         }
         _carry_clip(element, e)
+        _apply_clipped_text_lines(
+            out_style,
+            element_type=etype,
+            x=x,
+            y=y,
+            width=w,
+            height=h,
+            clip=element.get("clip"),
+        )
         _carry_name(element, e)
         _carry_dom_index(element, e)
         _carry_flag(element, e, "textLineBox")
@@ -650,6 +944,44 @@ def build_direct_design(som_json: dict, profile=None, dom_nodes=None) -> dict:
         if isinstance(baseline, dict):
             element["textBaseline"] = dict(baseline)
         _carry_text_lines(element, e)
+        rich_runs = e.get("richRuns")
+        if isinstance(rich_runs, list) and rich_runs:
+            element["richRuns"] = [
+                {
+                    "start": int(run.get("start") or 0),
+                    "end": int(run.get("end") or 0),
+                    "text": str(run.get("text") or ""),
+                    "style": dict(run.get("style") or {}),
+                }
+                for run in rich_runs
+                if isinstance(run, dict)
+            ]
+        if text_block is not None:
+            element["text"] = str(text_block.get("text") or element["text"])
+            element["textModelId"] = str(text_block["id"])
+            element["paragraphRole"] = str(text_block.get("role") or "paragraph")
+            element["textRuns"] = [
+                dict(run)
+                for run in text_block.get("runs", [])
+                if isinstance(run, dict)
+            ]
+            element["measuredLines"] = [
+                dict(line)
+                for line in text_block.get("measuredLines", [])
+                if isinstance(line, dict)
+            ]
+        for key in (
+            "clipToBounds",
+            "overflowX",
+            "overflowY",
+            "textOverflow",
+            "clientWidth",
+            "clientHeight",
+            "scrollWidth",
+            "scrollHeight",
+        ):
+            if e.get(key) not in (None, "", 0, False):
+                element[key] = e[key]
         _carry_asset_metadata(element, e)
         # 裁剪：文字必须靠 clipPath（字形长度 ≠ 盒子），先看裁剪后的可见部分是不是
         # 整块被后画的浮层底板盖住——盖住就整个丢掉；形状则直接把盒子夹进裁剪矩形，
@@ -747,6 +1079,20 @@ def build_direct_design(som_json: dict, profile=None, dom_nodes=None) -> dict:
                     generated_candidates=generated_candidates,
                 )
         elements.append(element)
+
+    if dom_nodes:
+        kept_by_dom_clip: list[dict] = []
+        for element in elements:
+            clip, fully_clipped = _dom_ancestor_clip(element, dom_nodes)
+            if fully_clipped:
+                continue
+            if clip is not None:
+                rect = _rect_of(element)
+                visible = _intersect_rect(rect, tuple(clip)) if rect else None
+                if visible is None:
+                    continue
+            kept_by_dom_clip.append(element)
+        elements = kept_by_dom_clip
 
     # 冗余图层过滤：被浮层像素底完全盖住的图元（同框白底容器、表头条、列内
     # 按钮/图标/文本）画出来也看不见，留着只会让“改绘制序”重新踩坑——历史上
