@@ -5,7 +5,7 @@
 The P0 capture/replay infrastructure and P1 visual-fidelity mechanisms are implemented and
 covered by focused tests. The four regression captures replay deterministically and now have
 real Figma export/readback evidence. IT之家, 21ic, and 小米 pass the visual gate; 国家数据
-fails `visual_diff` with a 28.41% bad-pixel ratio.
+fails `visual_diff` with a 26.29% bad-pixel ratio.
 
 Two valid unseen holdouts, Rust and PostgreSQL, pass the real Figma visual gate. The frozen
 Wikipedia holdout still fails capture with `net::ERR_CONNECTION_TIMED_OUT`; it remains a
@@ -63,7 +63,7 @@ Capture environment: viewport `1440x900`, DPR `1`, `requested_route=dom`,
 |---|---|---|---|---|---|---|
 | IT之家 | content, 428 DOM nodes | identical hashes | 0.0374 | 54 | 15 | pass |
 | 21ic | content, 2757 DOM nodes | identical hashes | 0.0672 | 160 | 204 | pass |
-| 国家数据 | content, SPA hash route, 941 DOM nodes | identical hashes | 0.2841 | 14 | 10 | fail |
+| 国家数据 | content, SPA hash route, 941 DOM nodes | identical hashes | 0.2629 | 14 | 10 | fail |
 | 小米 | content, 1056 DOM nodes | identical hashes | 0.0047 | 32 | 25 | pass |
 
 The aggregate visual report has `pass_case_count=3`, `fail_case_count=1`, and
@@ -109,9 +109,9 @@ legacy P1 flags off and current P1 flags on.
 
 | Metric | Legacy | P1 | P1 - Legacy |
 |---|---:|---:|---:|
-| bad-pixel ratio | 0.2354 | 0.2841 | +0.0487 |
-| mean pixel delta | 30.062 | 27.346 | -2.715 |
-| blank-area ratio | 0.6216 | 0.4227 | -0.1989 |
+| bad-pixel ratio | 0.2354 | 0.2629 | +0.0274 |
+| mean pixel delta | 30.062 | 26.802 | -3.259 |
+| blank-area ratio | 0.6216 | 0.4225 | -0.1992 |
 | Figma image fills | 8 | 10 | +2 |
 | text nodes | 14 | 14 | 0 |
 
@@ -119,16 +119,15 @@ Both variants fail the absolute visual gate. P1 is not uniformly worse:
 
 - query-region score improved by `0.792`;
 - header score improved by `0.333`;
-- table score regressed by `0.456`;
+- table score improved by `0.991`;
 - content coverage increased substantially.
 
 The result means P1 is closer in mean color/content coverage but has more pixels over the
 bad-pixel threshold. It is not evidence for reverting P1 outright.
 
 Structured gradients are now mapped to native Figma `GRADIENT_LINEAR`/`GRADIENT_RADIAL`
-paints and covered by a bridge test. A fresh real-figma gradient A/B attempt was blocked by
-`PLUGIN_TIMEOUT` at `create_image` after the plugin reload, so that attempt is not counted as
-visual evidence.
+paints. A minimal real-Figma probe read back `GRADIENT_LINEAR`, and the final national-data
+A/B reduced the P1 bad-pixel delta from `+0.0487` to `+0.0274`.
 
 ## Unseen Holdouts
 
