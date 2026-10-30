@@ -18,6 +18,20 @@ _KNOWN_ROLES = {"navigation", "list", "article", "button", "link"}
 _TABLE_TAGS = {"table", "thead", "tbody", "tfoot", "tr", "td", "th"}
 _VISUAL_TAGS = {"img", "svg", "video", "canvas", "picture", "object"}
 _TRANSPARENT_COLORS = {"", "transparent", "none", "rgba(0,0,0,0)", "rgb(0,0,0,0)"}
+_CONTROL_LIST_TOKENS = {
+    "nav",
+    "menu",
+    "tab",
+    "pagination",
+    "pager",
+    "carousel",
+    "indicator",
+    "breadcrumb",
+    "toolbar",
+    "dropdown",
+    "select",
+    "topline",
+}
 
 
 def _int(value: Any, default: int = 0) -> int:
@@ -161,9 +175,12 @@ def _has_visual_asset(
 ) -> bool:
     for current in [index, *_descendants(index, children)]:
         node = nodes[current]
-        if _tag(node) in _VISUAL_TAGS:
-            return True
-        if bool(node.get("bgImage")) or bool(node.get("assetSrc")):
+        width = _int(node.get("w"))
+        height = _int(node.get("h"))
+        substantial = width >= 48 and height >= 32
+        if not substantial:
+            continue
+        if _tag(node) in _VISUAL_TAGS or bool(node.get("assetSrc")):
             return True
         layers = node.get("backgroundLayers")
         if isinstance(layers, list) and any(
@@ -180,6 +197,35 @@ def _has_text_block(
     children: Sequence[Sequence[int]],
 ) -> bool:
     return any(_text(current, nodes) for current in [index, *_descendants(index, children)])
+
+
+def _is_control_list(index: int, nodes: Sequence[Mapping[str, Any]]) -> bool:
+    node = nodes[index]
+    tokens = {
+        token.lower()
+        for token in re.split(
+            r"[^0-9A-Za-z_-]+",
+            f"{node.get('id') or ''} {node.get('clsAll') or ''}",
+        )
+        if token
+    }
+    return any(
+        marker in token
+        for token in tokens
+        for marker in _CONTROL_LIST_TOKENS
+    )
+
+
+def _is_control_list_context(
+    index: int,
+    nodes: Sequence[Mapping[str, Any]],
+    parents: Sequence[int | None],
+    list_indices: set[int],
+) -> bool:
+    return any(
+        ancestor in list_indices and _is_control_list(ancestor, nodes)
+        for ancestor in _ancestors(index, parents)
+    )
 
 
 def _visible_length(value: str) -> float:
@@ -218,9 +264,7 @@ def _button_evidence(
             evidence.append({"kind": "visible-text", "value": True, "weight": 0.4})
         return evidence
 
-    interactive = bool(node.get("interactive")) or (
-        tag in {"a", "input", "select", "textarea"} or role in {"link", "button"}
-    )
+    interactive = tag == "a" or role in {"link", "button"}
     if not interactive or not _text(index, nodes):
         return []
     signals = []
@@ -243,16 +287,12 @@ def _navigation_evidence(
     index: int,
     nodes: Sequence[Mapping[str, Any]],
     children: Sequence[Sequence[int]],
-) -> tuple[list[dict[str, Any]], float] | None:
+) -> tuple[list[dict[str, Any]], float, bool] | None:
     node = nodes[index]
     tag = _tag(node)
     role = _role(node)
     landmark = str(_hints(node).get("landmark") or "").lower()
-    explicit = (
-        tag == "nav"
-        or role == "navigation"
-        or _LANDMARK_ROLES.get(landmark) == "navigation"
-    )
+    explicit = _is_explicit_navigation(index, nodes)
     links = [
         current
         for current in _descendants(index, children)
@@ -269,8 +309,11 @@ def _navigation_evidence(
         ]
         if len(links) >= 3:
             evidence.append({"kind": "horizontal-line", "value": True, "weight": 0.5})
-        return evidence, 0.98
+        return evidence, 0.98, explicit
     if len(links) < 3:
+        return None
+    button_like = sum(bool(_button_evidence(link, nodes)) for link in links)
+    if button_like * 2 >= len(links):
         return None
     boxes = [_bbox(nodes[current]) for current in links]
     centers = [box[1] + box[3] / 2 for box in boxes]
@@ -290,6 +333,20 @@ def _navigation_evidence(
             {"kind": "no-vertical-card-repetition", "value": True, "weight": 0.5},
         ],
         0.88,
+        False,
+    )
+
+
+def _is_explicit_navigation(
+    index: int,
+    nodes: Sequence[Mapping[str, Any]],
+) -> bool:
+    node = nodes[index]
+    landmark = str(_hints(node).get("landmark") or "").lower()
+    return (
+        _tag(node) == "nav"
+        or _role(node) == "navigation"
+        or _LANDMARK_ROLES.get(landmark) == "navigation"
     )
 
 
@@ -421,6 +478,11 @@ def classify_semantic_components(
     parents = _parents(nodes, layer_tree)
     children = _children(parents)
     candidates: dict[int, tuple[int, float, str, list[dict[str, Any]]]] = {}
+    explicit_navigation_indices = {
+        index
+        for index in range(len(nodes))
+        if _is_explicit_navigation(index, nodes)
+    }
 
     def put(
         index: int,
@@ -462,9 +524,24 @@ def classify_semantic_components(
             put(index, "list", confidence, evidence, 8)
             list_indices.add(index)
             continue
+        if _is_table_context(index, nodes, parents):
+            continue
         navigation = _navigation_evidence(index, nodes, children)
         if navigation is not None:
-            evidence, confidence = navigation
+            evidence, confidence, explicit = navigation
+            if not explicit:
+                related_explicit = (
+                    any(
+                        descendant in explicit_navigation_indices
+                        for descendant in _descendants(index, children)
+                    )
+                    or any(
+                        ancestor in explicit_navigation_indices
+                        for ancestor in _ancestors(index, parents)
+                    )
+                )
+                if related_explicit:
+                    continue
             put(index, "navigation", confidence, evidence, 8)
     for index, node in enumerate(nodes):
         if _is_table_context(index, nodes, parents):
@@ -488,6 +565,12 @@ def classify_semantic_components(
         for index in children[list_index]:
             if (
                 not _is_table_context(index, nodes, parents)
+                and not _is_control_list_context(
+                    index,
+                    nodes,
+                    parents,
+                    list_indices,
+                )
                 and _has_visual_asset(index, nodes, children)
                 and _has_text_block(index, nodes, children)
             ):
