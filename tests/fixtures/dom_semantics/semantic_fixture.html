@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      width: 1440px;
+      color: #172033;
+      background: #ffffff;
+      font: 16px/1.4 sans-serif;
+    }
+    .sample-nav {
+      display: flex;
+      align-items: center;
+      gap: 24px;
+      width: 592px;
+      height: 48px;
+      margin: 24px 0 0 24px;
+      padding: 0 24px;
+      background: #f4f7fb;
+    }
+    .sample-nav a {
+      width: 112px;
+      height: 24px;
+      color: #172033;
+      text-decoration: none;
+    }
+    .role-nav {
+      display: flex;
+      align-items: center;
+      gap: 24px;
+      width: 432px;
+      height: 48px;
+      margin: 24px 0 0 24px;
+      padding: 0 24px;
+      background: #eef4ff;
+    }
+    .role-nav a {
+      width: 112px;
+      height: 24px;
+      color: #172033;
+      text-decoration: none;
+    }
+    .card-list,
+    .article-grid {
+      display: flex;
+      align-items: stretch;
+      gap: 24px;
+      width: 592px;
+      margin: 32px 0 0 24px;
+      padding: 0;
+      list-style: none;
+    }
+    .card-list li,
+    .article-grid article {
+      width: 181px;
+      min-height: 188px;
+      padding: 12px;
+      background: #ffffff;
+      border: 1px solid #d9e1ee;
+    }
+    .card-list img,
+    .article-grid img {
+      display: block;
+      width: 155px;
+      height: 88px;
+      margin-bottom: 12px;
+      background: #cfe0f7;
+    }
+    .card-list h2,
+    .article-grid h2 {
+      margin: 0 0 8px;
+      font-size: 18px;
+      line-height: 24px;
+    }
+    .card-list p,
+    .article-grid p {
+      margin: 0;
+      font-size: 14px;
+      line-height: 20px;
+    }
+    .button-row {
+      display: flex;
+      align-items: center;
+      gap: 24px;
+      margin: 32px 0 0 24px;
+    }
+    .button-row button,
+    .button-row a.button-link {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 120px;
+      height: 40px;
+      padding: 0 16px;
+      border: 1px solid #1557d6;
+      border-radius: 4px;
+      background: #1f66ef;
+      color: #ffffff;
+      font: inherit;
+      text-decoration: none;
+    }
+    .ordinary-copy {
+      width: 640px;
+      margin: 32px 0 0 24px;
+      font-size: 16px;
+      line-height: 24px;
+    }
+    .ordinary-copy a {
+      display: block;
+      width: max-content;
+      color: #1557d6;
+    }
+    table {
+      width: 592px;
+      margin: 32px 0 64px 24px;
+      border-collapse: collapse;
+    }
+    td {
+      width: 33.333%;
+      padding: 12px;
+      border: 1px solid #d9e1ee;
+      vertical-align: top;
+    }
+    td img {
+      display: block;
+      width: 80px;
+      height: 48px;
+      margin-bottom: 8px;
+      background: #eaf0f8;
+    }
+  </style>
+</head>
+<body>
+  <nav class="sample-nav" aria-label="Primary">
+    <a href="/products">Products</a>
+    <a href="/solutions">Solutions</a>
+    <a href="/resources">Resources</a>
+    <a href="/pricing">Pricing</a>
+  </nav>
+
+  <div class="role-nav" role="navigation" aria-label="Secondary">
+    <a href="/docs">Docs</a>
+    <a href="/guides">Guides</a>
+    <a href="/support">Support</a>
+  </div>
+
+  <ul class="card-list" aria-label="News">
+    <li>
+      <img alt="" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==">
+      <h2>Release notes</h2>
+      <p>Latest platform changes.</p>
+    </li>
+    <li>
+      <img alt="" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==">
+      <h2>Engineering</h2>
+      <p>How the system is built.</p>
+    </li>
+    <li>
+      <img alt="" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==">
+      <h2>Product</h2>
+      <p>What is shipping now.</p>
+    </li>
+  </ul>
+
+  <section class="article-grid" aria-label="Featured articles">
+    <article>
+      <img alt="" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==">
+      <h2>Article one</h2>
+      <p>First featured story.</p>
+    </article>
+    <article>
+      <img alt="" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==">
+      <h2>Article two</h2>
+      <p>Second featured story.</p>
+    </article>
+    <article>
+      <img alt="" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==">
+      <h2>Article three</h2>
+      <p>Third featured story.</p>
+    </article>
+  </section>
+
+  <div class="button-row">
+    <button type="button">Save</button>
+    <button type="button">Cancel</button>
+    <a class="button-link" href="/checkout">Checkout</a>
+  </div>
+
+  <p class="ordinary-copy">
+    Read the <a href="/methodology">methodology</a> for more context.
+  </p>
+
+  <table aria-label="Quarterly metrics">
+    <tbody>
+      <tr>
+        <td>
+          <img alt="" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==">
+          Revenue
+        </td>
+        <td>
+          <img alt="" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==">
+          Margin
+        </td>
+        <td>
+          <img alt="" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==">
+          Growth
+        </td>
+      </tr>
+    </tbody>
+  </table>
+</body>
+</html>

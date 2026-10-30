@@ -357,6 +357,23 @@ DOM_JS = r"""
     }
     return '';
   };
+  const semanticHintsFor = (el) => {
+    const hints = {};
+    const tag = el.tagName.toLowerCase();
+    const role = String(el.getAttribute('role') || '').trim().toLowerCase();
+    if (['nav', 'main', 'aside', 'footer', 'header'].includes(tag)) {
+      hints.landmark = tag;
+    }
+    if (role) hints.ariaRole = role;
+    const ariaLabel = String(el.getAttribute('aria-label') || '').trim();
+    if (ariaLabel) hints.ariaLabel = ariaLabel.slice(0, 200);
+    if (tag === 'ul' || tag === 'ol') {
+      hints.listType = tag === 'ol' ? 'ordered' : 'unordered';
+    } else if (role === 'list') {
+      hints.listType = String(el.getAttribute('type') || 'list').slice(0, 40);
+    }
+    return hints;
+  };
   const flattenedInlineText = (el) => {
     if (/^(IMG|SVG|VIDEO|CANVAS|INPUT|BUTTON|SELECT|TEXTAREA)$/i.test(el.tagName)) {
       return false;
@@ -986,6 +1003,8 @@ DOM_JS = r"""
       position: cs.position, zIndex: parseInt(cs.zIndex, 10) || 0,
       interactive: /^(A|BUTTON|INPUT|SELECT|TEXTAREA)$/.test(el.tagName)
     };
+    const semanticHints = semanticHintsFor(el);
+    if (Object.keys(semanticHints).length) rec.semanticHints = semanticHints;
     const textRoleHint = semanticTextRoleHint(el);
     if (textRoleHint && (hasText || placeholder || isTextField)) {
       rec.textRoleHint = textRoleHint;
