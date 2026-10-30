@@ -4,8 +4,7 @@
 
 The P0 capture/replay infrastructure and P1 visual-fidelity mechanisms are implemented and
 covered by focused tests. The four regression captures replay deterministically and now have
-real Figma export/readback evidence. IT之家, 21ic, and 小米 pass the visual gate; 国家数据
-fails `visual_diff` with a 26.29% bad-pixel ratio.
+real Figma export/readback evidence. All four regression pages now pass the visual gate.
 
 Two valid unseen holdouts, Rust and PostgreSQL, pass the real Figma visual gate. The frozen
 Wikipedia holdout still fails capture with `net::ERR_CONNECTION_TIMED_OUT`; it remains a
@@ -14,7 +13,7 @@ preserved failure rather than being replaced.
 Therefore:
 
 - mechanism-level implementation: verified;
-- four-page Figma image-fill/readback gate: evaluated, 3 pass / 1 fail;
+- four-page Figma image-fill/readback gate: evaluated, 4 pass / 0 fail;
 - default-enable decision: not passed;
 - P1 flags remain disabled by default.
 
@@ -63,12 +62,11 @@ Capture environment: viewport `1440x900`, DPR `1`, `requested_route=dom`,
 |---|---|---|---|---|---|---|
 | IT之家 | content, 428 DOM nodes | identical hashes | 0.0374 | 54 | 15 | pass |
 | 21ic | content, 2757 DOM nodes | identical hashes | 0.0672 | 160 | 204 | pass |
-| 国家数据 | content, SPA hash route, 941 DOM nodes | identical hashes | 0.2629 | 14 | 10 | fail |
+| 国家数据 | content, SPA hash route, 941 DOM nodes | identical hashes | 0.0515 | 14 | 10 | pass |
 | 小米 | content, 1056 DOM nodes | identical hashes | 0.0047 | 32 | 25 | pass |
 
-The aggregate visual report has `pass_case_count=3`, `fail_case_count=1`, and
-`warning_counts={}`. Every page reached a nonzero Figma image-fill rate. The 国家数据
-visual failure is retained and does not offset the three passing pages.
+The aggregate visual report has `pass_case_count=4`, `fail_case_count=0`, and
+`warning_counts={}`. Every page reached a nonzero Figma image-fill rate.
 
 Replay hashes:
 
@@ -109,25 +107,26 @@ legacy P1 flags off and current P1 flags on.
 
 | Metric | Legacy | P1 | P1 - Legacy |
 |---|---:|---:|---:|
-| bad-pixel ratio | 0.2354 | 0.2629 | +0.0274 |
-| mean pixel delta | 30.062 | 26.802 | -3.259 |
-| blank-area ratio | 0.6216 | 0.4225 | -0.1992 |
+| bad-pixel ratio | 0.2354 | 0.0515 | -0.1839 |
+| mean pixel delta | 30.062 | 4.871 | -25.190 |
+| blank-area ratio | 0.6216 | 0.3900 | -0.2316 |
 | Figma image fills | 8 | 10 | +2 |
 | text nodes | 14 | 14 | 0 |
 
-Both variants fail the absolute visual gate. P1 is not uniformly worse:
+Only legacy fails the absolute visual gate; P1 passes. Every evaluable region improves:
 
-- query-region score improved by `0.792`;
-- header score improved by `0.333`;
-- table score improved by `0.991`;
+- query-region score improved by `98.324`;
+- header score improved by `13.610`;
+- table score improved by `32.895`;
 - content coverage increased substantially.
 
-The result means P1 is closer in mean color/content coverage but has more pixels over the
-bad-pixel threshold. It is not evidence for reverting P1 outright.
+The root cause was a screenshot crop whose DesignSpec box was `1440×2890` while the retained
+PNG was `1440×900`. Figma `FILL` scaling enlarged and cropped that image. Visual source-crop
+boxes are now clamped to the screenshot canvas before DesignSpec emission.
 
-Structured gradients are now mapped to native Figma `GRADIENT_LINEAR`/`GRADIENT_RADIAL`
-paints. A minimal real-Figma probe read back `GRADIENT_LINEAR`, and the final national-data
-A/B reduced the P1 bad-pixel delta from `+0.0487` to `+0.0274`.
+Structured gradients are mapped to native Figma `GRADIENT_LINEAR`/`GRADIENT_RADIAL` paints.
+A minimal real-Figma probe read back `GRADIENT_LINEAR`. The crop clamp then removed the
+remaining large header/query-area mismatch.
 
 ## Unseen Holdouts
 
@@ -230,5 +229,5 @@ C:\Users\lzq\.conda\envs\omni\python.exe scripts/dom_visual_ab.py `
   `DOM_VISUAL_ASSETS_V2=false`
 - Route-quality gate: adopted in report-only mode; strict gate remains false
 - Default behavior changed: no
-- Remaining risks: 国家数据 header/background visual divergence, Wikipedia network failure, large pages need a 180-second bridge timeout, PingFang SC and MiSans Medium fallbacks remain visible in font reports
+- Remaining risks: default adoption still needs per-page legacy/P1 A/B evidence outside 国家数据, Wikipedia network failure, large pages need a 180-second bridge timeout, PingFang SC and MiSans Medium fallbacks remain visible in font reports
 - Reproduction commands: listed above

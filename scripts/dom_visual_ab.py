@@ -234,6 +234,23 @@ def _render_variant(
     return visual
 
 
+def _remove_generated_frames(
+    *,
+    bridge_url: str,
+    timeout: float,
+    prefix: str,
+) -> None:
+    adapter = FigmaBridgeAdapter(bridge_url, timeout=timeout)
+    adapter.connect()
+    try:
+        adapter._send(
+            "remove_nodes_by_name",
+            {"name": prefix, "prefix": True},
+        )
+    finally:
+        adapter.disconnect()
+
+
 def _evaluate_case(
     name: str,
     bundle_dir: Path,
@@ -242,6 +259,11 @@ def _evaluate_case(
     bridge_url: str,
     timeout: float,
 ) -> dict[str, Any]:
+    _remove_generated_frames(
+        bridge_url=bridge_url,
+        timeout=timeout,
+        prefix="AB-",
+    )
     bundle = load_capture_bundle(bundle_dir)
     screenshot = capture_bundle_artifact_path(bundle_dir, bundle, "screenshot")
     som_path = bundle_dir / "11_som.json"
@@ -257,16 +279,12 @@ def _evaluate_case(
             load_profile(url),
             dom_nodes,
         )
-    treatment_path = bundle_dir / "12_design.json"
-    if not treatment_path.is_file():
-        with _p1_environment(True):
-            treatment_design = build_direct_design(
-                som,
-                load_profile(url),
-                dom_nodes,
-            )
-    else:
-        treatment_design = json.loads(treatment_path.read_text(encoding="utf-8"))
+    with _p1_environment(True):
+        treatment_design = build_direct_design(
+            som,
+            load_profile(url),
+            dom_nodes,
+        )
     case_root = output_root / name
     baseline = _render_variant(
         bridge_url=bridge_url,

@@ -178,3 +178,47 @@ def test_browser_capture_emits_structured_background_layers(tmp_path):
     assert layers[1]["kind"] == "image"
     assert layers[1]["size"] == "cover"
     assert layers[1]["position"] == "50% 50%"
+
+
+def test_visual_source_crop_is_clamped_to_screenshot_canvas(tmp_path, monkeypatch):
+    screenshot = tmp_path / "page.png"
+    Image.new("RGB", (160, 100), "white").save(screenshot)
+    dom_nodes = [
+        {
+            "tag": "section",
+            "x": 0,
+            "y": 0,
+            "w": 160,
+            "h": 200,
+            "interactive": False,
+            "backgroundLayers": [
+                {
+                    "kind": "image",
+                    "source": "https://example.test/page-bg.png",
+                }
+            ],
+        }
+    ]
+    som = {
+        "image": str(screenshot),
+        "size": [160, 100],
+        "containers": [],
+        "elements": [],
+        "provenance": {
+            "route": "dom",
+            "capture": {
+                "viewport": {"width": 160, "height": 100},
+                "canvas_size": [160, 100],
+                "device_scale_factor": 1,
+            },
+        },
+    }
+
+    monkeypatch.setenv("DOM_VISUAL_ASSETS_V2", "true")
+    design = build_direct_design(som, dom_nodes=dom_nodes)
+
+    visual = next(
+        item for item in design["elements"] if item.get("visualAssetId") == "visual-0-0"
+    )
+    assert visual["y"] == 0
+    assert visual["height"] == 100

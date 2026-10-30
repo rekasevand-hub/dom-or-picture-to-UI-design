@@ -1187,6 +1187,14 @@ def build_direct_design(som_json: dict, profile=None, dom_nodes=None) -> dict:
             if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
                 continue
             x, y, w, h = _geometry({"bbox": list(bbox)})
+            canvas_width = int(canvas["width"])
+            canvas_height = int(canvas["height"])
+            if x >= canvas_width or y >= canvas_height:
+                continue
+            w = min(w, canvas_width - x)
+            h = min(h, canvas_height - y)
+            if w < 1 or h < 1:
+                continue
             common = {
                 "id": str(asset.get("visualAssetId") or f"visual-{asset_index}"),
                 "x": x,
