@@ -138,7 +138,7 @@ def test_direct_design_materializes_pseudo_only_when_flagged(tmp_path, monkeypat
         },
     }
 
-    monkeypatch.delenv("DOM_VISUAL_ASSETS_V2", raising=False)
+    monkeypatch.setenv("DOM_VISUAL_ASSETS_V2", "false")
     legacy = build_direct_design(som, dom_nodes=dom_nodes)
     assert not [item for item in legacy["elements"] if item.get("source") == "dom:pseudo"]
 
@@ -147,6 +147,46 @@ def test_direct_design_materializes_pseudo_only_when_flagged(tmp_path, monkeypat
     pseudo = next(item for item in current["elements"] if item.get("source") == "dom:pseudo")
     assert pseudo["text"] == "•"
     assert pseudo["visualAssetId"].startswith("visual-0-")
+
+
+def test_visual_assets_are_enabled_by_default(tmp_path, monkeypatch):
+    screenshot = tmp_path / "page.png"
+    Image.new("RGB", (240, 160), "white").save(screenshot)
+    dom_nodes = [
+        {
+            "tag": "span",
+            "x": 20,
+            "y": 30,
+            "w": 16,
+            "h": 16,
+            "interactive": False,
+            "pseudoBefore": {
+                "content": '"•"',
+                "display": "block",
+                "position": "absolute",
+                "color": "rgb(17, 34, 51)",
+            },
+        }
+    ]
+    som = {
+        "image": str(screenshot),
+        "size": [240, 160],
+        "containers": [],
+        "elements": [],
+        "provenance": {
+            "route": "dom",
+            "capture": {
+                "viewport": {"width": 240, "height": 160},
+                "canvas_size": [240, 160],
+                "device_scale_factor": 1,
+            },
+        },
+    }
+    monkeypatch.delenv("DOM_VISUAL_ASSETS_V2", raising=False)
+
+    design = build_direct_design(som, dom_nodes=dom_nodes)
+
+    assert any(item.get("source") == "dom:pseudo" for item in design["elements"])
 
 
 def test_browser_capture_emits_structured_background_layers(tmp_path):

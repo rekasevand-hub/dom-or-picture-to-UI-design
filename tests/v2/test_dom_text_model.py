@@ -252,7 +252,7 @@ def _text_design_fixture() -> tuple[dict, list[dict]]:
 
 def test_text_model_design_fields_are_feature_flagged(monkeypatch):
     som, dom_nodes = _text_design_fixture()
-    monkeypatch.delenv("DOM_TEXT_MODEL_V2", raising=False)
+    monkeypatch.setenv("DOM_TEXT_MODEL_V2", "false")
     legacy = build_direct_design(som, dom_nodes=dom_nodes)
     legacy_text = next(item for item in legacy["elements"] if item["type"] == "text")
     assert "textModelId" not in legacy_text
@@ -266,3 +266,13 @@ def test_text_model_design_fields_are_feature_flagged(monkeypatch):
     assert item["paragraphRole"] == "paragraph"
     assert item["textRuns"][1]["text"] == "bold"
     assert item["measuredLines"][0]["text"] == "Before bold"
+
+
+def test_text_model_is_enabled_by_default(monkeypatch):
+    som, dom_nodes = _text_design_fixture()
+    monkeypatch.delenv("DOM_TEXT_MODEL_V2", raising=False)
+
+    design = build_direct_design(som, dom_nodes=dom_nodes)
+
+    text = next(item for item in design["elements"] if item["type"] == "text")
+    assert text["textModelId"] == "text-0"

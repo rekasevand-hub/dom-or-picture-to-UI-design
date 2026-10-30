@@ -742,7 +742,7 @@ def build_direct_design(som_json: dict, profile=None, dom_nodes=None) -> dict:
     visual_assets = None
     if (
         isinstance(dom_nodes, list)
-        and os.getenv("DOM_VISUAL_ASSETS_V2", "false").strip().lower()
+        and os.getenv("DOM_VISUAL_ASSETS_V2", "true").strip().lower()
         in {"1", "true", "yes"}
     ):
         visual_assets = build_visual_assets(
@@ -753,7 +753,7 @@ def build_direct_design(som_json: dict, profile=None, dom_nodes=None) -> dict:
     if (
         isinstance(dom_nodes, list)
         and image_path
-        and os.getenv("DOM_SVG_MATERIALIZATION_V2", "false").strip().lower()
+        and os.getenv("DOM_SVG_MATERIALIZATION_V2", "true").strip().lower()
         in {"1", "true", "yes"}
     ):
         svg_manifest = materialize_svg_assets(

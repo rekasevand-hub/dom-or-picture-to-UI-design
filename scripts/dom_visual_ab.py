@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import json
 import os
+import re
 import sys
 from collections import Counter
 from contextlib import contextmanager
@@ -54,6 +56,13 @@ def _metric_delta(treatment: Any, baseline: Any) -> float | int | None:
         delta = treatment - baseline
         return round(delta, 6) if isinstance(delta, float) else delta
     return None
+
+
+def _safe_case_dir(name: str) -> str:
+    slug = re.sub(r"[^0-9A-Za-z._-]+", "-", name).strip("-._")
+    if slug:
+        return slug
+    return "case-" + hashlib.sha256(name.encode("utf-8")).hexdigest()[:12]
 
 
 def build_visual_ab_report(cases: list[dict[str, Any]]) -> dict[str, Any]:
@@ -177,6 +186,7 @@ def _render_variant(
     reference: Path,
     design: dict[str, Any],
     output_dir: Path,
+    scale: float,
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     design_path = output_dir / "12_design.json"
@@ -199,10 +209,13 @@ def _render_variant(
         image_report = adapter.image_fill_report(adapter.frame_id)
         exported = adapter._send(
             "export_frame",
-            {"nodeId": adapter.frame_id, "scale": 1.0},
+            {"nodeId": adapter.frame_id, "scale": scale},
         )
         rendered = output_dir / "figma_render.png"
-        rendered.write_bytes(base64.b64decode(exported["base64"]))
+        payload = base64.b64decode(exported.get("base64") or "")
+        if not payload:
+            raise RuntimeError(f"Figma export returned empty PNG for {screen_name}")
+        rendered.write_bytes(payload)
         (output_dir / "readback_tree.json").write_text(
             json.dumps(tree, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
@@ -258,6 +271,7 @@ def _evaluate_case(
     *,
     bridge_url: str,
     timeout: float,
+    scale: float,
 ) -> dict[str, Any]:
     _remove_generated_frames(
         bridge_url=bridge_url,
@@ -285,7 +299,7 @@ def _evaluate_case(
             load_profile(url),
             dom_nodes,
         )
-    case_root = output_root / name
+    case_root = output_root / _safe_case_dir(name)
     baseline = _render_variant(
         bridge_url=bridge_url,
         timeout=timeout,
@@ -293,6 +307,7 @@ def _evaluate_case(
         reference=screenshot,
         design=legacy_design,
         output_dir=case_root / "legacy",
+        scale=scale,
     )
     treatment = _render_variant(
         bridge_url=bridge_url,
@@ -301,6 +316,7 @@ def _evaluate_case(
         reference=screenshot,
         design=treatment_design,
         output_dir=case_root / "p1",
+        scale=scale,
     )
     return {
         "name": name,
@@ -330,6 +346,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--bridge-url", default="ws://localhost:8765")
     parser.add_argument("--timeout", type=float, default=180.0)
+    parser.add_argument("--scale", type=float, default=0.5)
     parser.add_argument(
         "--out-dir",
         type=Path,
@@ -349,6 +366,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.out_dir,
                 bridge_url=args.bridge_url,
                 timeout=args.timeout,
+                scale=args.scale,
             )
             for name, bundle_dir in args.case
         ]

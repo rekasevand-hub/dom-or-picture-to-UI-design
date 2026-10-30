@@ -50,3 +50,6 @@ def test_ab_report_reports_per_metric_regressions_without_composite_score():
     assert "bad_pixel_ratio" in case["regressions"]
     assert report["aggregate"]["regression_counts"]["bad_pixel_ratio"] == 1
     assert "score" not in report["aggregate"]
+    safe = module._safe_case_dir("国家数据")
+    assert safe.isascii()
+    assert "/" not in safe and "\\" not in safe

@@ -14,8 +14,9 @@ Therefore:
 
 - mechanism-level implementation: verified;
 - four-page Figma image-fill/readback gate: evaluated, 4 pass / 0 fail;
-- default-enable decision: not passed;
-- P1 flags remain disabled by default.
+- four-page legacy/P1 relative A/B: evaluated, no regressions;
+- default-enable decision: passed for the three visual-fidelity flags;
+- P1 visual-fidelity flags are enabled by default.
 
 ## Implemented
 
@@ -24,11 +25,11 @@ Therefore:
 | Versioned capture bundle and hashes | adopted | enabled with new captures |
 | Canonical layer tree | adopted | enabled with new captures |
 | Browser-free deterministic replay | adopted | explicit CLI |
-| Canonical text model | implemented | `DOM_TEXT_MODEL_V2=false` |
+| Canonical text model | adopted | `DOM_TEXT_MODEL_V2=true` |
 | Browser-measurement-first text layout | implemented | consumed only with canonical measured lines |
 | Font manifest and Figma `resolve_font` | implemented | resolution data captured; default behavior unchanged |
-| Background/pseudo visual assets | implemented | `DOM_VISUAL_ASSETS_V2=false` |
-| Safe SVG sanitization/rasterization | implemented | `DOM_SVG_MATERIALIZATION_V2=false` |
+| Background/pseudo visual assets | adopted | `DOM_VISUAL_ASSETS_V2=true` |
+| Safe SVG sanitization/rasterization | adopted | `DOM_SVG_MATERIALIZATION_V2=true` |
 | Image-fill/blank-area visual quality report | implemented | report-only, no default gate |
 
 ## Focused Tests
@@ -102,6 +103,26 @@ warnings. No route-quality failure was hidden by the aggregate report.
 
 ## Legacy vs P1 A/B
 
+All four regression pages were rendered from the same captures in two distinct Figma
+frames. Both variants used `scale=1.0`; legacy kept the three P1 visual flags off and P1
+enabled them.
+
+| Page | Legacy bad-pixel ratio | P1 bad-pixel ratio | Bad-pixel delta | Image fills | Text nodes | P1 gate |
+|---|---:|---:|---:|---:|---:|---|
+| IT之家 | 0.037483 | 0.037377 | -0.000106 | 15 / 15 | 85 / 54 | pass |
+| 21ic | 0.114392 | 0.067220 | -0.047172 | 204 / 204 | 164 / 160 | pass |
+| 国家数据 | 0.235417 | 0.051497 | -0.183921 | 10 / 10 | 14 / 14 | pass |
+| 小米 | 0.004924 | 0.004652 | -0.000272 | 25 / 25 | 32 / 32 | pass |
+
+The image-fill and text-node columns show P1 / legacy. The A/B driver reported zero
+regressions across every page:
+
+- P1 `image_fill_rate` did not decrease;
+- P1 text-node count did not decrease;
+- P1 blank-area ratio did not regress;
+- bridge-exported canvas height did not regress;
+- the P1 absolute visual gate passed on every page.
+
 The national-data page was rendered from the same capture in two distinct Figma frames:
 legacy P1 flags off and current P1 flags on.
 
@@ -170,8 +191,9 @@ Final replay actions succeeded for all four regression pages, Rust, and PostgreS
 `get_node_tree`, `image_fill_report`, and PNG export. The final route benchmark records
 254 Figma image fills.
 
-The 国家数据 Figma header/query area still differs visually from the source screenshot. This
-is the reason the default-enable decision remains rejected.
+The earlier 国家数据 header/query-area mismatch was eliminated by clamping source-crop
+bounding boxes to the retained screenshot canvas. The final 1:1 A/B reports `5.15%`
+bad pixels and every region improves versus legacy.
 
 ## Reproduction
 
@@ -215,8 +237,27 @@ C:\Users\lzq\.conda\envs\omni\python.exe scripts/figma_replay.py `
   --timeout 180
 
 C:\Users\lzq\.conda\envs\omni\python.exe scripts/dom_visual_ab.py `
-  --case "stats=D:/LLM-Data/Figma_auto_agent/output/_dom_visual_benchmark_20261029/stats" `
-  --out-dir output/_dom_visual_ab_gradient_20261030 `
+  --case "IT之家=D:/LLM-Data/Figma_auto_agent/output/_dom_visual_benchmark_20261029/it-home-r2" `
+  --out-dir output/_dom_visual_ab_it_scale1_20261030 `
+  --scale 1.0 `
+  --timeout 180
+
+C:\Users\lzq\.conda\envs\omni\python.exe scripts/dom_visual_ab.py `
+  --case "21ic=D:/LLM-Data/Figma_auto_agent/output/_dom_visual_benchmark_20261029/bbs21" `
+  --out-dir output/_dom_visual_ab_bbs21_scale1_20261030 `
+  --scale 1.0 `
+  --timeout 180
+
+C:\Users\lzq\.conda\envs\omni\python.exe scripts/dom_visual_ab.py `
+  --case "国家数据=D:/LLM-Data/Figma_auto_agent/output/_dom_visual_benchmark_20261029/stats" `
+  --out-dir output/_dom_visual_ab_stats_scale1_20261030 `
+  --scale 1.0 `
+  --timeout 180
+
+C:\Users\lzq\.conda\envs\omni\python.exe scripts/dom_visual_ab.py `
+  --case "小米=D:/LLM-Data/Figma_auto_agent/output/_dom_visual_benchmark_20261029/xiaomi" `
+  --out-dir output/_dom_visual_ab_xiaomi_scale1_20261030 `
+  --scale 1.0 `
   --timeout 180
 ```
 
@@ -225,9 +266,9 @@ C:\Users\lzq\.conda\envs\omni\python.exe scripts/dom_visual_ab.py `
 - Versioned capture bundle: adopted
 - Layer tree: adopted
 - Offline replay: adopted
-- Asset materialization: adopted behind `DOM_NETWORK_ASSET_RECOVERY=false` and
-  `DOM_VISUAL_ASSETS_V2=false`
+- Text model, visual assets, and SVG materialization: adopted by default
+- Network asset recovery: remains behind `DOM_NETWORK_ASSET_RECOVERY=false`
 - Route-quality gate: adopted in report-only mode; strict gate remains false
-- Default behavior changed: no
-- Remaining risks: default adoption still needs per-page legacy/P1 A/B evidence outside 国家数据, Wikipedia network failure, large pages need a 180-second bridge timeout, PingFang SC and MiSans Medium fallbacks remain visible in font reports
+- Default behavior changed: yes, for the three A/B-verified visual-fidelity flags
+- Remaining risks: Wikipedia network failure, the holdouts reused frozen captures rather than live recapture, large pages need a 180-second bridge timeout, PingFang SC and MiSans Medium fallbacks remain visible in font reports, network asset recovery is still opt-in
 - Reproduction commands: listed above

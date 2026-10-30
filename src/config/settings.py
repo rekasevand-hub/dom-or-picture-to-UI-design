@@ -127,7 +127,7 @@ class Config:
     # 文本基线的像素级微调（±1px）：渲染一遍 → 与截图逐元素比 → 只接受明确变好的
     # 1px 位移并重渲染（见 services/rendering/text_align.py）；置 0 关闭。
     text_align: bool = field(default_factory=lambda: os.getenv("TEXT_ALIGN", "true").lower() in ("1", "true", "yes"))
-    dom_text_model_v2: bool = field(default_factory=lambda: os.getenv("DOM_TEXT_MODEL_V2", "false").lower() in ("1", "true", "yes"))
+    dom_text_model_v2: bool = field(default_factory=lambda: os.getenv("DOM_TEXT_MODEL_V2", "true").lower() in ("1", "true", "yes"))
     dom_network_asset_recovery: bool = field(default_factory=lambda: os.getenv("DOM_NETWORK_ASSET_RECOVERY", "false").lower() in ("1", "true", "yes"))
     dom_route_quality_strict: bool = field(default_factory=lambda: os.getenv("DOM_ROUTE_QUALITY_STRICT", "false").lower() in ("1", "true", "yes"))
 
