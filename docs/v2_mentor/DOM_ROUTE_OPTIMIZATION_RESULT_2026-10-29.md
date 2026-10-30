@@ -102,6 +102,34 @@ Aggregate result:
 IT之家 has an image-coverage warning. 国家数据 has SPA path and image-coverage
 warnings. No route-quality failure was hidden by the aggregate report.
 
+## Legacy vs P1 A/B
+
+The national-data page was rendered from the same capture in two distinct Figma frames:
+legacy P1 flags off and current P1 flags on.
+
+| Metric | Legacy | P1 | P1 - Legacy |
+|---|---:|---:|---:|
+| bad-pixel ratio | 0.2354 | 0.2841 | +0.0487 |
+| mean pixel delta | 30.062 | 27.346 | -2.715 |
+| blank-area ratio | 0.6216 | 0.4227 | -0.1989 |
+| Figma image fills | 8 | 10 | +2 |
+| text nodes | 14 | 14 | 0 |
+
+Both variants fail the absolute visual gate. P1 is not uniformly worse:
+
+- query-region score improved by `0.792`;
+- header score improved by `0.333`;
+- table score regressed by `0.456`;
+- content coverage increased substantially.
+
+The result means P1 is closer in mean color/content coverage but has more pixels over the
+bad-pixel threshold. It is not evidence for reverting P1 outright.
+
+Structured gradients are now mapped to native Figma `GRADIENT_LINEAR`/`GRADIENT_RADIAL`
+paints and covered by a bridge test. A fresh real-figma gradient A/B attempt was blocked by
+`PLUGIN_TIMEOUT` at `create_image` after the plugin reload, so that attempt is not counted as
+visual evidence.
+
 ## Unseen Holdouts
 
 The URLs were frozen before execution in
@@ -186,6 +214,11 @@ C:\Users\lzq\.conda\envs\omni\python.exe scripts/figma_replay.py `
   --design 12_design.json `
   --screen-name P1-IT-HOME `
   --readback-depth 4 `
+  --timeout 180
+
+C:\Users\lzq\.conda\envs\omni\python.exe scripts/dom_visual_ab.py `
+  --case "stats=D:/LLM-Data/Figma_auto_agent/output/_dom_visual_benchmark_20261029/stats" `
+  --out-dir output/_dom_visual_ab_gradient_20261030 `
   --timeout 180
 ```
 

@@ -189,9 +189,59 @@ function hexToRgb(hex) {
   };
 }
 
+function gradientStopsFrom(params) {
+  const source = Array.isArray(params.detailedStops)
+    ? params.detailedStops
+    : Array.isArray(params.stops)
+      ? params.stops.map((color, index, all) => ({
+        color,
+        offset: all.length <= 1 ? 0 : index / (all.length - 1),
+      }))
+      : [];
+  const stops = [];
+  for (const item of source) {
+    const color = hexToRgb(item && item.color);
+    if (!color) continue;
+    const rawPosition = Number(item.offset);
+    stops.push({
+      color: { ...color, a: 1 },
+      position: Math.max(0, Math.min(1, isFinite(rawPosition) ? rawPosition : 0)),
+    });
+  }
+  stops.sort((a, b) => a.position - b.position);
+  return stops;
+}
+
+function gradientTransformForAngle(value) {
+  const angle = Number(value);
+  const radians = (isFinite(angle) ? angle : 90) * Math.PI / 180;
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+  return [
+    [cos, -sin, 0.5 - 0.5 * cos + 0.5 * sin],
+    [sin, cos, 0.5 - 0.5 * sin - 0.5 * cos],
+  ];
+}
+
+function gradientPaint(params) {
+  if (!params || typeof params !== "object") return null;
+  const stops = gradientStopsFrom(params);
+  if (stops.length < 2) return null;
+  return {
+    type: String(params.type || "").toLowerCase() === "radial"
+      ? "GRADIENT_RADIAL"
+      : "GRADIENT_LINEAR",
+    gradientTransform: gradientTransformForAngle(params.angle),
+    gradientStops: stops,
+  };
+}
+
 function applyStyle(node, params) {
+  const gradient = gradientPaint(params.gradient);
   const fill = hexToRgb(params.fillColor);
-  if (fill) {
+  if (gradient) {
+    node.fills = [gradient];
+  } else if (fill) {
     node.fills = [{ type: "SOLID", color: fill }];
   } else if (params.fillColor) {
     node.fills = [];  // transparent / 非法值 -> 无填充（描边按钮、纯边框输入框）
