@@ -488,6 +488,9 @@ class FigmaBridgeAdapter(PrototypeAdapter):
             or client_config.auth_token
         )
         self.ws = None
+        self._semantic_rendered: dict[str, dict[str, Any]] = {}
+        self._semantic_componentization_attempted = False
+        self.semantic_componentization_result: dict[str, Any] | None = None
 
         try:
             import websocket
@@ -612,7 +615,71 @@ class FigmaBridgeAdapter(PrototypeAdapter):
         return data.get("result")
 
     def create_frame(self, spec: dict[str, Any]) -> str | None:
-        return self._send("create_frame", spec)
+        node_id = self._send("create_frame", spec)
+        self._record_semantic_node(node_id, spec, node_type="FRAME")
+        return node_id
+
+    def _record_semantic_node(
+        self,
+        node_id: Any,
+        spec: Mapping[str, Any],
+        *,
+        node_type: str,
+    ) -> None:
+        if not node_id:
+            return
+        group_id = str(spec.get("semanticGroupId") or "").strip()
+        role = str(spec.get("semanticRole") or "").strip()
+        signature = str(spec.get("semanticStructuralSignature") or "").strip()
+        member_count = spec.get("semanticMemberCount")
+        if not group_id or not role or not signature or not isinstance(member_count, int):
+            return
+        group = self._semantic_rendered.setdefault(
+            group_id,
+            {
+                "groupId": group_id,
+                "role": role,
+                "structuralSignature": signature,
+                "memberCount": member_count,
+                "members": {},
+            },
+        )
+        group["memberCount"] = max(int(group["memberCount"]), member_count)
+        sources = [
+            int(value)
+            for value in spec.get("semanticSourceDomIndices") or []
+            if isinstance(value, int) and not isinstance(value, bool)
+        ]
+        key = str(tuple(sources)) if sources else str(node_id)
+        group["members"].setdefault(
+            key,
+            {
+                "nodeId": str(node_id),
+                "sourceDomIndices": sources,
+                "nodeType": node_type,
+            },
+        )
+
+    def _semantic_groups_for_componentization(self) -> list[dict[str, Any]]:
+        groups = []
+        for group in sorted(
+            self._semantic_rendered.values(),
+            key=lambda item: str(item.get("groupId") or ""),
+        ):
+            members = list(group["members"].values())
+            if len(members) < 2 or len(members) != int(group["memberCount"]):
+                continue
+            if any(member["nodeType"] not in {"FRAME", "GROUP"} for member in members):
+                continue
+            groups.append(
+                {
+                    "groupId": group["groupId"],
+                    "role": group["role"],
+                    "structuralSignature": group["structuralSignature"],
+                    "members": members,
+                }
+            )
+        return groups
 
     def componentize_semantic_groups(
         self,
@@ -815,19 +882,25 @@ class FigmaBridgeAdapter(PrototypeAdapter):
         self, spec: dict[str, Any], parent_id: str | None = None
     ) -> str | None:
         params = _with_parent(spec, parent_id)
-        return self._send("create_rectangle", params)
+        node_id = self._send("create_rectangle", params)
+        self._record_semantic_node(node_id, params, node_type="RECTANGLE")
+        return node_id
 
     def create_ellipse(
         self, spec: dict[str, Any], parent_id: str | None = None
     ) -> str | None:
         params = _with_parent(spec, parent_id)
-        return self._send("create_ellipse", params)
+        node_id = self._send("create_ellipse", params)
+        self._record_semantic_node(node_id, params, node_type="ELLIPSE")
+        return node_id
 
     def create_text(
         self, spec: dict[str, Any], parent_id: str | None = None
     ) -> str | None:
         params = _with_parent(spec, parent_id)
-        return self._send("create_text", params)
+        node_id = self._send("create_text", params)
+        self._record_semantic_node(node_id, params, node_type="TEXT")
+        return node_id
 
     def resolve_font(
         self,
@@ -901,7 +974,9 @@ class FigmaBridgeAdapter(PrototypeAdapter):
         self, spec: dict[str, Any], parent_id: str | None = None
     ) -> str | None:
         params = _with_parent(spec, parent_id)
-        return self._send("create_image", params)
+        node_id = self._send("create_image", params)
+        self._record_semantic_node(node_id, params, node_type="RECTANGLE")
+        return node_id
 
     def set_text(self, node_id: str, text: str) -> dict[str, Any]:
         """Replace native text characters on one explicit node."""
@@ -1013,6 +1088,19 @@ class FigmaBridgeAdapter(PrototypeAdapter):
         return result
 
     def flush(self) -> None:
+        if (
+            Config().dom_semantic_component_instances
+            and not self._semantic_componentization_attempted
+        ):
+            self._semantic_componentization_attempted = True
+            groups = self._semantic_groups_for_componentization()
+            if groups:
+                try:
+                    self.semantic_componentization_result = (
+                        self.componentize_semantic_groups(groups)
+                    )
+                except Exception as exc:  # noqa: BLE001 - original render stays authoritative
+                    logger.warning("semantic componentization failed safely: %s", exc)
         self.disconnect()
 
 

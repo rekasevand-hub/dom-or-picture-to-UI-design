@@ -160,5 +160,8 @@ def apply_semantic_groups(
         ).strip()
         if structural_signature:
             element["semanticStructuralSignature"] = structural_signature
+        member_count = component.get("memberCount")
+        if isinstance(member_count, int) and member_count > 0:
+            element["semanticMemberCount"] = member_count
         element["name"] = _semantic_name(role, component, element, counters)
     return result
