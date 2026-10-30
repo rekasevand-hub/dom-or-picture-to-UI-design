@@ -456,15 +456,16 @@ def classify_semantic_components(
 
     list_indices: set[int] = set()
     for index, node in enumerate(nodes):
-        navigation = _navigation_evidence(index, nodes, children)
-        if navigation is not None:
-            evidence, confidence = navigation
-            put(index, "navigation", confidence, evidence, 8)
         list_evidence = _list_evidence(index, nodes, parents, children)
         if list_evidence is not None:
             evidence, confidence = list_evidence
             put(index, "list", confidence, evidence, 8)
             list_indices.add(index)
+            continue
+        navigation = _navigation_evidence(index, nodes, children)
+        if navigation is not None:
+            evidence, confidence = navigation
+            put(index, "navigation", confidence, evidence, 8)
     for index, node in enumerate(nodes):
         if _is_table_context(index, nodes, parents):
             continue
