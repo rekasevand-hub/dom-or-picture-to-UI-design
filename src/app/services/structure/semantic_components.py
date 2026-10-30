@@ -32,6 +32,15 @@ _CONTROL_LIST_TOKENS = {
     "select",
     "topline",
 }
+_NAVIGATION_RISK_MARKERS = (
+    "title",
+    "share",
+    "ranking",
+    "info-text",
+    "sites",
+    "footer",
+    "copyright",
+)
 
 
 def _int(value: Any, default: int = 0) -> int:
@@ -177,7 +186,7 @@ def _has_visual_asset(
         node = nodes[current]
         width = _int(node.get("w"))
         height = _int(node.get("h"))
-        substantial = width >= 48 and height >= 32
+        substantial = width >= 96 and height >= 32
         if not substantial:
             continue
         if _tag(node) in _VISUAL_TAGS or bool(node.get("assetSrc")):
@@ -311,6 +320,14 @@ def _navigation_evidence(
             evidence.append({"kind": "horizontal-line", "value": True, "weight": 0.5})
         return evidence, 0.98, explicit
     if len(links) < 3:
+        return None
+    if _int(node.get("h")) > 160:
+        return None
+    identity = (
+        f"{node.get('id') or ''} {node.get('clsAll') or ''} "
+        f"{node.get('name') or ''}"
+    ).lower()
+    if any(marker in identity for marker in _NAVIGATION_RISK_MARKERS):
         return None
     button_like = sum(bool(_button_evidence(link, nodes)) for link in links)
     if button_like * 2 >= len(links):
@@ -543,6 +560,21 @@ def classify_semantic_components(
                 if related_explicit:
                     continue
             put(index, "navigation", confidence, evidence, 8)
+
+    inferred_navigation = {
+        index
+        for index, candidate in candidates.items()
+        if candidate[2] == "navigation"
+        and index not in explicit_navigation_indices
+    }
+    for index in sorted(inferred_navigation):
+        if any(
+            descendant in candidates
+            and candidates[descendant][2] == "navigation"
+            for descendant in _descendants(index, children)
+        ):
+            candidates.pop(index, None)
+
     for index, node in enumerate(nodes):
         if _is_table_context(index, nodes, parents):
             continue

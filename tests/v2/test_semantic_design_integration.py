@@ -186,7 +186,7 @@ def test_semantic_groups_preserve_geometry_style_and_paint_order() -> None:
     assert by_id["card"]["semanticGroupId"] == "card-set-0"
 
 
-def test_semantic_fields_are_disabled_by_default_and_read_only_when_enabled(
+def test_semantic_fields_are_enabled_by_default_and_can_be_disabled(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -242,13 +242,6 @@ def test_semantic_fields_are_disabled_by_default_and_read_only_when_enabled(
         },
     }
     semantic_path = tmp_path / "20_semantic_components.json"
-    semantic_path.write_text("{invalid", encoding="utf-8")
-    monkeypatch.delenv("DOM_SEMANTIC_COMPONENTS", raising=False)
-
-    assert Config().dom_semantic_components is False
-    baseline = build_direct_design(som, dom_nodes=dom_nodes)
-    assert all("semanticRole" not in item for item in baseline["elements"])
-
     semantic_path.write_text(
         json.dumps(
             {
@@ -258,11 +251,17 @@ def test_semantic_fields_are_disabled_by_default_and_read_only_when_enabled(
         ),
         encoding="utf-8",
     )
-    monkeypatch.setenv("DOM_SEMANTIC_COMPONENTS", "true")
+    monkeypatch.setenv("DOM_SEMANTIC_COMPONENTS", "false")
+
+    disabled = build_direct_design(som, dom_nodes=dom_nodes)
+    assert all("semanticRole" not in item for item in disabled["elements"])
+
+    monkeypatch.delenv("DOM_SEMANTIC_COMPONENTS", raising=False)
+    assert Config().dom_semantic_components is True
     semantic = build_direct_design(som, dom_nodes=dom_nodes)
 
-    assert _geometry_hash(semantic) == _geometry_hash(baseline)
-    assert _style_hash(semantic) == _style_hash(baseline)
+    assert _geometry_hash(semantic) == _geometry_hash(disabled)
+    assert _style_hash(semantic) == _style_hash(disabled)
     button = next(item for item in semantic["elements"] if item.get("domIndex") == 1)
     assert button["semanticRole"] == "button"
 

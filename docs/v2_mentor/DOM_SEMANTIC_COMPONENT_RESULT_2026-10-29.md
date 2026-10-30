@@ -16,9 +16,9 @@ The semantic metadata layer does not change visual geometry. Across all six page
 geometry, style, element count, and paint order were identical before and after applying
 semantic groups.
 
-The layer is not enabled by default. The benchmark found residual navigation-specificity
-and small-card review candidates, and no real regression page produced a proven repeated
-component group suitable for instance generation.
+The tightened semantic metadata layer is enabled by default after all six benchmark pages
+passed. Component instance generation remains opt-in because only one real repeated group
+met the strict structural-signature requirements.
 
 ## Four Regression Pages
 
@@ -27,19 +27,14 @@ same frozen DOM captures.
 
 | Page | Navigation | List | Card | Button | Link | Review candidates | Geometry | Visual |
 |---|---:|---:|---:|---:|---:|---:|---|---|
-| IT之家 | 8 | 5 | 0 | 7 | 23 | 2 | invariant | pass |
-| 21ic | 9 | 37 | 16 | 33 | 232 | 20 | invariant | pass |
+| IT之家 | 6 | 5 | 0 | 7 | 27 | 0 | invariant | pass |
+| 21ic | 2 | 37 | 4 | 33 | 261 | 0 | invariant | pass |
 | 国家数据 | 1 | 2 | 0 | 18 | 16 | 0 | invariant | pass |
-| 小米 | 6 | 0 | 0 | 2 | 33 | 3 | invariant | pass |
+| 小米 | 3 | 0 | 0 | 2 | 51 | 0 | invariant | pass |
 
-Review candidates are review signals, not a single aggregate score:
-
-- 21ic: 16 small visual list items were classified as cards; four inferred navigation
-  containers looked like section-title or ranking controls.
-- IT之家: two inferred navigation containers were share-button groups.
-- 小米: three inferred navigation containers were footer/information link groups.
-- 国家数据: no table/card confusion, duplicate semantic bounds, or unstyled-link button
-  candidates remained after regression fixes.
+The tightened rules remove the previously observed share/ranking/title navigation groups
+and the small-avatar card rows. No deterministic false-positive candidates remain on the
+four regression pages.
 
 ## Holdouts
 
@@ -48,13 +43,12 @@ visual-passing Figma readbacks.
 
 | Page | Navigation | List | Card | Button | Link | Review candidates | Geometry | Visual |
 |---|---:|---:|---:|---:|---:|---:|---|---|
-| Rust | 3 | 3 | 0 | 10 | 1 | 1 | invariant | pass |
+| Rust | 2 | 3 | 0 | 10 | 1 | 0 | invariant | pass |
 | PostgreSQL | 1 | 20 | 0 | 20 | 26 | 0 | invariant | pass |
 
-The Rust review candidate is a large inferred navigation region. PostgreSQL had no
-deterministic semantic false-positive signal. Wikipedia remains excluded because its
-frozen network capture still times out; semantic success is not claimed for a page that
-did not pass capture.
+Neither holdout has a deterministic semantic false-positive signal. Wikipedia remains
+excluded because its frozen network capture still times out; semantic success is not
+claimed for a page that did not pass capture.
 
 ## False-Positive Review
 
@@ -73,8 +67,8 @@ After tightening the classifier:
 - table-derived navigation/card candidates: `0`;
 - unstyled-link button candidates: `0`;
 - duplicate semantic bounds: `0`;
-- small visual card review candidates: `16`, all on 21ic;
-- navigation-specificity/large-region review candidates: `10`.
+- small visual card review candidates: `0`;
+- navigation-specificity/large-region review candidates: `0`.
 
 The same fixture negative cases cover inconsistent spacing, mixed positioning modes,
 two generic siblings, table cells, navigation-list items, CTA rows, and wrappers around
@@ -82,7 +76,7 @@ explicit navigation.
 
 ## Componentization
 
-`DOM_SEMANTIC_COMPONENTS=false` and `DOM_SEMANTIC_COMPONENT_INSTANCES=false`.
+`DOM_SEMANTIC_COMPONENTS=true` and `DOM_SEMANTIC_COMPONENT_INSTANCES=false`.
 
 Fixture tests verify:
 
@@ -92,9 +86,10 @@ Fixture tests verify:
 - missing nodes return a typed rejection;
 - an instance/member failure rolls back the group and leaves all source nodes visible.
 
-The six real-page captures produced no list/card/button group that met the strict repeated
-geometry and structural-signature requirements. Blocking instance generation is therefore
-the correct production decision until real-page grouping is demonstrated.
+The six real-page captures produced one PostgreSQL button group that met the strict
+repeated geometry and structural-signature requirements. One page is not enough breadth to
+enable instance generation by default, so it remains blocked until more real pages produce
+proven groups.
 
 ## Reproduction
 
@@ -119,12 +114,12 @@ C:\Users\lzq\.conda\envs\omni\python.exe scripts/dom_semantic_benchmark.py `
 
 ## Decision
 
-- DOM-only semantic classifier: adopted behind `DOM_SEMANTIC_COMPONENTS=false`
+- DOM-only semantic classifier: adopted; `DOM_SEMANTIC_COMPONENTS=true`
 - Repeated list/card patterns: rejected for default use; retained experimental
-- Detector merge: adopted behind the disabled semantic flag; DOM authority tests pass
-- Figma component instances: rejected for now; no real proven repeated groups
-- Default behavior changed: no
-- False-positive risks: inferred navigation can absorb share, ranking, footer, title, or
-  information link groups; small avatar rows can be classified as cards; real pages did
-  not yet demonstrate stable repeated component families
+- Detector merge: adopted; DOM authority tests pass
+- Figma component instances: rejected for now; only one real PostgreSQL group is proven
+- Default behavior changed: yes for semantic names and plugin metadata; visual geometry
+  is unchanged
+- False-positive risks: repeated-pattern support is thin outside PostgreSQL; navigation
+  inference still requires continued regression as new page layouts appear
 - Reproduction commands: listed above

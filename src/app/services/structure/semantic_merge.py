@@ -98,6 +98,22 @@ def _title_evidence(candidate: Mapping[str, Any]) -> list[dict[str, Any]]:
     return [{"kind": "detector-title", "value": title, "weight": 0.2}]
 
 
+def build_semantic_components(
+    dom_nodes: Sequence[Mapping[str, Any]],
+    external_candidates: Sequence[Mapping[str, Any]] = (),
+) -> dict[str, Any]:
+    from src.app.services.structure.component_patterns import (
+        infer_component_patterns,
+    )
+    from src.app.services.structure.semantic_components import (
+        classify_semantic_components,
+    )
+
+    semantic = classify_semantic_components(dom_nodes)
+    patterns = infer_component_patterns(dom_nodes, semantic)
+    return merge_semantic_candidates(patterns, external_candidates)
+
+
 def merge_semantic_candidates(
     dom_semantics: Mapping[str, Any],
     external_candidates: Sequence[Mapping[str, Any]],
@@ -237,6 +253,10 @@ def merge_semantic_candidates(
     return {
         "schema_version": SEMANTIC_MERGE_SCHEMA_VERSION,
         "components": merged_components,
+        "groups": copy.deepcopy(dict(dom_semantics.get("groups") or {})),
+        "componentSignatures": copy.deepcopy(
+            dict(dom_semantics.get("componentSignatures") or {})
+        ),
         "detectorOnly": detector_only,
         "merged": merged,
         "reviewRequired": review_required,

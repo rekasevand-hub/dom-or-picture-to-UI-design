@@ -45,12 +45,12 @@ def _image_element(source_url: str, *, verified: bool = False) -> dict:
     }
 
 
-def _prepare_bundle(root: Path) -> None:
+def _prepare_bundle(root: Path, dom_nodes: list[dict] | None = None) -> None:
     screenshot = root / "00_screenshot.png"
     dom = root / "00_dom.json"
     page_state = root / "00_page_state.json"
     Image.new("RGB", (320, 180), "white").save(screenshot)
-    dom.write_text("[]", encoding="utf-8")
+    dom.write_text(json.dumps(dom_nodes or []), encoding="utf-8")
     state = {
         "final_url": "https://example.test/",
         "kind": "content",
@@ -76,10 +76,36 @@ def _run_design(
     root: Path,
     *,
     recovery_enabled: bool,
+    semantic_components: bool = False,
     strict_route_quality: bool = False,
     regional_redirect: bool = False,
 ):
-    _prepare_bundle(root)
+    semantic_dom = None
+    if semantic_components:
+        semantic_dom = [
+            {"tag": "div", "x": 0, "y": 0, "w": 320, "h": 80},
+            {
+                "tag": "button",
+                "x": 20,
+                "y": 20,
+                "w": 100,
+                "h": 40,
+                "pIdx": 0,
+                "text": "Save",
+                "interactive": True,
+            },
+            {
+                "tag": "button",
+                "x": 140,
+                "y": 20,
+                "w": 100,
+                "h": 40,
+                "pIdx": 0,
+                "text": "Cancel",
+                "interactive": True,
+            },
+        ]
+    _prepare_bundle(root, semantic_dom)
     if regional_redirect:
         bundle_path = root / "00_capture_bundle.json"
         bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
@@ -124,6 +150,7 @@ def _run_design(
         playwright_viewport_height=180,
         vision_api_key=None,
         delivery_profile="legacy",
+        dom_semantic_components=semantic_components,
         dom_network_asset_recovery=recovery_enabled,
         dom_route_quality_strict=strict_route_quality,
     )
@@ -209,3 +236,17 @@ def test_strict_route_quality_fails_before_rendering(tmp_path):
             strict_route_quality=True,
             regional_redirect=True,
         )
+
+
+def test_normal_dom_flow_persists_semantic_components(tmp_path):
+    _run_design(
+        tmp_path,
+        recovery_enabled=False,
+        semantic_components=True,
+    )
+
+    payload = json.loads(
+        (tmp_path / "20_semantic_components.json").read_text(encoding="utf-8")
+    )
+    assert payload["components"]
+    assert "button-set-0" in payload["groups"]

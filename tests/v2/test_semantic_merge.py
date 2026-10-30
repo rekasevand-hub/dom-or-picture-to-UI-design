@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 from src.app.services.structure.semantic_merge import (
+    build_semantic_components,
     merge_semantic_candidates,
     persist_semantic_components,
 )
@@ -169,3 +170,56 @@ def test_persists_deterministic_semantic_merge_artifact(tmp_path) -> None:
     assert payload["merged"]
     assert payload["roleCounts"]
     assert payload["authorityCounts"]
+
+
+def test_merge_preserves_pattern_groups_and_component_signatures() -> None:
+    dom = _semantic(_dom_component("button", [10, 10, 100, 40]))
+    dom["groups"] = {
+        "button-set-0": {
+            "id": "button-set-0",
+            "role": "button",
+            "members": [4, 5],
+            "structuralSignature": "visual:0|text:1|interactive:0",
+        }
+    }
+    dom["componentSignatures"] = {
+        "button-set-0": "tag:button|role:button|visual:0|text:1|interactive:0"
+    }
+
+    result = merge_semantic_candidates(dom, [])
+
+    assert result["groups"] == dom["groups"]
+    assert result["componentSignatures"] == dom["componentSignatures"]
+
+
+def test_semantic_pipeline_builds_component_artifact_from_dom(tmp_path) -> None:
+    nodes = [
+        {"tag": "div", "x": 0, "y": 0, "w": 320, "h": 80},
+        {
+            "tag": "button",
+            "x": 20,
+            "y": 20,
+            "w": 100,
+            "h": 40,
+            "pIdx": 0,
+            "text": "Save",
+            "interactive": True,
+        },
+        {
+            "tag": "button",
+            "x": 140,
+            "y": 20,
+            "w": 100,
+            "h": 40,
+            "pIdx": 0,
+            "text": "Cancel",
+            "interactive": True,
+        },
+    ]
+
+    result = build_semantic_components(nodes)
+    path = persist_semantic_components(tmp_path, result)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+
+    assert "button-set-0" in payload["groups"]
+    assert payload["componentSignatures"]

@@ -119,6 +119,20 @@ def test_table_links_and_icon_list_items_do_not_become_navigation_or_cards() -> 
     assert roles["card"] == 0
 
 
+def test_small_avatar_list_item_is_not_promoted_to_card() -> None:
+    nodes = [
+        _node("ul", 0, y=100, w=600, h=120),
+        _node("li", 1, parent=0, y=100, w=600, h=40),
+        _node("img", 2, parent=1, x=10, y=104, w=48, h=48),
+        _node("span", 3, parent=1, x=80, y=112, w=120, h=20, text="Person name"),
+    ]
+
+    result = classify_semantic_components(nodes)
+    roles = Counter(item["role"] for item in result["components"])
+
+    assert roles["card"] == 0
+
+
 def test_button_link_row_is_not_inferred_as_navigation() -> None:
     nodes = [_node("div", 0, w=700, h=60)]
     for index in range(1, 4):
@@ -157,6 +171,75 @@ def test_wrapper_around_explicit_nav_does_not_add_duplicate_navigation() -> None
                 w=140,
                 h=24,
                 text=f"Nav {index}",
+            )
+        )
+
+    result = classify_semantic_components(nodes)
+
+    assert sum(item["role"] == "navigation" for item in result["components"]) == 1
+
+
+def test_local_title_share_and_ranking_link_rows_are_not_navigation() -> None:
+    for marker in ("title1", "shareto", "ranking_hd"):
+        with_subtest = [
+            _node("div", 0, w=800, h=60, clsAll=marker)
+        ]
+        for index in range(1, 4):
+            with_subtest.append(
+                _node(
+                    "a",
+                    index,
+                    parent=0,
+                    x=(index - 1) * 180,
+                    y=10,
+                    w=160,
+                    h=24,
+                    text=f"Link {index}",
+                )
+            )
+        result = classify_semantic_components(with_subtest)
+        assert not any(
+            item["role"] == "navigation" for item in result["components"]
+        ), marker
+
+
+def test_large_inferred_navigation_region_is_not_promoted() -> None:
+    nodes = [_node("div", 0, w=1200, h=360)]
+    for index in range(1, 4):
+        nodes.append(
+            _node(
+                "a",
+                index,
+                parent=0,
+                x=40 + (index - 1) * 240,
+                y=40,
+                w=200,
+                h=24,
+                text=f"Content link {index}",
+            )
+        )
+
+    result = classify_semantic_components(nodes)
+
+    assert not any(item["role"] == "navigation" for item in result["components"])
+
+
+def test_nested_inferred_navigation_keeps_only_the_inner_structure() -> None:
+    nodes = [
+        _node("div", 0, w=800, h=60),
+        _node("div", 1, parent=0, w=760, h=44),
+    ]
+    for index in range(2, 5):
+        nodes.append(
+            _node(
+                "a",
+                index,
+                parent=1,
+                x=20 + (index - 2) * 180,
+                y=10,
+                w=160,
+                h=24,
+                text=f"Link {index}",
             )
         )
 

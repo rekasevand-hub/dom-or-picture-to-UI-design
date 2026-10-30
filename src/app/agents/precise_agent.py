@@ -829,6 +829,21 @@ class PreciseAgent:
                 dom_nodes = json.loads(dom_path.read_text(encoding="utf-8"))
             except (OSError, ValueError):  # noqa: PERF203 - 坏文件不影响出稿
                 dom_nodes = None
+        if (
+            route == "dom"
+            and dom_nodes
+            and bool(getattr(cfg, "dom_semantic_components", False))
+        ):
+            from src.app.services.structure.semantic_merge import (
+                build_semantic_components,
+                persist_semantic_components,
+            )
+
+            try:
+                semantic_components = build_semantic_components(dom_nodes)
+                persist_semantic_components(out, semantic_components)
+            except Exception as exc:  # noqa: BLE001 - semantics are optional metadata
+                logger.warning("DOM semantic component generation failed: %s", exc)
         image_ir = None
         if image_contract is not None:
             from src.app.services.structure.image_contract import (

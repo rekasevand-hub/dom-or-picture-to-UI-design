@@ -381,6 +381,7 @@ def _analyze_case(name: str, bundle_dir: Path, readback_path: Path) -> dict[str,
     false_positives = _false_positive_candidates(dom_nodes, components)
     readback = _load_json(readback_path)
     visual = _visual_result(readback, name)
+    config = Config()
     groups = semantic_result.get("groups") if isinstance(semantic_result, Mapping) else {}
     if not isinstance(groups, Mapping):
         groups = {}
@@ -389,12 +390,15 @@ def _analyze_case(name: str, bundle_dir: Path, readback_path: Path) -> dict[str,
             "groupId": group_id,
             "role": group.get("role"),
             "memberCount": len(group.get("members") or []),
-            "reason": "feature-disabled",
+            "reason": (
+                "component-instances-disabled"
+                if not config.dom_semantic_component_instances
+                else "not-run"
+            ),
         }
         for group_id, group in sorted(groups.items())
         if isinstance(group, Mapping)
     ]
-    config = Config()
     feature_flags = {
         "domSemanticComponents": config.dom_semantic_components,
         "domSemanticComponentInstances": config.dom_semantic_component_instances,
