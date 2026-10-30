@@ -73,3 +73,4 @@ def test_route_benchmark_preserves_failures_and_determinism():
     assert report["aggregate"]["figma_fill_count"] == 3
     assert report["browser_used"] is False
     assert report["network_used"] is False
+    assert module._image_fill_count({"fillCount": 3}) == 3

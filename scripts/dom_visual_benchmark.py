@@ -95,7 +95,13 @@ def _parse_case(value: str) -> tuple[str, Path, Path]:
 
 
 def _first_png(directory: Path) -> Path | None:
-    for name in ("render.png", "screenshot.png", "frame.png", "export.png"):
+    for name in (
+        "figma_render.png",
+        "render.png",
+        "screenshot.png",
+        "frame.png",
+        "export.png",
+    ):
         path = directory / name
         if path.is_file():
             return path
@@ -125,8 +131,21 @@ def _evaluate_case(
         and str(element.get("type") or "").lower() == "text"
         and str(element.get("text") or "").strip()
     )
-    readback_path = export_dir / "figma_readback.json"
+    readback_candidates = (
+        export_dir / "figma_readback.json",
+        export_dir / "readback_tree.json",
+    )
+    readback_path = next(
+        (path for path in readback_candidates if path.is_file()),
+        readback_candidates[0],
+    )
     readback = _load_json(readback_path, {})
+    image_report_path = export_dir / "image_report.json"
+    if image_report_path.is_file():
+        readback = {
+            **readback,
+            "imageFillReport": _load_json(image_report_path, {}),
+        }
     reference = bundle_dir / "00_screenshot.png"
     rendered = _first_png(export_dir)
     visual: dict[str, Any]
@@ -135,7 +154,10 @@ def _evaluate_case(
             reference,
             rendered,
             design,
-            {**readback, "imageFillReport": readback.get("imageFillReport") or {"total": 0}},
+            {
+                **readback,
+                "imageFillReport": readback.get("imageFillReport") or {"total": 0},
+            },
         )
     else:
         visual = {

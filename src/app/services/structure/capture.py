@@ -2047,10 +2047,13 @@ def _capture_session(
                     logger.info("[%s] 第 %d 遍：节点数 %d", label, attempt + 1, count)
                     if count >= best:
                         best = count
-                        page.add_style_tag(
-                            content="*,*::before,*::after"
-                            "{transition:none!important;animation:none!important}"
-                        )
+                        try:
+                            page.add_style_tag(
+                                content="*,*::before,*::after"
+                                "{transition:none!important;animation:none!important}"
+                            )
+                        except Exception as exc:  # noqa: BLE001 - CSP may block it
+                            logger.debug("[%s] 动画禁用样式被 CSP 阻止：%s", label, exc)
                         page.wait_for_timeout(tuning.RESTYLE_SETTLE_MS)
                         font_state = _wait_document_fonts(page)
                         capture_stability = _wait_capture_state(page)

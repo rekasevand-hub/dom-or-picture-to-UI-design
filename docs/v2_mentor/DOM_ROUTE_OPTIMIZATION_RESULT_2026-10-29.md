@@ -3,18 +3,18 @@
 ## Verdict
 
 The P0 capture/replay infrastructure and P1 visual-fidelity mechanisms are implemented and
-covered by focused tests. They are not adopted as default behavior. The four regression
-captures replay deterministically, but all four real Figma attempts were blocked by
-`PLUGIN_DISCONNECTED: Figma plugin is not connected`.
+covered by focused tests. The four regression captures replay deterministically and now have
+real Figma export/readback evidence. IT之家, 21ic, and 小米 pass the visual gate; 国家数据
+fails `visual_diff` with a 28.41% bad-pixel ratio.
 
-The Rust holdout produced a valid capture and deterministic replay. The Wikipedia holdout
-failed capture with `chrome-error://chromewebdata/` and remained a frozen failure rather than
-being replaced.
+Two valid unseen holdouts, Rust and PostgreSQL, pass the real Figma visual gate. The frozen
+Wikipedia holdout still fails capture with `net::ERR_CONNECTION_TIMED_OUT`; it remains a
+preserved failure rather than being replaced.
 
 Therefore:
 
 - mechanism-level implementation: verified;
-- four-page Figma image-fill/readback gate: not evaluated;
+- four-page Figma image-fill/readback gate: evaluated, 3 pass / 1 fail;
 - default-enable decision: not passed;
 - P1 flags remain disabled by default.
 
@@ -46,6 +46,7 @@ Therefore:
 | P1 SVG policy, asset metadata, capture, Figma acceptance | 51 passed |
 | P1 visual quality, benchmark, canonical fidelity, adapter edits | 50 passed |
 | Relative capture-path regression | 9 passed |
+| CSP style-injection accessibility and capture regression | 13 passed |
 
 All listed commands used:
 
@@ -58,16 +59,16 @@ C:\Users\lzq\.conda\envs\omni\python.exe -m pytest ...
 Capture environment: viewport `1440x900`, DPR `1`, `requested_route=dom`,
 `effective_route=dom`, P1 flags enabled only for this benchmark.
 
-| Page | Capture | Replay twice | SVG bad-pixel ratio | Text nodes | Figma |
-|---|---|---|---|---|---|
-| IT之家 | content, 428 DOM nodes | identical hashes | 0.0231 | 54 | `PLUGIN_DISCONNECTED` |
-| 21ic | content, 2757 DOM nodes | identical hashes | 0.0668 | 160 | `PLUGIN_DISCONNECTED` |
-| 国家数据 | content, SPA hash route, 941 DOM nodes | identical hashes | 0.1939 | 14 | `PLUGIN_DISCONNECTED` |
-| 小米 | content, 1056 DOM nodes | identical hashes | 0.0037 | 32 | `PLUGIN_DISCONNECTED` |
+| Page | Capture | Replay twice | Figma bad-pixel ratio | Text nodes | Figma fills | Visual |
+|---|---|---|---|---|---|---|
+| IT之家 | content, 428 DOM nodes | identical hashes | 0.0374 | 54 | 15 | pass |
+| 21ic | content, 2757 DOM nodes | identical hashes | 0.0672 | 160 | 204 | pass |
+| 国家数据 | content, SPA hash route, 941 DOM nodes | identical hashes | 0.2841 | 14 | 10 | fail |
+| 小米 | content, 1056 DOM nodes | identical hashes | 0.0047 | 32 | 25 | pass |
 
-The aggregate report has `fail_case_count=4`. Every page fails the `image_fill` dimension
-because no Figma readback exists. The SVG `visual_diff` warning on 国家数据 is retained and
-does not offset that failure.
+The aggregate visual report has `pass_case_count=3`, `fail_case_count=1`, and
+`warning_counts={}`. Every page reached a nonzero Figma image-fill rate. The 国家数据
+visual failure is retained and does not offset the three passing pages.
 
 Replay hashes:
 
@@ -85,10 +86,10 @@ content, image coverage, geometry, and clipping independently:
 
 | Page | Bundle SHA-256 | Route quality | DOM images | Design images | Figma fills | Text nodes |
 |---|---|---|---|---|---|---|
-| 21ic | `2164924de2d95fc202203e77e6b987209c93b3a4ffb46792bd644fd2812c3a70` | warn | 67 | 61 | 0 | 160 |
-| IT之家 | `0b5ce3abac9d5df4b158e5cfb894b6e53e5022626bf6f2557459b2e9028c62e1` | warn | 19 | 8 | 0 | 54 |
-| 国家数据 | `2d5c4bbc03ea04f9e8795d58b38ecfbc76e0ff3bd6a126c0d1b7c7f79b667490` | warn | 33 | 5 | 0 | 14 |
-| 小米 | `3bdc8ce6f5f4d4233ff659f538a573710c8d02ea973ad9938aaee35cd16dd055` | warn | 36 | 23 | 0 | 32 |
+| 21ic | `2164924de2d95fc202203e77e6b987209c93b3a4ffb46792bd644fd2812c3a70` | warn | 67 | 61 | 204 | 160 |
+| IT之家 | `0b5ce3abac9d5df4b158e5cfb894b6e53e5022626bf6f2557459b2e9028c62e1` | warn | 19 | 8 | 15 | 54 |
+| 国家数据 | `2d5c4bbc03ea04f9e8795d58b38ecfbc76e0ff3bd6a126c0d1b7c7f79b667490` | warn | 33 | 5 | 10 | 14 |
+| 小米 | `3bdc8ce6f5f4d4233ff659f538a573710c8d02ea973ad9938aaee35cd16dd055` | warn | 36 | 23 | 25 | 32 |
 
 Aggregate result:
 
@@ -96,7 +97,7 @@ Aggregate result:
 - deterministic replay pairs: 4/4
 - route-quality failures: 0
 - route-quality warnings: 4
-- Figma fills: 0, because no plugin readback was available
+- Figma fills: 254
 
 IT之家 has an image-coverage warning. 国家数据 has SPA path and image-coverage
 warnings. No route-quality failure was hidden by the aggregate report.
@@ -108,32 +109,43 @@ The URLs were frozen before execution in
 
 | Holdout | Result |
 |---|---|
-| `https://www.wikipedia.org/` | capture failed, `soft_block`, final URL `chrome-error://chromewebdata/` |
-| `https://www.rust-lang.org/` | captured 242 nodes, final URL `https://rust-lang.org/`, replay deterministic |
+| `https://www.wikipedia.org/` | retry failed with `net::ERR_CONNECTION_TIMED_OUT`; preserved failure |
+| `https://www.rust-lang.org/` | 242 nodes, deterministic replay, Figma visual pass |
+| `https://www.postgresql.org/` | 365 nodes, deterministic replay, Figma visual pass |
 
 Rust visual report:
 
-- `blank_area=pass`
-- `image_fill=fail`, rate `0.0`, because Figma readback is absent
-- `visual_diff=warn`, bad-pixel ratio `0.0737`
+- `blank_area=pass`, `image_fill=pass`, `visual_diff=pass`
+- image-fill rate `1.0`, fills `9`
+- bad-pixel ratio `0.0590`
 - `height=pass`, drift `0`
 - PageGraph `46ad0305...`
 - DesignSpec `2d979038...`
 
-The holdout requirement is therefore not passed: one page failed capture and real Figma
-readback was unavailable for the valid page.
+PostgreSQL visual report:
 
-## Figma Blocker
+- `blank_area=pass`, `image_fill=pass`, `visual_diff=pass`
+- image-fill rate `1.0`, fills `17`
+- bad-pixel ratio `0.0607`
+- height drift `0`
+- 67 text nodes
 
-The local bridge server was listening on `ws://localhost:8765`, but every Figma replay
-returned:
+The two valid unseen holdouts pass. The Wikipedia network failure remains recorded and was
+not replaced.
 
-```text
-FigmaBridgeError: Figma 插件返回错误:
-PLUGIN_DISCONNECTED: Figma plugin is not connected
-```
+## Figma Execution
 
-No partial frame from these failed attempts is counted as visual evidence.
+After the plugin was restarted, IT之家 initially exceeded the 30-second bridge response
+window and returned `PLUGIN_TIMEOUT`; that partial write was cleaned and not counted. The
+bridge was restarted with a 180-second runtime timeout, and the replay CLI now accepts an
+explicit `--timeout` argument.
+
+Final replay actions succeeded for all four regression pages, Rust, and PostgreSQL with
+`get_node_tree`, `image_fill_report`, and PNG export. The final route benchmark records
+254 Figma image fills.
+
+The 国家数据 Figma header/query area still differs visually from the source screenshot. This
+is the reason the default-enable decision remains rejected.
 
 ## Reproduction
 
@@ -150,6 +162,10 @@ C:\Users\lzq\.conda\envs\omni\python.exe -m pytest `
   tests/v2/test_dom_visual_quality.py `
   tests/v2/test_dom_visual_benchmark.py -v
 
+C:\Users\lzq\.conda\envs\omni\python.exe -m pytest `
+  tests/v2/test_capture_csp_accessibility.py `
+  tests/v2/test_capture_browser_engine.py -v
+
 C:\Users\lzq\.conda\envs\omni\python.exe scripts/replay_dom_capture.py `
   --bundle output/_dom_visual_benchmark_20261029/it-home-r2 `
   --output-dir output/_dom_visual_benchmark_20261029/replays/it-home
@@ -164,6 +180,13 @@ C:\Users\lzq\.conda\envs\omni\python.exe scripts/benchmark_dom_route.py `
   --case "国家数据=D:/LLM-Data/Figma_auto_agent/output/_dom_visual_benchmark_20261029/stats" `
   --case "小米=D:/LLM-Data/Figma_auto_agent/output/_dom_visual_benchmark_20261029/xiaomi" `
   --out output/_dom_visual_benchmark_20261029/dom-route-benchmark.json
+
+C:\Users\lzq\.conda\envs\omni\python.exe scripts/figma_replay.py `
+  --out output/_dom_visual_benchmark_20261029/it-home-r2 `
+  --design 12_design.json `
+  --screen-name P1-IT-HOME `
+  --readback-depth 4 `
+  --timeout 180
 ```
 
 ## Decision
@@ -175,5 +198,5 @@ C:\Users\lzq\.conda\envs\omni\python.exe scripts/benchmark_dom_route.py `
   `DOM_VISUAL_ASSETS_V2=false`
 - Route-quality gate: adopted in report-only mode; strict gate remains false
 - Default behavior changed: no
-- Remaining risks: Figma plugin disconnect, one failed unseen capture, no real image-fill readback, P1 visual metrics only partially evaluated
+- Remaining risks: 国家数据 header/background visual divergence, Wikipedia network failure, large pages need a 180-second bridge timeout, PingFang SC and MiSans Medium fallbacks remain visible in font reports
 - Reproduction commands: listed above

@@ -114,10 +114,16 @@ def _image_fill_count(readback: Any) -> int:
         return 0
     report = readback.get("imageFillReport")
     if isinstance(report, dict):
-        for key in ("total", "imageFillTotal", "image_fill_total", "count"):
+        for key in (
+            "fillCount",
+            "total",
+            "imageFillTotal",
+            "image_fill_total",
+            "count",
+        ):
             if isinstance(report.get(key), int):
                 return int(report[key])
-    for key in ("imageFillTotal", "image_fill_count", "count"):
+    for key in ("fillCount", "imageFillTotal", "image_fill_count", "count"):
         if isinstance(readback.get(key), int):
             return int(readback[key])
     return 0

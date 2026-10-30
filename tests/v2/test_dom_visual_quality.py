@@ -77,6 +77,23 @@ def test_expected_images_with_zero_readback_fills_fail(tmp_path):
     assert result["checks"]["image_fill"]["status"] == "fail"
 
 
+def test_figma_image_report_fill_count_is_counted(tmp_path):
+    reference = tmp_path / "reference.png"
+    rendered = tmp_path / "rendered.png"
+    _content_image(reference, (160, 120))
+    _content_image(rendered, (160, 120))
+
+    result = evaluate_dom_visual_quality(
+        reference,
+        rendered,
+        _design(image=True),
+        {"imageFillReport": {"fillCount": 1}},
+    )
+
+    assert result["checks"]["image_fill"]["observed"] == 1
+    assert result["checks"]["image_fill"]["status"] == "pass"
+
+
 def test_small_antialias_difference_passes_visual_diff(tmp_path):
     reference = tmp_path / "reference.png"
     rendered = tmp_path / "rendered.png"

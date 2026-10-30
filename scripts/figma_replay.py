@@ -289,6 +289,12 @@ def main() -> int:
         help="首个画板名与清理前缀（默认 Screen）",
     )
     ap.add_argument(
+        "--timeout",
+        type=float,
+        default=None,
+        help="bridge plugin response timeout in seconds (default: bridge config)",
+    )
+    ap.add_argument(
         "--max-mean", type=float, default=None, help="整图均差阈值（默认不设）"
     )
     ap.add_argument(
@@ -323,6 +329,7 @@ def main() -> int:
     cfg = load_config()
     adapter = _ReplayAdapter(
         cfg.figma_bridge_url,
+        timeout=args.timeout,
         screen_name=args.screen_name,
     )
     try:

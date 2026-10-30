@@ -74,7 +74,13 @@ def _expected_image_count(design: Mapping[str, Any]) -> int:
 def _image_fill_count(readback: Mapping[str, Any]) -> int:
     report = readback.get("imageFillReport")
     if isinstance(report, Mapping):
-        for key in ("total", "imageFillTotal", "image_fill_total", "count"):
+        for key in (
+            "fillCount",
+            "total",
+            "imageFillTotal",
+            "image_fill_total",
+            "count",
+        ):
             value = report.get(key)
             if isinstance(value, int) and not isinstance(value, bool):
                 return max(0, value)
