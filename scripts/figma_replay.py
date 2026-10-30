@@ -62,7 +62,7 @@ class _ReplayAdapter(FigmaBridgeAdapter):
         return node_id
 
     def flush(self) -> None:  # 留连接给 export_frame
-        pass
+        self.finalize_semantic_componentization()
 
 
 def _screen_spec(

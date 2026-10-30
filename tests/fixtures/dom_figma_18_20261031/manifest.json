@@ -1,0 +1,117 @@
+{
+  "schema_version": "dom-figma-18-site-benchmark/1.0",
+  "frozen_at": "2026-10-31T00:00:00+08:00",
+  "viewport": [1440, 900],
+  "device_scale_factor": 1,
+  "target_figma_file": "Untitled",
+  "categories": [
+    {
+      "id": "documentation",
+      "label": "文档与开发者",
+      "samples": [
+        {
+          "id": "DOC-01",
+          "url": "https://react.dev/"
+        },
+        {
+          "id": "DOC-02",
+          "url": "https://www.rust-lang.org/"
+        },
+        {
+          "id": "DOC-03",
+          "url": "https://www.postgresql.org/"
+        }
+      ]
+    },
+    {
+      "id": "news",
+      "label": "新闻与内容",
+      "samples": [
+        {
+          "id": "NEWS-01",
+          "url": "https://www.ithome.com/0/823/017.htm"
+        },
+        {
+          "id": "NEWS-02",
+          "url": "https://news.sina.com.cn/"
+        },
+        {
+          "id": "NEWS-03",
+          "url": "https://www.163.com/news/"
+        }
+      ]
+    },
+    {
+      "id": "community",
+      "label": "社区与论坛",
+      "samples": [
+        {
+          "id": "COMM-01",
+          "url": "https://bbs.21ic.com/"
+        },
+        {
+          "id": "COMM-02",
+          "url": "https://news.ycombinator.com/"
+        },
+        {
+          "id": "COMM-03",
+          "url": "https://www.v2ex.com/"
+        }
+      ]
+    },
+    {
+      "id": "ecommerce",
+      "label": "电商与商品",
+      "samples": [
+        {
+          "id": "SHOP-01",
+          "url": "https://www.mi.com/"
+        },
+        {
+          "id": "SHOP-02",
+          "url": "https://www.jd.com/"
+        },
+        {
+          "id": "SHOP-03",
+          "url": "https://www.ikea.cn/cn/zh/"
+        }
+      ]
+    },
+    {
+      "id": "government-data",
+      "label": "政府与数据",
+      "samples": [
+        {
+          "id": "DATA-01",
+          "url": "https://data.stats.gov.cn/"
+        },
+        {
+          "id": "DATA-02",
+          "url": "https://www.stats.gov.cn/"
+        },
+        {
+          "id": "DATA-03",
+          "url": "https://www.data.gov/"
+        }
+      ]
+    },
+    {
+      "id": "saas-product",
+      "label": "SaaS 与产品官网",
+      "samples": [
+        {
+          "id": "SAAS-01",
+          "url": "https://linear.app/"
+        },
+        {
+          "id": "SAAS-02",
+          "url": "https://stripe.com/"
+        },
+        {
+          "id": "SAAS-03",
+          "url": "https://www.notion.com/"
+        }
+      ]
+    }
+  ]
+}

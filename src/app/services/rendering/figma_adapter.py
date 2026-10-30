@@ -1087,7 +1087,7 @@ class FigmaBridgeAdapter(PrototypeAdapter):
         )
         return result
 
-    def flush(self) -> None:
+    def finalize_semantic_componentization(self) -> None:
         if (
             Config().dom_semantic_component_instances
             and not self._semantic_componentization_attempted
@@ -1101,6 +1101,9 @@ class FigmaBridgeAdapter(PrototypeAdapter):
                     )
                 except Exception as exc:  # noqa: BLE001 - original render stays authoritative
                     logger.warning("semantic componentization failed safely: %s", exc)
+
+    def flush(self) -> None:
+        self.finalize_semantic_componentization()
         self.disconnect()
 
 
