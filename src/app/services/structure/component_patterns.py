@@ -206,12 +206,13 @@ def _axis_and_gap(
 
     by_x = sorted(zip(members, boxes), key=lambda item: (item[1][0], item[0]))
     x_boxes = [item[1] for item in by_x]
-    same_row = (
-        max(box[1] for box in x_boxes) - min(box[1] for box in x_boxes) <= 2
-        and max(box[3] for box in x_boxes) - min(box[3] for box in x_boxes) <= 2
-        and max(box[2] for box in x_boxes) - min(box[2] for box in x_boxes) <= 2
+    row_overlap = all(
+        max(0, min(left[1] + left[3], right[1] + right[3]) - max(left[1], right[1]))
+        / max(1, min(left[3], right[3]))
+        >= 0.60
+        for left, right in zip(x_boxes, x_boxes[1:])
     )
-    if same_row:
+    if row_overlap:
         gaps = [
             right[0] - (left[0] + left[2])
             for left, right in zip(x_boxes, x_boxes[1:])
@@ -221,12 +222,13 @@ def _axis_and_gap(
 
     by_y = sorted(zip(members, boxes), key=lambda item: (item[1][1], item[0]))
     y_boxes = [item[1] for item in by_y]
-    same_column = (
-        max(box[0] for box in y_boxes) - min(box[0] for box in y_boxes) <= 2
-        and max(box[2] for box in y_boxes) - min(box[2] for box in y_boxes) <= 2
-        and max(box[3] for box in y_boxes) - min(box[3] for box in y_boxes) <= 2
+    column_overlap = all(
+        max(0, min(left[0] + left[2], right[0] + right[2]) - max(left[0], right[0]))
+        / max(1, min(left[2], right[2]))
+        >= 0.60
+        for left, right in zip(y_boxes, y_boxes[1:])
     )
-    if same_column:
+    if column_overlap:
         gaps = [
             lower[1] - (upper[1] + upper[3])
             for upper, lower in zip(y_boxes, y_boxes[1:])

@@ -17,8 +17,8 @@ geometry, style, element count, and paint order were identical before and after 
 semantic groups.
 
 The tightened semantic metadata layer is enabled by default after all six benchmark pages
-passed. Component instance generation remains opt-in because only one real repeated group
-met the strict structural-signature requirements.
+passed. Component instance generation remains opt-in because only two real repeated button
+groups met the strict geometry and structural-signature requirements.
 
 ## Four Regression Pages
 
@@ -86,10 +86,10 @@ Fixture tests verify:
 - missing nodes return a typed rejection;
 - an instance/member failure rolls back the group and leaves all source nodes visible.
 
-The six real-page captures produced one PostgreSQL button group that met the strict
-repeated geometry and structural-signature requirements. One page is not enough breadth to
-enable instance generation by default, so it remains blocked until more real pages produce
-proven groups.
+The six real-page captures produced one button group on 国家数据 and one on PostgreSQL
+that met the strict repeated geometry and structural-signature requirements. Two groups
+across two pages are not enough breadth to enable instance generation by default, so it
+remains blocked until more real pages and component roles produce proven groups.
 
 ## Reproduction
 
@@ -117,7 +117,7 @@ C:\Users\lzq\.conda\envs\omni\python.exe scripts/dom_semantic_benchmark.py `
 - DOM-only semantic classifier: adopted; `DOM_SEMANTIC_COMPONENTS=true`
 - Repeated list/card patterns: rejected for default use; retained experimental
 - Detector merge: adopted; DOM authority tests pass
-- Figma component instances: rejected for now; only one real PostgreSQL group is proven
+- Figma component instances: rejected for now; only two real button groups are proven
 - Default behavior changed: yes for semantic names and plugin metadata; visual geometry
   is unchanged
 - False-positive risks: repeated-pattern support is thin outside PostgreSQL; navigation

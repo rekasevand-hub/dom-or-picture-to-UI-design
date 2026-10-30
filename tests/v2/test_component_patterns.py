@@ -187,3 +187,49 @@ def test_duplicate_bounds_keep_the_strongest_explicit_semantic_evidence() -> Non
 
     assert len(patterns["components"]) == 1
     assert patterns["components"][0]["role"] == "button"
+
+
+def test_repeated_controls_allow_width_variation_with_cross_axis_overlap() -> None:
+    nodes = [
+        {"tag": "div", "x": 0, "y": 0, "w": 500, "h": 80},
+        {"tag": "button", "x": 0, "y": 20, "w": 100, "h": 40, "pIdx": 0, "text": "A"},
+        {"tag": "button", "x": 124, "y": 20, "w": 140, "h": 40, "pIdx": 0, "text": "B"},
+        {"tag": "button", "x": 288, "y": 20, "w": 110, "h": 40, "pIdx": 0, "text": "C"},
+    ]
+    semantic = {
+        "schema_version": "dom-semantic-components/1.0",
+        "components": [
+            {**_component("button", 1), "bbox": [0, 20, 100, 40]},
+            {**_component("button", 2), "bbox": [124, 20, 140, 40]},
+            {**_component("button", 3), "bbox": [288, 20, 110, 40]},
+        ],
+        "roleCounts": {"button": 3},
+        "unknownCount": 0,
+    }
+
+    patterns = infer_component_patterns(nodes, semantic)
+
+    assert len(patterns["groups"]["button-set-0"]["members"]) == 3
+
+
+def test_repeated_controls_reject_low_cross_axis_overlap() -> None:
+    nodes = [
+        {"tag": "div", "x": 0, "y": 0, "w": 500, "h": 100},
+        {"tag": "button", "x": 0, "y": 0, "w": 100, "h": 40, "pIdx": 0, "text": "A"},
+        {"tag": "button", "x": 124, "y": 30, "w": 100, "h": 40, "pIdx": 0, "text": "B"},
+        {"tag": "button", "x": 248, "y": 0, "w": 100, "h": 40, "pIdx": 0, "text": "C"},
+    ]
+    semantic = {
+        "schema_version": "dom-semantic-components/1.0",
+        "components": [
+            {**_component("button", 1), "bbox": [0, 0, 100, 40]},
+            {**_component("button", 2), "bbox": [124, 30, 100, 40]},
+            {**_component("button", 3), "bbox": [248, 0, 100, 40]},
+        ],
+        "roleCounts": {"button": 3},
+        "unknownCount": 0,
+    }
+
+    patterns = infer_component_patterns(nodes, semantic)
+
+    assert "button-set-0" not in patterns["groups"]
