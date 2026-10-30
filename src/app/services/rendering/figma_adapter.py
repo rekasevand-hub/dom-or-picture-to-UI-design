@@ -8,6 +8,7 @@ import logging
 import os
 import ssl
 import uuid
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
 from typing import Any
@@ -25,8 +26,10 @@ from src.app.services.rendering.adapter_base import (
     _single_line_text,
 )
 from src.app.services.rendering.write_job_ledger import CompensationScope
+from src.config.settings import Config
 
 logger = logging.getLogger(__name__)
+SEMANTIC_FIGMA_COMPONENTS_FILENAME = "21_semantic_components_figma.json"
 
 
 @dataclass(frozen=True, slots=True)
@@ -611,6 +614,103 @@ class FigmaBridgeAdapter(PrototypeAdapter):
     def create_frame(self, spec: dict[str, Any]) -> str | None:
         return self._send("create_frame", spec)
 
+    def componentize_semantic_groups(
+        self,
+        groups: Sequence[Mapping[str, Any]],
+    ) -> dict[str, Any]:
+        if not Config().dom_semantic_component_instances:
+            return {
+                "status": "disabled",
+                "masters": [],
+                "instances": [],
+                "rejected": [],
+                "geometry_checks": [],
+            }
+        accepted = []
+        rejected = []
+        for group_index, group in enumerate(groups):
+            if not isinstance(group, Mapping):
+                rejected.append(
+                    {
+                        "groupId": f"group-{group_index}",
+                        "code": "GROUP_INVALID",
+                        "reason": "group must be an object",
+                    }
+                )
+                continue
+            group_id = str(group.get("groupId") or f"group-{group_index}")
+            signature = str(group.get("structuralSignature") or "").strip()
+            members = group.get("members")
+            if not isinstance(members, list) or len(members) < 2:
+                rejected.append(
+                    {
+                        "groupId": group_id,
+                        "code": "INSUFFICIENT_MEMBERS",
+                        "reason": "at least two members are required",
+                    }
+                )
+                continue
+            normalized_members = []
+            invalid = None
+            for member in members:
+                if not isinstance(member, Mapping):
+                    invalid = "MEMBER_INVALID"
+                    break
+                node_id = str(member.get("nodeId") or "").strip()
+                if not node_id:
+                    invalid = "NODE_ID_REQUIRED"
+                    break
+                member_signature = str(
+                    member.get("structuralSignature") or signature
+                ).strip()
+                if not signature:
+                    signature = member_signature
+                if not signature or member_signature != signature:
+                    invalid = "STRUCTURAL_SIGNATURE_MISMATCH"
+                    break
+                normalized_members.append(
+                    {
+                        **dict(member),
+                        "nodeId": node_id,
+                    }
+                )
+            if invalid is not None:
+                rejected.append(
+                    {
+                        "groupId": group_id,
+                        "code": invalid,
+                        "reason": invalid.replace("_", " ").lower(),
+                    }
+                )
+                continue
+            accepted.append(
+                {
+                    **dict(group),
+                    "groupId": group_id,
+                    "structuralSignature": signature,
+                    "members": normalized_members,
+                }
+            )
+
+        if not accepted:
+            return {
+                "status": "rejected",
+                "masters": [],
+                "instances": [],
+                "rejected": rejected,
+                "geometry_checks": [],
+            }
+        result = self._send(
+            "componentize_semantic_groups",
+            {"groups": accepted},
+        )
+        bridge_rejected = list(result.get("rejected") or [])
+        all_rejected = [*rejected, *bridge_rejected]
+        result["rejected"] = all_rejected
+        if all_rejected and result.get("status") == "committed":
+            result["status"] = "partial"
+        return result
+
     def apply_batch(
         self,
         actions: list[dict[str, Any]],
@@ -924,3 +1024,21 @@ def _with_parent(
     if parent_id is not None:
         params["parentId"] = parent_id
     return params
+
+
+def persist_semantic_componentization_result(
+    output: str | Path,
+    result: Mapping[str, Any],
+) -> Path:
+    destination = Path(output)
+    path = (
+        destination
+        if destination.suffix.lower() == ".json"
+        else destination / SEMANTIC_FIGMA_COMPONENTS_FILENAME
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(result, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return path

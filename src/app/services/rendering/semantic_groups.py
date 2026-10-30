@@ -155,5 +155,10 @@ def apply_semantic_groups(
             list(component.get("evidence") or [])
         )
         element["semanticSourceDomIndices"] = _source_indices(component)
+        structural_signature = str(
+            component.get("structuralSignature") or ""
+        ).strip()
+        if structural_signature:
+            element["semanticStructuralSignature"] = structural_signature
         element["name"] = _semantic_name(role, component, element, counters)
     return result

@@ -123,6 +123,8 @@ async function handleAction(action, params) {
       return await applyEditBatch(params);
     case "component_instance_probe":
       return await componentInstanceProbe(params);
+    case "componentize_semantic_groups":
+      return await componentizeSemanticGroups(params);
     case "set_text":
       return await setText(params);
     case "set_name":
@@ -1618,6 +1620,280 @@ async function componentInstanceProbe(params) {
       try { root.remove(); } catch (err) {}
     }
   }
+}
+
+function semanticComponentsPage() {
+  const pages = figma.root && Array.isArray(figma.root.children)
+    ? figma.root.children
+    : [];
+  let page = pages.find((item) => item.name === "DOM Components") || null;
+  if (!page) {
+    page = figma.createPage();
+    page.name = "DOM Components";
+  }
+  return page;
+}
+
+function semanticGroupError(code, reason) {
+  const error = new Error(reason);
+  error.code = code;
+  return error;
+}
+
+function validateSemanticGroups(params) {
+  const source = params && params.groups;
+  if (!Array.isArray(source)) {
+    throw semanticGroupError("GROUPS_REQUIRED", "groups must be an array");
+  }
+  return source.map((group, groupIndex) => {
+    const groupId = String(group && group.groupId || `group-${groupIndex}`);
+    try {
+      const signature = String(
+        group && group.structuralSignature || ""
+      ).trim();
+      if (!signature) {
+        throw semanticGroupError(
+          "STRUCTURAL_SIGNATURE_REQUIRED",
+          `structural signature is required for ${groupId}`
+        );
+      }
+      const members = group && group.members;
+      if (!Array.isArray(members) || members.length < 2) {
+        throw semanticGroupError(
+          "INSUFFICIENT_MEMBERS",
+          `at least two members are required for ${groupId}`
+        );
+      }
+      const normalized = members.map((member) => {
+        const nodeId = String(member && member.nodeId || "").trim();
+        if (!nodeId) {
+          throw semanticGroupError("NODE_ID_REQUIRED", `nodeId is required for ${groupId}`);
+        }
+        const memberSignature = String(
+          member.structuralSignature || signature
+        ).trim();
+        if (memberSignature !== signature) {
+          throw semanticGroupError(
+            "STRUCTURAL_SIGNATURE_MISMATCH",
+            `member structural signature differs for ${nodeId}`
+          );
+        }
+        const node = figma.getNodeById(nodeId);
+        if (!node) {
+          throw semanticGroupError("NODE_NOT_FOUND", `missing node: ${nodeId}`);
+        }
+        if (node.type !== "FRAME" && node.type !== "GROUP") {
+          throw semanticGroupError(
+            "NODE_TYPE_UNSUPPORTED",
+            `semantic member must be FRAME or GROUP: ${nodeId}`
+          );
+        }
+        return { ...member, nodeId, node };
+      });
+      return {
+        group: {
+          ...group,
+          groupId,
+          structuralSignature: signature,
+          members: normalized,
+        },
+        error: null,
+      };
+    } catch (err) {
+      return { group: null, error: { groupId, err } };
+    }
+  });
+}
+
+function copySemanticInstanceOverrides(source, instance) {
+  const overrideFields = [];
+  const sourceTexts = source.findAll
+    ? source.findAll((node) => node.type === "TEXT")
+    : [];
+  const instanceTexts = instance.findAll
+    ? instance.findAll((node) => node.type === "TEXT")
+    : [];
+  for (let index = 0; index < Math.min(sourceTexts.length, instanceTexts.length); index += 1) {
+    const from = sourceTexts[index];
+    const to = instanceTexts[index];
+    if (typeof from.characters === "string" && to.characters !== from.characters) {
+      to.characters = from.characters;
+      overrideFields.push(`text:${index}`);
+    }
+    for (const key of ["fontName", "fontSize", "lineHeight", "letterSpacing", "fills"]) {
+      if (from[key] !== undefined) {
+        try { to[key] = cloneSnapshotValue(from[key]); } catch (err) {}
+      }
+    }
+  }
+
+  const imageNodes = (node) => (
+    node.findAll
+      ? node.findAll((child) => (
+        Array.isArray(child.fills)
+        && child.fills.some((fill) => fill && fill.type === "IMAGE")
+      ))
+      : []
+  );
+  const sourceImages = imageNodes(source);
+  const instanceImages = imageNodes(instance);
+  for (let index = 0; index < Math.min(sourceImages.length, instanceImages.length); index += 1) {
+    try {
+      instanceImages[index].fills = cloneSnapshotValue(sourceImages[index].fills);
+      overrideFields.push(`image:${index}`);
+    } catch (err) {}
+  }
+  return overrideFields;
+}
+
+function semanticInstanceBoundsMatch(source, instance) {
+  return ["x", "y", "width", "height"].every((key) => (
+    Math.abs(Number(source[key]) - Number(instance[key])) <= 1
+  ));
+}
+
+async function componentizeSemanticGroups(params) {
+  const validatedGroups = validateSemanticGroups(params);
+  const masters = [];
+  const instances = [];
+  const rejected = [];
+  const geometryChecks = [];
+  const page = semanticComponentsPage();
+
+  for (let groupIndex = 0; groupIndex < validatedGroups.length; groupIndex += 1) {
+    const validation = validatedGroups[groupIndex];
+    if (validation.error) {
+      rejected.push({
+        groupId: validation.error.groupId,
+        code: validation.error.err.code || "GROUP_INVALID",
+        reason: validation.error.err.message || String(validation.error.err),
+      });
+      continue;
+    }
+    const group = validation.group;
+    const createdInstances = [];
+    const groupInstanceEntries = [];
+    let master = null;
+    try {
+      if (typeof figma.createComponentFromNode !== "function") {
+        throw semanticGroupError(
+          "COMPONENT_API_UNAVAILABLE",
+          "figma.createComponentFromNode is required"
+        );
+      }
+      const source = group.members[0].node;
+      const clone = source.clone();
+      page.appendChild(clone);
+      master = figma.createComponentFromNode(clone);
+      master.name = `Semantic / ${group.groupId}`;
+      master.x = 24;
+      master.y = 24 + groupIndex * (Number(master.height || 0) + 24);
+      master.setPluginData("figma_auto_agent.semantic_group_id", group.groupId);
+      master.setPluginData(
+        "figma_auto_agent.structural_signature",
+        group.structuralSignature
+      );
+      master.setPluginData(
+        "figma_auto_agent.source_dom_indices",
+        JSON.stringify(group.members[0].sourceDomIndices || [])
+      );
+
+      for (let index = 1; index < group.members.length; index += 1) {
+        const member = group.members[index];
+        const sourceNode = member.node;
+        const instance = master.createInstance();
+        instance.name = `${sourceNode.name || "Semantic"} Instance`;
+        instance.visible = false;
+        const parent = sourceNode.parent;
+        if (!parent || !("insertChild" in parent)) {
+          throw semanticGroupError(
+            "SOURCE_PARENT_UNAVAILABLE",
+            `source parent is unavailable: ${sourceNode.id}`
+          );
+        }
+        const sourceIndex = Math.max(0, parent.children.indexOf(sourceNode));
+        parent.insertChild(sourceIndex, instance);
+        instance.x = sourceNode.x;
+        instance.y = sourceNode.y;
+        instance.resize(sourceNode.width, sourceNode.height);
+        const overrideFields = copySemanticInstanceOverrides(sourceNode, instance);
+        const matched = semanticInstanceBoundsMatch(sourceNode, instance);
+        geometryChecks.push({
+          groupId: group.groupId,
+          sourceNodeId: sourceNode.id,
+          instanceId: instance.id,
+          matched,
+        });
+        if (!matched) {
+          throw semanticGroupError(
+            "GEOMETRY_MISMATCH",
+            `instance geometry differs from source: ${sourceNode.id}`
+          );
+        }
+        instance.setPluginData(
+          "figma_auto_agent.master_id",
+          master.id
+        );
+        instance.setPluginData(
+          "figma_auto_agent.group_id",
+          group.groupId
+        );
+        instance.setPluginData(
+          "figma_auto_agent.source_dom_indices",
+          JSON.stringify(member.sourceDomIndices || [])
+        );
+        instance.setPluginData(
+          "figma_auto_agent.structural_signature",
+          group.structuralSignature
+        );
+        instance.setPluginData(
+          "figma_auto_agent.override_fields",
+          JSON.stringify(overrideFields)
+        );
+        instance.visible = true;
+        createdInstances.push(instance);
+        groupInstanceEntries.push({
+          groupId: group.groupId,
+          nodeId: instance.id,
+          sourceNodeId: sourceNode.id,
+          overrideFields,
+        });
+      }
+
+      for (let index = 1; index < group.members.length; index += 1) {
+        group.members[index].node.visible = false;
+      }
+      instances.push(...groupInstanceEntries);
+      masters.push({
+        groupId: group.groupId,
+        nodeId: master.id,
+        sourceNodeId: group.members[0].nodeId,
+      });
+    } catch (err) {
+      for (const instance of createdInstances.reverse()) {
+        try { instance.remove(); } catch (removeError) {}
+      }
+      if (master) {
+        try { master.remove(); } catch (removeError) {}
+      }
+      rejected.push({
+        groupId: group.groupId,
+        code: err.code || "COMPONENTIZATION_FAILED",
+        reason: err.message || String(err),
+      });
+    }
+  }
+
+  const status = rejected.length
+    ? (masters.length ? "partial" : "rejected")
+    : "committed";
+  return {
+    status,
+    masters,
+    instances,
+    rejected,
+    geometry_checks: geometryChecks,
+  };
 }
 
 async function setText(params) {
