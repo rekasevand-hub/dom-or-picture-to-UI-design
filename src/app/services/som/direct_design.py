@@ -33,6 +33,11 @@ from src.app.services.som.design_crops import (
     shadowed_by_pixel_backdrop as _shadowed_by_backdrop,
 )
 from src.app.services.rendering.layout_plan import build_layout_plan
+from src.app.services.rendering.semantic_groups import (
+    SEMANTIC_COMPONENTS_FILENAME,
+    apply_semantic_groups,
+    load_semantic_components,
+)
 from src.app.services.structure.site_profiles import load_profile, rule as _rule
 from src.app.services.structure.asset_metadata import (
     attach_display_payload,
@@ -669,7 +674,12 @@ def _capture_pixel_ratio(
     return ratio
 
 
-def build_direct_design(som_json: dict, profile=None, dom_nodes=None) -> dict:
+def build_direct_design(
+    som_json: dict,
+    profile=None,
+    dom_nodes=None,
+    semantics: dict | None = None,
+) -> dict:
     """按 SoM（含 style 字段）确定性生成 DesignSpec。
 
     容器只要“有非透明背景色”或“带真实边框（color+width 成对）”就画出；
@@ -1329,7 +1339,15 @@ def build_direct_design(som_json: dict, profile=None, dom_nodes=None) -> dict:
         "merged_dividers": merged_dividers,
         "autolayout_frames": autolayout_frames,
     }
-    return {"canvas": canvas, "elements": elements, "_meta": meta}
+    design = {"canvas": canvas, "elements": elements, "_meta": meta}
+    if Config().dom_semantic_components:
+        semantic_value = semantics
+        if semantic_value is None and image_path:
+            semantic_path = Path(image_path).parent / SEMANTIC_COMPONENTS_FILENAME
+            semantic_value = load_semantic_components(semantic_path)
+        if semantic_value is not None:
+            design = apply_semantic_groups(design, semantic_value)
+    return design
 
 
 def try_build_direct_design(

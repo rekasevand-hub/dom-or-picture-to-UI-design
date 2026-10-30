@@ -295,6 +295,7 @@ async function createBevelBorder(params) {
   const fill = hexToRgb(params.fillColor);
   frame.fills = fill ? [{ type: "SOLID", color: fill }] : [];
   appendToParent(frame, params);
+  applyPluginData(frame, params);
 
   const bands = [
     { x: 0, y: 0, width, height: borderWidth, color: topLeft },
@@ -394,6 +395,19 @@ function appendToParent(node, params) {
   applyName(node, params);
 }
 
+function applyPluginData(node, params) {
+  const values = params && params.pluginData;
+  if (!values || typeof values !== "object"
+      || typeof node.setPluginData !== "function") {
+    return;
+  }
+  for (const [key, value] of Object.entries(values)) {
+    if (!String(key).startsWith("figma_auto_agent.")) continue;
+    if (value === null || value === undefined) continue;
+    node.setPluginData(String(key), String(value));
+  }
+}
+
 function validateParent(params) {
   const parentId = params && params.parentId;
   if (!parentId) return;
@@ -434,6 +448,7 @@ async function createFrame(params) {
     applyStyle(frame, params);
   }
   appendToParent(frame, params);
+  applyPluginData(frame, params);
   return frame.id;
 }
 
@@ -449,6 +464,7 @@ async function createRectangle(params) {
   applyGeometry(rect, params);
   applyStyle(rect, params);
   appendToParent(rect, params);
+  applyPluginData(rect, params);
   return rect.id;
 }
 
@@ -458,6 +474,7 @@ async function createEllipse(params) {
   applyGeometry(ellipse, params);
   applyStyle(ellipse, params);
   appendToParent(ellipse, params);
+  applyPluginData(ellipse, params);
   return ellipse.id;
 }
 
@@ -735,6 +752,7 @@ async function createText(params) {
   // 先挂树再定位：x/y 是相对父级的坐标，appendChild 不会保留绝对位置，
   // 先 append 才不会在非原点父级下跳位。
   appendToParent(text, params);
+  applyPluginData(text, params);
   const singleLine = !!params.singleLine;
   const boundedText = !!params.boundedText && !singleLine;
   if (boundedText) {
@@ -828,6 +846,7 @@ async function createImage(params) {
   applyEffects(rect, params);      // 像素底/图片上的滚动阴影
 
   appendToParent(rect, params);
+  applyPluginData(rect, params);
   return rect.id;
 }
 

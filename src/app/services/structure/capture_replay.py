@@ -137,6 +137,7 @@ def replay_capture_bundle(
             som,
             profile=load_profile(str(bundle.get("final_url") or "")),
             dom_nodes=dom_nodes,
+            semantics=semantic_merge,
         )
         _write_json(design_path, design)
         design_sha256 = _canonical_json_sha256(design_path)

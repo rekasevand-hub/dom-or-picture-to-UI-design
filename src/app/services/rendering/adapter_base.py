@@ -115,6 +115,19 @@ def _single_line_text(spec: dict[str, Any]) -> bool:
     )
 
 
+def _semantic_plugin_data(spec: Mapping[str, Any]) -> dict[str, str]:
+    values = {
+        "figma_auto_agent.semantic_role": spec.get("semanticRole"),
+        "figma_auto_agent.semantic_group_id": spec.get("semanticGroupId"),
+        "figma_auto_agent.semantic_confidence": spec.get("semanticConfidence"),
+    }
+    return {
+        key: str(value)
+        for key, value in values.items()
+        if value is not None and str(value).strip()
+    }
+
+
 class PrototypeAdapter(ABC):
     """原型工具适配器抽象基类。"""
 
@@ -287,6 +300,9 @@ class PrototypeAdapter(ABC):
                     parent_id, origin = clip_frame_id, (el_clip[0], el_clip[1])
             # 判定（chrome 覆盖、白叶衬底）继续用页面绝对坐标，下发才换成父级相对
             spec_out = self._offset_spec(spec, origin)
+            plugin_data = _semantic_plugin_data(spec)
+            if plugin_data:
+                spec_out["pluginData"] = plugin_data
 
             # 这个容器整体变成一个 Auto Layout Frame：底/描边/圆角画在 Frame 自身上，
             # 子项照旧按它们原本的绝对坐标挂进去，等这一组挂完再打开 layoutMode
