@@ -101,10 +101,12 @@ def test_replay_is_browser_free_network_free_and_deterministic(tmp_path):
     for artifact in (
         "10_pagegraph.json",
         "11_som.json",
+        "20_semantic_components.json",
         "replay_manifest.json",
         "12_design.json",
     ):
         assert (first_out / artifact).is_file()
+    assert first["semantic_components_sha256"] == second["semantic_components_sha256"]
 
     (bundle_dir / "00_dom.json").write_text("[]", encoding="utf-8")
     with pytest.raises(CaptureBundleError, match="sha256 mismatch"):

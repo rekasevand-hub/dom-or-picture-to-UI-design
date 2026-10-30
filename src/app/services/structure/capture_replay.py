@@ -9,6 +9,7 @@ from PIL import Image
 
 from src.app.services.som.annotate import annotate_som
 from src.app.services.som.direct_design import build_direct_design
+from src.app.services.structure.component_patterns import infer_component_patterns
 from src.app.services.structure.capture_bundle import (
     CAPTURE_BUNDLE_FILENAME,
     CaptureBundleError,
@@ -20,8 +21,17 @@ from src.app.services.structure.graph import (
     assign_parent_depth,
     save_graph,
 )
+from src.app.services.structure.layer_tree import build_layer_tree
 from src.app.services.structure.providers.dom import DomProvider
 from src.app.services.structure.providers.base import ProviderContext
+from src.app.services.structure.semantic_components import (
+    classify_semantic_components,
+)
+from src.app.services.structure.semantic_merge import (
+    SEMANTIC_COMPONENTS_FILENAME,
+    merge_semantic_candidates,
+    persist_semantic_components,
+)
 from src.app.services.structure.site_profiles import load_profile
 
 REPLAY_SCHEMA_VERSION = "dom-capture-replay/1.0"
@@ -109,6 +119,18 @@ def replay_capture_bundle(
     som = annotate_som(graph, str(destination))
     som_path = destination / "11_som.json"
 
+    semantic_components = classify_semantic_components(
+        dom_nodes,
+        layer_tree=build_layer_tree(dom_nodes),
+    )
+    semantic_patterns = infer_component_patterns(
+        dom_nodes,
+        semantic_components,
+    )
+    semantic_merge = merge_semantic_candidates(semantic_patterns, [])
+    semantic_path = persist_semantic_components(destination, semantic_merge)
+    semantic_sha256 = _canonical_json_sha256(semantic_path)
+
     design_path = destination / "12_design.json"
     if build_design:
         design = build_direct_design(
@@ -148,6 +170,10 @@ def replay_capture_bundle(
                 "path": som_path.name,
                 "sha256": _canonical_json_sha256(som_path),
             },
+            "semantic_components": {
+                "path": SEMANTIC_COMPONENTS_FILENAME,
+                "sha256": semantic_sha256,
+            },
             **(
                 {
                     "design": {
@@ -165,5 +191,6 @@ def replay_capture_bundle(
         **replay_manifest,
         "pagegraph_sha256": replay_manifest["artifacts"]["pagegraph"]["sha256"],
         "som_sha256": replay_manifest["artifacts"]["som"]["sha256"],
+        "semantic_components_sha256": semantic_sha256,
         "design_sha256": design_sha256,
     }

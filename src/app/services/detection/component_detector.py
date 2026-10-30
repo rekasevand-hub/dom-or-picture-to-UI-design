@@ -250,3 +250,35 @@ def layout_rows(components: list[Component], y_tolerance: float = 0.25) -> list[
     for row in rows:
         row.sort(key=lambda c: c.x)
     return [[c.id for c in row] for row in rows]
+
+
+def semantic_candidates_from_components(
+    components: list[Component],
+) -> list[dict]:
+    """Convert image-detector components into low-authority semantic candidates."""
+    supported_roles = {"navigation", "list", "card", "button", "link", "unknown"}
+    rows = []
+    for component in components:
+        role = str(
+            component.meta.get("semanticRole")
+            or component.comp_type
+            or "unknown"
+        ).strip().lower()
+        if role not in supported_roles:
+            role = "unknown"
+        rows.append(
+            {
+                "id": f"detector-{component.id}",
+                "role": role,
+                "bbox": list(component.bbox),
+                "confidence": float(component.confidence or 0.0),
+                "source": "detector:opencv",
+                "text": component.text,
+                "meta": {
+                    "shape": component.shape,
+                    "level": component.level,
+                    "parentId": component.parent_id,
+                },
+            }
+        )
+    return rows
