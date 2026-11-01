@@ -904,6 +904,19 @@ class PreciseAgent:
                 output_dir=out,
             )
             design = recovery.pop("design")
+        if route == "dom":
+            from src.app.services.structure.generated_icon_recovery import (
+                generate_icon_approximations,
+            )
+
+            generated_assets = generate_icon_approximations(
+                design,
+                output_dir=out,
+                include_icons=False,
+                include_missing_images=True,
+                cfg=cfg,
+            )
+            design = generated_assets.pop("design")
         from src.app.services.structure.capture_asset_ledger import (
             build_asset_ledger,
             update_capture_bundle_assets,

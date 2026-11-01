@@ -752,46 +752,46 @@ DOM_JS = r"""
         };
       }
     }
-    // 多行叶子文本的真实分行：逐字符 Range 按 top 分组成行。
+    // 多行文本的真实分行：逐字符 Range 按 top 分组成行，允许元素内含 inline 子节点。
     // 这是浏览器自己的换行结果，输出端可直接复用，避免离线字体估宽产生不同断点。
-    if (textEmLines >= 1 && ownNodes.length === 1 && !hasElementChildren) {
+    if (textEmLines >= 1 && ownNodes.length) {
       try {
-        const textNode = ownNodes[0];
-        const raw = textNode.data || '';
         const rng = document.createRange();
         const lines = [];
-        let current = null;
-        for (let i = 0; i < raw.length;) {
-          const cp = raw.codePointAt(i);
-          const step = cp > 0xFFFF ? 2 : 1;
-          rng.setStart(textNode, i);
-          rng.setEnd(textNode, i + step);
-          const cr = rng.getBoundingClientRect();
-          const hasRect = cr.width >= 0.5 && cr.height >= 0.5;
-          const top = hasRect ? cr.top : (current ? current.top : null);
-          if (top !== null && (!current || Math.abs(top - current.top) > 1.0)) {
-            if (current) lines.push(current);
-            current = {
-              top,
-              text: '',
-              x0: hasRect ? cr.left : 0,
-              y0: hasRect ? cr.top : 0,
-              x1: hasRect ? cr.right : 0,
-              y1: hasRect ? cr.bottom : 0,
-            };
-          }
-          if (current) {
-            current.text += raw.slice(i, i + step);
+        for (const textNode of ownNodes) {
+          const raw = textNode.data || '';
+          for (let i = 0; i < raw.length;) {
+            const cp = raw.codePointAt(i);
+            const step = cp > 0xFFFF ? 2 : 1;
+            rng.setStart(textNode, i);
+            rng.setEnd(textNode, i + step);
+            const cr = rng.getBoundingClientRect();
+            const hasRect = cr.width >= 0.5 && cr.height >= 0.5;
             if (hasRect) {
-              current.x0 = Math.min(current.x0, cr.left);
-              current.y0 = Math.min(current.y0, cr.top);
-              current.x1 = Math.max(current.x1, cr.right);
-              current.y1 = Math.max(current.y1, cr.bottom);
+              let line = lines.find(
+                (item) => Math.abs(item.top - cr.top) <= 1.0
+              );
+              if (!line) {
+                line = {
+                  top: cr.top,
+                  text: '',
+                  x0: cr.left,
+                  y0: cr.top,
+                  x1: cr.right,
+                  y1: cr.bottom,
+                };
+                lines.push(line);
+              }
+              line.text += raw.slice(i, i + step);
+              line.x0 = Math.min(line.x0, cr.left);
+              line.y0 = Math.min(line.y0, cr.top);
+              line.x1 = Math.max(line.x1, cr.right);
+              line.y1 = Math.max(line.y1, cr.bottom);
             }
+            i += step;
           }
-          i += step;
         }
-        if (current) lines.push(current);
+        lines.sort((a, b) => (a.y0 - b.y0) || (a.x0 - b.x0));
         const clean = lines
           .map((line) => {
             const metrics = fontMetricsFor(line.text, cs);
@@ -814,8 +814,9 @@ DOM_JS = r"""
             };
           })
           .filter((line) => line.text && line.box[2] > 0 && line.box[3] > 0);
+        const rawText = ownNodes.map((node) => node.data || '').join('');
         if (clean.length > 1
-            || (clean.length === 1 && raw.trim().length > 40)) {
+            || (clean.length === 1 && rawText.trim().length > 40)) {
           textLines = clean;
         }
       } catch (e) {}

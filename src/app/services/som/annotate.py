@@ -72,6 +72,23 @@ def annotate_som(graph: dict, output_dir: str) -> dict:
                 **({"clip": c["clip"]} if c.get("clip") else {}),
                 # 图层面板可读名（采集端已算好），没有就不写
                 **({"name": c["name"]} if c.get("name") else {}),
+                **(
+                    {"clipToBounds": True} if c.get("clipToBounds") else {}
+                ),
+                **({"overflowX": c["overflowX"]} if c.get("overflowX") else {}),
+                **({"overflowY": c["overflowY"]} if c.get("overflowY") else {}),
+                **({"clientWidth": c["clientWidth"]} if c.get("clientWidth") else {}),
+                **(
+                    {"clientHeight": c["clientHeight"]}
+                    if c.get("clientHeight")
+                    else {}
+                ),
+                **({"scrollWidth": c["scrollWidth"]} if c.get("scrollWidth") else {}),
+                **(
+                    {"scrollHeight": c["scrollHeight"]}
+                    if c.get("scrollHeight")
+                    else {}
+                ),
             }
             for c in graph["containers"]
         ],
@@ -118,6 +135,29 @@ def annotate_som(graph: dict, output_dir: str) -> dict:
                 **({"textEmBox": e["textEmBox"]} if e.get("textEmBox") else {}),
                 **({"textEmLines": e["textEmLines"]} if e.get("textEmLines") else {}),
                 **({"textLines": e["textLines"]} if e.get("textLines") else {}),
+                **({"richRuns": e["richRuns"]} if e.get("richRuns") else {}),
+                **(
+                    {"clipToBounds": True} if e.get("clipToBounds") else {}
+                ),
+                **({"overflowX": e["overflowX"]} if e.get("overflowX") else {}),
+                **({"overflowY": e["overflowY"]} if e.get("overflowY") else {}),
+                **(
+                    {"textOverflow": e["textOverflow"]}
+                    if e.get("textOverflow")
+                    else {}
+                ),
+                **({"clientWidth": e["clientWidth"]} if e.get("clientWidth") else {}),
+                **(
+                    {"clientHeight": e["clientHeight"]}
+                    if e.get("clientHeight")
+                    else {}
+                ),
+                **({"scrollWidth": e["scrollWidth"]} if e.get("scrollWidth") else {}),
+                **(
+                    {"scrollHeight": e["scrollHeight"]}
+                    if e.get("scrollHeight")
+                    else {}
+                ),
                 **(
                     {"assetIdentity": e["assetIdentity"]}
                     if e.get("assetIdentity")

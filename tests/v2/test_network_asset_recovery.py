@@ -53,6 +53,39 @@ def _design_with_urls(*urls: str) -> dict:
 
 
 class NetworkAssetRecoveryTests(unittest.TestCase):
+    def test_recovers_responsive_variant_with_same_aspect_ratio(self) -> None:
+        url = "https://img.example/photo.png"
+        output = io.BytesIO()
+        Image.new("RGB", (8, 6), (30, 80, 160)).save(output, format="WEBP")
+        payload = output.getvalue()
+
+        def request_get(source_url, *, referer, timeout_ms):
+            return {
+                "status": 200,
+                "headers": {"content-type": "image/webp"},
+                "body": payload,
+            }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = recover_network_assets(
+                _design_with_urls(url),
+                page_url="https://www.example/",
+                output_dir=tmp,
+                request_get=request_get,
+            )
+
+        self.assertEqual(result["status_counts"]["verified-original"], 1)
+        self.assertEqual(result["rows"][0]["natural_size"], [8.0, 6.0])
+        self.assertEqual(
+            result["design"]["elements"][0]["assetIdentity"]["asset_record"][
+                "source_identity"
+            ]["status"],
+            "verified-original",
+        )
+        self.assertTrue(
+            result["design"]["elements"][0]["imageBase64"].startswith("iVBOR")
+        )
+
     def test_recovers_and_deduplicates_browser_response_bytes(self) -> None:
         url = "https://img.example/photo.png"
         payload = _png_bytes()

@@ -289,6 +289,12 @@ def main() -> int:
         help="首个画板名与清理前缀（默认 Screen）",
     )
     ap.add_argument(
+        "--readback-depth",
+        type=int,
+        default=3,
+        help="Figma node-tree readback depth (default 3 avoids oversized responses)",
+    )
+    ap.add_argument(
         "--timeout",
         type=float,
         default=None,
@@ -354,7 +360,7 @@ def main() -> int:
             "get_node_tree",
             {
                 "nodeId": adapter.frame_id,
-                "depth": 6,
+                "depth": max(1, int(args.readback_depth)),
             },
         )
         (out / "readback_tree.json").write_text(

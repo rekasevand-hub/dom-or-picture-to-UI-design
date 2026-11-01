@@ -191,6 +191,19 @@ function hexToRgb(hex) {
   };
 }
 
+function cssColorAlpha(value) {
+  if (!value || typeof value !== "string") return 1;
+  const rgbaMatch = value.trim().match(
+    /^rgba\(\s*[\d.]+\s*,\s*[\d.]+\s*,\s*[\d.]+\s*,\s*([\d.]+%?)\s*\)$/i,
+  );
+  if (!rgbaMatch) return 1;
+  const raw = rgbaMatch[1];
+  const parsed = raw.endsWith("%")
+    ? Number(raw.slice(0, -1)) / 100
+    : Number(raw);
+  return Math.max(0, Math.min(1, isFinite(parsed) ? parsed : 1));
+}
+
 function gradientStopsFrom(params) {
   const source = Array.isArray(params.detailedStops)
     ? params.detailedStops
@@ -206,7 +219,7 @@ function gradientStopsFrom(params) {
     if (!color) continue;
     const rawPosition = Number(item.offset);
     stops.push({
-      color: { ...color, a: 1 },
+      color: { ...color, a: cssColorAlpha(item.color) },
       position: Math.max(0, Math.min(1, isFinite(rawPosition) ? rawPosition : 0)),
     });
   }
@@ -244,7 +257,11 @@ function applyStyle(node, params) {
   if (gradient) {
     node.fills = [gradient];
   } else if (fill) {
-    node.fills = [{ type: "SOLID", color: fill }];
+    node.fills = [{
+      type: "SOLID",
+      color: fill,
+      opacity: cssColorAlpha(params.fillColor),
+    }];
   } else if (params.fillColor) {
     node.fills = [];  // transparent / 非法值 -> 无填充（描边按钮、纯边框输入框）
   }
@@ -771,24 +788,30 @@ async function createText(params) {
     } catch (err) {}
   }
   const lines = params.lines;
-  if (lines && lines.length > 1) {
+  if (lines && lines.length > 0) {
     // 折行文本：断点已经由 IR（text_wrap）按估算字宽算好，这里只负责落地。
-    // 显式换行 + 固定宽度 + 只让高度自适应：Figma 若再按真实字宽自动换行，
+    // 单行截断也必须使用 lines[0]；否则完整原文会覆盖 Python 侧刚补上的省略号。
+    // 显式换行 + 固定宽度 + 禁用 auto-resize：Figma 若再按真实字宽自动换行，
     // 会多折出一行把盒子撑破（估算再准也不敢保证与真实字体度量逐字一致）。
     text.characters = lines.join("\n");
     const boxWidth = params.width || text.width;
     try {
-      text.textAutoResize = boundedText ? "NONE" : "HEIGHT";
-      text.resize(boxWidth, text.height);
+      // Browser-measured line breaks are authoritative. HEIGHT lets Figma wrap
+      // each line again using a different font metric, which can push later
+      // lines into neighbouring text. Keep the measured box fixed instead.
+      text.textAutoResize = "NONE";
+      text.resize(boxWidth, Math.max(1, Number(params.height) || text.height));
     } catch (err) {}
     const align = params.textAlign === "center" ? "CENTER"
                 : params.textAlign === "end" ? "RIGHT" : "LEFT";
     try { text.textAlignHorizontal = align; } catch (err) {}
     text.x = params.x || 0;
-    text.y = (params.y || 0) + Math.max(
-      0,
-      ((params.height || 0) - text.height) / 2
-    );
+    text.y = lines.length > 1
+      ? (params.y || 0) + Math.max(
+        0,
+        ((params.height || 0) - text.height) / 2
+      )
+      : (params.y || 0);
     return text.id;
   }
   if (params.textAnchor === "start") {
@@ -2097,11 +2120,24 @@ async function setAutoLayout(params) {
   const parentBox = node.absoluteBoundingBox;
   const before = children.map((child) => {
     const childBox = child.absoluteBoundingBox;
-    if (parentBox && childBox) {
-      return [childBox.x - parentBox.x, childBox.y - parentBox.y];
-    }
-    return [child.x, child.y];
+    const position = (
+      parentBox && childBox
+        ? [childBox.x - parentBox.x, childBox.y - parentBox.y]
+        : [child.x, child.y]
+    );
+    return {
+      x: position[0],
+      y: position[1],
+      width: Number(child.width),
+      height: Number(child.height),
+      textAutoResize: child.type === "TEXT"
+        ? child.textAutoResize
+        : undefined,
+      layoutPositioning: child.layoutPositioning,
+    };
   });
+  const frameWidth = node.width;
+  const frameHeight = node.height;
   node.layoutMode = layoutMode;
   node.primaryAxisSizingMode = "FIXED";
   node.counterAxisSizingMode = "FIXED";
@@ -2120,10 +2156,49 @@ async function setAutoLayout(params) {
   // 底框 + 文本）时就对不上号，多出来的节点会被引擎摆到别处（audit §12）。改成全量快照。
   children.forEach((child, i) => {
     child.layoutPositioning = "ABSOLUTE";
-    child.x = before[i][0];
-    child.y = before[i][1];
+    child.x = before[i].x;
+    child.y = before[i].y;
   });
   node.resize(params.width || node.width, params.height || node.height);
+  const changedText = [];
+  children.forEach((child, i) => {
+    if (child.type !== "TEXT") return;
+    const snapshot = before[i];
+    if (
+      Math.abs(Number(child.width) - snapshot.width) > 1
+      || Math.abs(Number(child.height) - snapshot.height) > 1
+      || (
+        snapshot.textAutoResize !== undefined
+        && child.textAutoResize !== snapshot.textAutoResize
+      )
+    ) {
+      changedText.push(child.id);
+    }
+  });
+  if (changedText.length) {
+    node.layoutMode = "NONE";
+    children.forEach((child, i) => {
+      const snapshot = before[i];
+      if (child.type === "TEXT" && snapshot.textAutoResize !== undefined) {
+        child.textAutoResize = snapshot.textAutoResize;
+      }
+      if (snapshot.layoutPositioning !== undefined) {
+        child.layoutPositioning = snapshot.layoutPositioning;
+      }
+      if (Number.isFinite(snapshot.width) && Number.isFinite(snapshot.height)) {
+        child.resize(snapshot.width, snapshot.height);
+      }
+      child.x = snapshot.x;
+      child.y = snapshot.y;
+    });
+    node.resize(frameWidth, frameHeight);
+    return {
+      nodeId: node.id,
+      applied: false,
+      reason: "text-geometry-changed",
+      changedText,
+    };
+  }
   return { nodeId: node.id, applied: true, mode: node.layoutMode,
            children: children.length };
 }

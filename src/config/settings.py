@@ -93,6 +93,10 @@ class Config:
     text_model: str = field(default_factory=lambda: os.getenv("TEXT_MODEL", "deepseek-v4-flash"))
     text_max_tokens: int = field(default_factory=lambda: int(os.getenv("TEXT_MAX_TOKENS", "16000")))
     text_timeout: int = field(default_factory=lambda: int(os.getenv("TEXT_TIMEOUT", "120")))
+    image_generation_model: str = field(default_factory=lambda: os.getenv("IMAGE_GENERATION_MODEL", "gpt-image-1"))
+    image_generation_base_url: str | None = field(default_factory=lambda: _env_opt("IMAGE_GENERATION_BASE_URL"))
+    image_generation_api_key: str | None = field(default_factory=lambda: _env_opt("IMAGE_GENERATION_API_KEY"))
+    image_generation_timeout: int = field(default_factory=lambda: int(os.getenv("IMAGE_GENERATION_TIMEOUT", "20")))
 
     # --- SoM -> DesignSpec 分批生成（长页面防截断；每批 60-100 个 id 推荐） ---
     som_batch_enabled: bool = field(default_factory=lambda: os.getenv("SOM_BATCH_ENABLED", "true").lower() in ("1", "true", "yes"))

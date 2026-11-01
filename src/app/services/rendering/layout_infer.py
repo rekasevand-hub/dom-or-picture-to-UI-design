@@ -571,7 +571,14 @@ def _geometry_stack(node: dict, children: list[dict],
     """
     flow_rects = [rects[i] for i in flow]
     tops, lefts = [r[1] for r in flow_rects], [r[0] for r in flow_rects]
-    if max(tops) - min(tops) <= GEOMETRY_TOLERANCE:
+    x_non_overlapping = all(
+        nxt[0] >= prev[0] + prev[2] - GEOMETRY_TOLERANCE
+        for prev, nxt in zip(flow_rects, flow_rects[1:])
+    )
+    shared_band = min(r[1] + r[3] for r in flow_rects) - max(tops)
+    if max(tops) - min(tops) <= GEOMETRY_TOLERANCE or (
+        shared_band > GEOMETRY_TOLERANCE and x_non_overlapping
+    ):
         is_row = True
     elif max(lefts) - min(lefts) <= GEOMETRY_TOLERANCE:
         is_row = False

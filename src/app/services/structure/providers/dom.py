@@ -676,6 +676,30 @@ def _run_box_is_single_line(run_box: list[int], style: dict) -> bool:
     return lh > 0 and h <= lh * 1.5
 
 
+def _control_text_box(
+    node: dict,
+    run_box: list[int] | None,
+    style: dict,
+    *,
+    paints_own_box: bool,
+    element_type: str,
+) -> list[int] | None:
+    """Keep a control's real text start when the browser measured one line."""
+    if run_box is None or not paints_own_box or element_type == "text":
+        return None
+    if _run_box_is_single_line(run_box, style):
+        return run_box
+    try:
+        measured_lines = int(node.get("textEmLines") or 0)
+    except (TypeError, ValueError):
+        measured_lines = 0
+    if measured_lines == 1:
+        return run_box
+    if str(node.get("whiteSpace") or "").strip().lower() == "nowrap":
+        return run_box
+    return None
+
+
 def _text_runs_box(box: list, canvas_w: int, canvas_h: int) -> list[int] | None:
     """textRuns 里某一段的行框（DOM_JS 已按 Range 量成 [x, y, w, h] 整数）。"""
     try:
@@ -862,6 +886,13 @@ class DomProvider(BaseProvider):
                     clip=clip,
                     name=_layer_name(n, label_max=label_max),
                     dom_index=i,
+                    clip_to_bounds=bool(n.get("clipToBounds")),
+                    overflow_x=str(n.get("overflowX") or ""),
+                    overflow_y=str(n.get("overflowY") or ""),
+                    client_width=int(n.get("clientWidth") or 0),
+                    client_height=int(n.get("clientHeight") or 0),
+                    scroll_width=int(n.get("scrollWidth") or 0),
+                    scroll_height=int(n.get("scrollHeight") or 0),
                 )
         # 非均匀边框（表格行的 1px 分隔线）：逐边补成细线元素。原先只在 borderWidth
         # 简写为空时才补采，而真实页的简写是带 0 的多值（"0px 1px 1px 0px"）→ 整排
@@ -980,7 +1011,16 @@ class DomProvider(BaseProvider):
             # 段，其余段按各自行框补成独立 text 元素（与 placeholder 同一条“一个 DOM
             # 节点出多个元素”的路子）。有底色/描边的盒子是真几何，不拆。
             text_runs = n.get("textRuns") or []
-            if len(text_runs) > 1 and text and not paints_own_box:
+            rich_runs = n.get("richRuns") or []
+            if rich_runs:
+                run_box = None
+                text_flow = True
+            if (
+                len(text_runs) > 1
+                and text
+                and not paints_own_box
+                and not rich_runs
+            ):
                 first = strip_icon_glyphs(
                     str(text_runs[0][0]),
                     preserve_whitespace=True,
@@ -1001,14 +1041,13 @@ class DomProvider(BaseProvider):
             # 仍要按真实行框——按盒子居中会把文字推到同级图标上（dushu 导航按钮实测
             # 图标压住首字、「查看更多」左偏 107px）。只认“单行”行框：多行的行框是
             # 各行并集，得走折行那条老路。
-            text_box = None
-            if (
-                run_box is not None
-                and paints_own_box
-                and etype != "text"
-                and _run_box_is_single_line(run_box, style)
-            ):
-                text_box = run_box
+            text_box = _control_text_box(
+                n,
+                run_box,
+                style,
+                paints_own_box=paints_own_box,
+                element_type=etype,
+            )
             # 「第一行行框」+ 行数：只有 Axure 出口读它（把控件高对齐到真实落字
             # 位置，见 rendering/axure_adapter）。缺字段不出，其它输出端逐字节不变。
             em_box = _text_em_box(n, ctx.image_w, ctx.image_h) if text else None
@@ -1055,6 +1094,15 @@ class DomProvider(BaseProvider):
                 text_em_box=em_box,
                 text_em_lines=int(n.get("textEmLines") or 0),
                 text_lines=n.get("textLines"),
+                rich_runs=rich_runs,
+                clip_to_bounds=bool(n.get("clipToBounds")),
+                overflow_x=str(n.get("overflowX") or ""),
+                overflow_y=str(n.get("overflowY") or ""),
+                text_overflow=str(n.get("textOverflow") or ""),
+                client_width=int(n.get("clientWidth") or 0),
+                client_height=int(n.get("clientHeight") or 0),
+                scroll_width=int(n.get("scrollWidth") or 0),
+                scroll_height=int(n.get("scrollHeight") or 0),
                 asset_identity=asset_identity,
                 source_crop=source_crop,
                 text_line_box=(
@@ -1064,7 +1112,7 @@ class DomProvider(BaseProvider):
                 clip=clip,
                 dom_index=i,
             )
-            if len(text_runs) > 1 and not paints_own_box:
+            if len(text_runs) > 1 and not paints_own_box and not rich_runs:
                 for run in text_runs[1:]:
                     rtext = strip_icon_glyphs(
                         str(run[0]),

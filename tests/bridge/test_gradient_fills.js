@@ -63,6 +63,29 @@ async function main() {
   if (Math.abs(paint.gradientStops[1].position - 0.52) > 0.001) {
     throw new Error(`gradient stop position mismatch: ${JSON.stringify(paint)}`);
   }
+
+  await context.createRectangle({
+    x: 0,
+    y: 0,
+    width: 200,
+    height: 80,
+    fillColor: "transparent",
+    gradient: {
+      type: "linear",
+      angle: 180,
+      detailedStops: [
+        { color: "rgba(0, 0, 0, 0)", offset: 0.35 },
+        { color: "rgba(0, 0, 0, 0.55)", offset: 1 },
+      ],
+    },
+  });
+  const alphaPaint = created.fills[0];
+  if (alphaPaint.gradientStops[0].color.a !== 0) {
+    throw new Error(`transparent stop lost its alpha: ${JSON.stringify(alphaPaint)}`);
+  }
+  if (Math.abs(alphaPaint.gradientStops[1].color.a - 0.55) > 0.001) {
+    throw new Error(`semi-transparent stop alpha mismatch: ${JSON.stringify(alphaPaint)}`);
+  }
   console.log("gradient fills materialized");
 }
 

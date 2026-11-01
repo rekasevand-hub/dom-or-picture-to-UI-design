@@ -172,8 +172,12 @@ def build_visual_assets(
                 verified = _verified_asset(row)
                 has_text = bool(str(node.get("text") or "")) or bool(node.get("richRuns"))
                 if has_text:
-                    display_mode = "source-crop"
-                    reason = "source-crop-required-for-text-over-background"
+                    display_mode = "image-fill" if verified else "skip"
+                    reason = (
+                        ""
+                        if verified
+                        else "text-over-unverified-background-skip"
+                    )
                 elif verified:
                     display_mode = "image-fill"
                     reason = ""

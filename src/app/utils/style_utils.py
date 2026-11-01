@@ -352,7 +352,7 @@ def build_style(
         clamp = int(float(str(lineClamp).strip()))
     except (TypeError, ValueError):
         clamp = 0
-    if clamp > 1:
+    if clamp >= 1:
         style["maxLines"] = clamp
     # 字距：computed 常带 "normal"（不缺省时是 0），只有真的非零才写；px 原样透传
     # （可为负，Figma 用 PIXELS、SVG 用 letter-spacing，两端口径一致）。

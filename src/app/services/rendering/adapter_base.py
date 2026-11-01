@@ -10,7 +10,11 @@ from typing import Any
 
 from src.app import tuning
 from src.app.services.rendering.text_layout import layout_text
-from src.app.services.rendering.text_wrap import lines_spec_fields, wrap_for_spec
+from src.app.services.rendering.text_wrap import (
+    fit_measured_lines,
+    lines_spec_fields,
+    wrap_for_spec,
+)
 
 
 # 文本基线：computed style/DesignSpec 里的 y 是元素（行框）上沿，而按基线绘制的
@@ -544,10 +548,17 @@ class PrototypeAdapter(ABC):
             return spec
         if isinstance(measured_lines, (list, tuple)) and measured_lines:
             layout = layout_text(spec, measured_lines=measured_lines)
+            fitted_lines = fit_measured_lines(
+                spec,
+                list(layout["lines"]),
+            )
             return {
                 **spec,
-                "lines": list(layout["lines"]),
-                "lineBoxes": [list(box) for box in layout.get("lineBoxes", [])],
+                "lines": fitted_lines,
+                "lineBoxes": [
+                    list(box)
+                    for box in layout.get("lineBoxes", [])[:len(fitted_lines)]
+                ],
                 "lineHeight": int(layout["lineHeight"]),
                 "textAlign": str(layout["textAlign"]),
                 "source": str(layout["source"]),

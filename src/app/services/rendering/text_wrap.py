@@ -18,6 +18,7 @@ Microsoft YaHei 这类字体里是全角（advance = font-size），拉丁字母
 
 from __future__ import annotations
 
+import re
 import unicodedata
 from dataclasses import dataclass
 
@@ -177,12 +178,62 @@ def ellipsize(
     font_size: float,
     mark: str = "\u2026",
     letter_spacing: float = 0.0,
+    reserve_chars: int = 2,
 ) -> str:
-    """截到连 mark 一起放得下为止（从行尾逐个去掉字符）。"""
+    """Reserve two character widths before adding the ellipsis.
+
+    The reserved space absorbs renderer font-metric differences. Without it,
+    the last glyph and the ellipsis can still exceed the Figma text box and
+    wrap into the next row even though the estimator considered them a fit.
+    """
     line = line.rstrip()
-    while line and estimate_width(line + mark, font_size, letter_spacing) > width:
+    safe_width = max(
+        0.0,
+        width - max(0, int(reserve_chars)) * (font_size + letter_spacing),
+    )
+    while line and estimate_width(line + mark, font_size, letter_spacing) > safe_width:
         line = line[:-1].rstrip()
     return (line + mark) if line else mark
+
+
+def fit_measured_lines(
+    spec: dict,
+    lines: list[str],
+) -> list[str]:
+    """Apply row clipping and CSS ellipsis to already measured line breaks."""
+    result = [str(line) for line in lines if str(line)]
+    try:
+        clamp = int(spec.get("maxLines") or 0)
+    except (TypeError, ValueError):
+        clamp = 0
+    ellipsis = (
+        str(spec.get("textOverflow") or "").strip().lower() == "ellipsis"
+    )
+    white_space = str(spec.get("whiteSpace") or "").strip().lower()
+    if result and (clamp == 1 or ellipsis) and white_space not in {
+        "pre",
+        "pre-wrap",
+        "pre-line",
+        "break-spaces",
+    }:
+        result = [re.sub(r"\s+", " ", result[0]).strip()]
+    if clamp > 0 and len(result) > clamp:
+        result = result[:clamp]
+    if not result:
+        return result
+    if clamp > 0 or ellipsis:
+        try:
+            width = float(spec.get("width") or 0)
+        except (TypeError, ValueError):
+            width = 0
+        if width > 0:
+            result[-1] = ellipsize(
+                result[-1],
+                width,
+                font_size_of(spec),
+                letter_spacing=letter_spacing_of(spec),
+            )
+    return result
 
 
 def wrap_lines(
@@ -280,11 +331,15 @@ def wrap_for_spec(spec: dict) -> list[str] | None:
         from src.app.services.rendering.text_layout import layout_text
 
         measured_layout = layout_text(spec)
-        return list(measured_layout.get("lines") or []) or None
+        return fit_measured_lines(
+            spec,
+            list(measured_layout.get("lines") or []),
+        ) or None
     measured = [
         str(line).strip() for line in (spec.get("lines") or []) if str(line).strip()
     ]
     if measured:
+        measured = fit_measured_lines(spec, measured)
         try:
             clamp = int(spec.get("maxLines") or 0)
         except (TypeError, ValueError):
@@ -299,7 +354,17 @@ def wrap_for_spec(spec: dict) -> list[str] | None:
                     letter_spacing=letter_spacing_of(spec),
                 )
         return measured
-    if len(text) < 2 or spec.get("textLineBox"):
+    try:
+        measured_line_count = int(
+            spec.get("measuredLineCount")
+            or spec.get("textEmLines")
+            or 0
+        )
+    except (TypeError, ValueError):
+        measured_line_count = 0
+    if len(text) < 2 or (
+        spec.get("textLineBox") and measured_line_count <= 1
+    ):
         return None
     if str(spec.get("whiteSpace") or "").strip().lower() == "nowrap":
         return None

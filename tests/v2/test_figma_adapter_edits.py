@@ -41,6 +41,147 @@ class _TextRenderAdapter(_RecordingAdapter):
 
 
 class FigmaAdapterEditTests(unittest.TestCase):
+    def test_multiline_rich_text_falls_back_to_wrapped_plain_lines(self) -> None:
+        adapter = _TextRenderAdapter()
+        text = "这是一段很长的富文本内容，" * 12
+        design = {
+            "canvas": {"width": 300, "height": 120, "background": "#ffffff"},
+            "elements": [
+                {
+                    "id": "long-rich",
+                    "type": "text",
+                    "text": text,
+                    "x": 10,
+                    "y": 10,
+                    "width": 140,
+                    "height": 48,
+                    "textEmLines": 20,
+                    "clipToBounds": True,
+                    "richRuns": [
+                        {
+                            "start": 0,
+                            "end": len(text),
+                            "text": text,
+                            "style": {"fontSize": "14px", "fontWeight": "700"},
+                        }
+                    ],
+                    "style": {
+                        "fontFamily": "Arial",
+                        "fontSize": 14,
+                        "lineHeight": 24,
+                        "maxLines": 2,
+                        "textColor": "#252933",
+                    },
+                }
+            ],
+        }
+
+        adapter.render_design(design)
+
+        text_spec = next(
+            params for action, params, *_rest in adapter.calls if action == "create_text"
+        )
+        self.assertEqual(len(text_spec["lines"]), 2)
+        self.assertTrue(text_spec["lines"][-1].endswith("…"))
+        self.assertFalse(text_spec.get("richRuns"))
+        self.assertTrue(text_spec["boundedText"])
+
+    def test_multi_run_single_line_keeps_element_origin(self) -> None:
+        adapter = _TextRenderAdapter()
+        design = {
+            "canvas": {"width": 200, "height": 80, "background": "#ffffff"},
+            "elements": [
+                {
+                    "id": "plus",
+                    "type": "text",
+                    "text": "Plus 会员",
+                    "x": 1361,
+                    "y": 15,
+                    "width": 56,
+                    "height": 19,
+                    "textEmBox": [1385, 15, 32, 19],
+                    "textEmLines": 1,
+                    "richRuns": [
+                        {
+                            "start": 0,
+                            "end": 4,
+                            "text": "Plus",
+                            "style": {"fontSize": "14px"},
+                        },
+                        {
+                            "start": 4,
+                            "end": 7,
+                            "text": " 会员",
+                            "style": {"fontSize": "14px"},
+                        },
+                    ],
+                    "style": {
+                        "fontFamily": "Arial",
+                        "fontSize": 14,
+                        "textColor": "#ffa116",
+                    },
+                }
+            ],
+        }
+
+        adapter.render_design(design)
+
+        text_spec = next(
+            params for action, params, *_rest in adapter.calls if action == "create_text"
+        )
+        self.assertEqual(text_spec["x"], 1361)
+        self.assertEqual(text_spec["y"], 15)
+        self.assertTrue(text_spec["singleLine"])
+
+    def test_single_line_text_uses_measured_x_and_disables_bounded_wrap(
+        self,
+    ) -> None:
+        adapter = _TextRenderAdapter()
+        design = {
+            "canvas": {"width": 200, "height": 80, "background": "#ffffff"},
+            "elements": [
+                {
+                    "id": "tag-label",
+                    "type": "text",
+                    "text": "相关标签",
+                    "x": 70,
+                    "y": 152,
+                    "width": 82,
+                    "height": 24,
+                    "textEmBox": [96, 156, 48, 16],
+                    "textEmLines": 1,
+                    "singleLine": True,
+                    "lines": ["相关标", "签"],
+                    "richRuns": [
+                        {
+                            "start": 0,
+                            "end": 4,
+                            "text": "相关标签",
+                            "style": {"fontSize": "12px"},
+                        }
+                    ],
+                    "style": {
+                        "fillColor": "#f0f0f0",
+                        "fontFamily": "Arial",
+                        "fontSize": 12,
+                        "lineHeight": 16,
+                        "textColor": "#18181b",
+                    },
+                }
+            ],
+        }
+
+        adapter.render_design(design)
+
+        text_spec = next(
+            params for action, params, *_rest in adapter.calls if action == "create_text"
+        )
+        self.assertEqual(text_spec["x"], 96)
+        self.assertEqual(text_spec["y"], 156)
+        self.assertTrue(text_spec["singleLine"])
+        self.assertNotIn("lines", text_spec)
+        self.assertFalse(text_spec.get("boundedText", False))
+
     def test_single_line_text_uses_measured_line_box_without_css_line_height(
         self,
     ) -> None:
@@ -108,6 +249,53 @@ class FigmaAdapterEditTests(unittest.TestCase):
         text_spec = adapter.calls[-1][1]
         self.assertEqual(text_spec["y"], 30)
         self.assertEqual(text_spec["lineHeight"], 18)
+
+    def test_measured_multiline_text_keeps_expanded_element_origin(self) -> None:
+        adapter = _TextRenderAdapter()
+        design = {
+            "canvas": {"width": 1100, "height": 500, "background": "#ffffff"},
+            "elements": [
+                {
+                    "id": "heading",
+                    "type": "text",
+                    "text": "Add interactivity wherever you need it",
+                    "x": 432,
+                    "y": 2884,
+                    "width": 576,
+                    "height": 127,
+                    "textEmBox": [513, 2884, 413, 67],
+                    "textEmLines": 2,
+                    "measuredLines": [
+                        {
+                            "text": "Add interactivity",
+                            "box": [513, 2884, 413, 67],
+                        },
+                        {
+                            "text": "wherever you need it",
+                            "box": [465, 2944, 510, 67],
+                        },
+                    ],
+                    "style": {
+                        "fontFamily": "Arial",
+                        "fontSize": 52,
+                        "lineHeight": 59,
+                        "textAlign": "center",
+                        "textColor": "#23272f",
+                    },
+                }
+            ],
+        }
+
+        adapter.render_design(design)
+
+        text_spec = adapter.calls[-1][1]
+        self.assertEqual(text_spec["x"], 432)
+        self.assertEqual(text_spec["y"], 2884)
+        self.assertEqual(text_spec["width"], 576)
+        self.assertEqual(
+            text_spec["lines"],
+            ["Add interactivity", "wherever you need it"],
+        )
 
     def test_expected_region_checks_are_independent(self) -> None:
         expected = {
@@ -485,6 +673,49 @@ class FigmaAdapterEditTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "BRIDGE_WRITE_BACKPRESSURE")
         self.assertEqual(raised.exception.outcome, "not-applied")
         self.assertEqual(raised.exception.retry_after_ms, 37)
+
+    def test_empty_bridge_response_is_reported_as_unknown_outcome(self) -> None:
+        class FakeWebSocket:
+            def send(self, message):
+                self.request = json.loads(message)
+
+            def recv(self):
+                return ""
+
+        adapter = FigmaBridgeAdapter("ws://localhost:8765")
+        adapter.ws = FakeWebSocket()
+
+        with self.assertRaises(FigmaBridgeError) as raised:
+            adapter.set_text("12:34", "Edited")
+
+        self.assertEqual(raised.exception.code, "BRIDGE_EMPTY_RESPONSE")
+        self.assertEqual(raised.exception.outcome, "unknown")
+        self.assertIsNone(adapter.ws)
+
+    def test_closed_bridge_connection_is_reported_as_unknown_outcome(self) -> None:
+        class ClosedConnection(RuntimeError):
+            pass
+
+        class FakeWebSocketModule:
+            WebSocketConnectionClosedException = ClosedConnection
+
+        class FakeWebSocket:
+            def send(self, message):
+                self.request = json.loads(message)
+
+            def recv(self):
+                raise ClosedConnection("connection closed")
+
+        adapter = FigmaBridgeAdapter("ws://localhost:8765")
+        adapter._websocket = FakeWebSocketModule
+        adapter.ws = FakeWebSocket()
+
+        with self.assertRaises(FigmaBridgeError) as raised:
+            adapter.set_text("12:34", "Edited")
+
+        self.assertEqual(raised.exception.code, "BRIDGE_DISCONNECTED")
+        self.assertEqual(raised.exception.outcome, "unknown")
+        self.assertIsNone(adapter.ws)
 
 
 if __name__ == "__main__":

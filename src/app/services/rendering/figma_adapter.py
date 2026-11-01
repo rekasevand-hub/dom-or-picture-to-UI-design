@@ -934,7 +934,23 @@ class FigmaBridgeAdapter(PrototypeAdapter):
             spec.get("baselineSource") == "browser-measured"
             or bool(spec.get("measuredLines"))
         )
+        measured_lines = spec.get("measuredLines")
         lines = spec.get("lines")
+        if (
+            browser_measured
+            and isinstance(measured_lines, list)
+            and len(measured_lines) > 1
+            and not _single_line_text(spec)
+        ):
+            return {
+                **local_spec,
+                "baselineSource": "browser-measured",
+                "lineBoxes": [
+                    list(box)
+                    for box in spec.get("lineBoxes", [])
+                    if isinstance(box, (list, tuple)) and len(box) == 4
+                ],
+            }
         if (
             not browser_measured
             and not _single_line_text(spec)

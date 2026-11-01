@@ -98,6 +98,29 @@ def _visual_asset_manifest(som_json: dict) -> dict:
     return {"assets": rows}
 
 
+def _verified_visual_asset_payload(
+    asset: dict,
+    image_path: str | Path | None,
+) -> bytes | None:
+    if asset.get("displayMode") != "image-fill":
+        return None
+    row = asset.get("asset")
+    if not isinstance(row, dict):
+        return None
+    status = str(row.get("status") or "").lower()
+    locator = str(row.get("locator") or row.get("path") or "").strip()
+    if status not in {"verified", "verified-original"} or not locator:
+        return None
+    root = Path(image_path).parent if image_path else Path.cwd()
+    for candidate in (root / locator, Path(locator)):
+        try:
+            if candidate.is_file():
+                return candidate.read_bytes()
+        except OSError:
+            continue
+    return None
+
+
 def _pseudo_visual_style(asset: dict) -> dict:
     source = asset.get("style") or {}
     style: dict = {}
@@ -142,7 +165,7 @@ def _apply_clipped_text_lines(
     all measured lines would make SVG/Figma paint the overflow into neighbouring cards.
     We only derive a line cap here; both renderers still use the shared text_wrap path.
     """
-    if element_type != "text" or not clip or len(clip) != 4:
+    if element_type not in {"text", "button", "input"} or not clip or len(clip) != 4:
         return
     try:
         clip_x, clip_y, clip_w, clip_h = (int(value) for value in clip)
@@ -198,6 +221,58 @@ def _apply_measured_text_geometry(
     return bx, by, bw, bh
 
 
+def _normalize_measured_text_geometry(
+    element: dict,
+    x: int,
+    y: int,
+    width: int,
+    height: int,
+) -> tuple[int, int, int, int]:
+    """Keep multiline text wide enough for its longest browser-measured line."""
+    measured = element.get("measuredLines")
+    if not isinstance(measured, list) or not measured:
+        return x, y, width, height
+    boxes: list[tuple[int, int, int, int]] = []
+    for line in measured:
+        if not isinstance(line, dict):
+            continue
+        box = line.get("box")
+        if not isinstance(box, (list, tuple)) or len(box) != 4:
+            continue
+        try:
+            values = tuple(int(round(float(value))) for value in box)
+        except (TypeError, ValueError):
+            continue
+        if values[2] > 0 and values[3] > 0:
+            boxes.append(values)
+    if not boxes:
+        element["measuredLines"] = []
+        return x, y, width, height
+
+    if len(boxes) == 1:
+        rich_runs = element.get("richRuns") or element.get("textRuns") or []
+        line_width = boxes[0][2]
+        if isinstance(rich_runs, list) and len(rich_runs) > 1 and (
+            line_width < max(1, width) * 0.8
+        ):
+            # Mixed inline runs often expose only the direct separator text node
+            # as textEmBox; that width cannot represent the whole paragraph.
+            element["measuredLines"] = []
+        return x, y, width, height
+
+    left = min(x, *(box[0] for box in boxes))
+    top = min(y, *(box[1] for box in boxes))
+    current_right = x + max(width, int(element.get("clientWidth") or 0))
+    right = max(current_right, *(box[0] + box[2] for box in boxes))
+    current_bottom = y + max(height, int(element.get("clientHeight") or 0))
+    bottom = max(current_bottom, *(box[1] + box[3] for box in boxes))
+    element["x"] = left
+    element["y"] = top
+    element["width"] = max(1, right - left)
+    element["height"] = max(1, bottom - top)
+    return left, top, element["width"], element["height"]
+
+
 def _normalize_single_line_text(item: dict) -> str:
     """Collapse source indentation when the browser measured one visual line."""
     text = str(item.get("text") or "")
@@ -251,6 +326,42 @@ def _carry_text_lines(out: dict, item: dict) -> None:
     ]
     if lines:
         out["lines"] = lines
+
+
+def _primary_text_element_ids(
+    elements: list[dict],
+    text_blocks_by_source: dict[int, dict],
+) -> set[object]:
+    """Keep one DOM element as the carrier for each measured text block."""
+    by_source: dict[int, list[tuple[int, dict]]] = {}
+    for index, element in enumerate(elements):
+        if not isinstance(element, dict) or element.get("type") != "text":
+            continue
+        dom_index = element.get("domIndex")
+        if not isinstance(dom_index, int) or dom_index not in text_blocks_by_source:
+            continue
+        by_source.setdefault(dom_index, []).append((index, element))
+
+    selected: set[object] = set()
+    for candidates in by_source.values():
+        def priority(candidate: tuple[int, dict]) -> tuple[int, int, int, int]:
+            index, element = candidate
+            source = str(element.get("source") or "")
+            bbox = element.get("bbox") or [0, 0, 0, 0]
+            try:
+                area = int(float(bbox[2]) * float(bbox[3]))
+            except (TypeError, ValueError, IndexError):
+                area = 0
+            return (
+                int(source != "dom:textrun"),
+                int(not source.startswith(("dom:pseudo", "dom:placeholder"))),
+                area,
+                -index,
+            )
+
+        _, primary = max(candidates, key=priority)
+        selected.add(primary.get("id"))
+    return selected
 
 
 def _carry_asset_metadata(out: dict, item: dict) -> None:
@@ -432,6 +543,45 @@ def _dom_ancestor_clip(
     return (list(current) if current is not None else None), False
 
 
+def _dom_inherited_text_cap(
+    element: dict,
+    dom_nodes,
+    line_height: float,
+) -> tuple[int, bool]:
+    """Return visible line cap and ellipsis inherited from an overflow ancestor."""
+    if not isinstance(dom_nodes, list):
+        return 0, False
+    dom_index = element.get("domIndex")
+    if not isinstance(dom_index, int) or not 0 <= dom_index < len(dom_nodes):
+        return 0, False
+    parent = dom_nodes[dom_index].get("pIdx")
+    seen: set[int] = set()
+    while isinstance(parent, int) and 0 <= parent < len(dom_nodes):
+        if parent in seen:
+            break
+        seen.add(parent)
+        ancestor = dom_nodes[parent]
+        overflow_x = str(ancestor.get("overflowX") or "").lower()
+        overflow_y = str(ancestor.get("overflowY") or "").lower()
+        ellipsis = (
+            str(ancestor.get("textOverflow") or "").lower() == "ellipsis"
+        )
+        clipped = bool(ancestor.get("clipToBounds")) and (
+            overflow_x in {"hidden", "clip"}
+            or overflow_y in {"hidden", "clip"}
+        )
+        if ellipsis or clipped:
+            try:
+                ancestor_height = float(ancestor.get("h") or 0)
+            except (TypeError, ValueError):
+                ancestor_height = 0
+            if ancestor_height > 0 and line_height > 0:
+                lines = max(1, int((ancestor_height + 0.5) // line_height))
+                return lines, ellipsis
+        parent = ancestor.get("pIdx")
+    return 0, False
+
+
 def _dom_subtree_has_visible_content(root_index, dom_nodes) -> bool:
     """Whether a captured DOM subtree contains anything visible to recreate.
 
@@ -474,6 +624,206 @@ def _dom_subtree_has_visible_content(root_index, dom_nodes) -> bool:
             pass
         stack.extend(children.get(index, []))
     return False
+
+
+def _code_block_roots(dom_nodes) -> list[int]:
+    roots = []
+    if not isinstance(dom_nodes, list):
+        return roots
+    pre_indices = {
+        index
+        for index, node in enumerate(dom_nodes)
+        if isinstance(node, dict)
+        and str(node.get("tag") or "").lower() == "pre"
+    }
+    for index, node in enumerate(dom_nodes):
+        if not isinstance(node, dict):
+            continue
+        tag = str(node.get("tag") or "").lower()
+        if tag == "pre":
+            roots.append(index)
+            continue
+        if tag != "code":
+            continue
+        parent = node.get("pIdx")
+        seen = set()
+        inside_pre = False
+        while isinstance(parent, int) and 0 <= parent < len(dom_nodes):
+            if parent in seen:
+                break
+            seen.add(parent)
+            if parent in pre_indices:
+                inside_pre = True
+                break
+            parent = dom_nodes[parent].get("pIdx")
+        if inside_pre:
+            continue
+        display = str(node.get("display") or "block").lower()
+        multiline = int(node.get("textEmLines") or 0) > 1
+        if display not in {"inline", "inline-block"} or multiline:
+            roots.append(index)
+    return sorted(set(roots))
+
+
+def _dom_subtree_indices(root_index: int, dom_nodes) -> set[int]:
+    if not isinstance(dom_nodes, list):
+        return set()
+    parents: dict[int, list[int]] = {}
+    for index, node in enumerate(dom_nodes):
+        parent = node.get("pIdx") if isinstance(node, dict) else None
+        if isinstance(parent, int) and 0 <= parent < len(dom_nodes):
+            parents.setdefault(parent, []).append(index)
+    result = {root_index}
+    stack = list(parents.get(root_index, []))
+    while stack:
+        current = stack.pop()
+        if current in result:
+            continue
+        result.add(current)
+        stack.extend(parents.get(current, []))
+    return result
+
+
+def _materialize_code_block_images(
+    elements: list[dict],
+    dom_nodes,
+    *,
+    image_path: str | Path | None,
+    canvas: dict,
+) -> tuple[list[dict], int]:
+    roots = _code_block_roots(dom_nodes)
+    if not roots or not image_path:
+        return elements, 0
+    code_indices: set[int] = set()
+    code_images = []
+    for root in roots:
+        node = dom_nodes[root]
+        subtree = _dom_subtree_indices(root, dom_nodes)
+        x, y, w, h = _geometry(
+            {
+                "bbox": [
+                    node.get("x", 0),
+                    node.get("y", 0),
+                    node.get("w", 0),
+                    node.get("h", 0),
+                ]
+            }
+        )
+        w = min(w, int(canvas["width"]) - x)
+        h = min(h, int(canvas["height"]) - y)
+        if w < 1 or h < 1:
+            continue
+        b64 = _crop_image_b64(
+            str(image_path),
+            x,
+            y,
+            w,
+            h,
+            canvas["width"],
+            canvas["height"],
+        )
+        if not b64:
+            continue
+        code_indices.update(subtree)
+        image = {
+            "id": f"codeblock-{root}",
+            "type": "image",
+            "x": x,
+            "y": y,
+            "width": w,
+            "height": h,
+            "text": "",
+            "overlay": bool(node.get("overlay", False)),
+            "zIndex": int(node.get("zIndex") or 0),
+            "paintDepth": 1_000_000,
+            "name": f"Code block {root}",
+            "style": {"fillColor": "transparent"},
+            "imageBase64": b64,
+            "displaySourceCrop": True,
+            "codeBlockImage": True,
+            "source": "dom:code-block",
+            "domIndex": root,
+        }
+        _carry_clip(image, node)
+        code_images.append(image)
+    if not code_images:
+        return elements, 0
+    kept = [
+        element
+        for element in elements
+        if element.get("codeBlockImage")
+        or element.get("domIndex") not in code_indices
+    ]
+    return [*kept, *code_images], len(code_images)
+
+
+def _intersection_area(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> int:
+    left = max(a[0], b[0])
+    top = max(a[1], b[1])
+    right = min(a[0] + a[2], b[0] + b[2])
+    bottom = min(a[1] + a[3], b[1] + b[3])
+    return max(0, right - left) * max(0, bottom - top)
+
+
+def _screenshot_crop_contains_text(
+    element: dict,
+    text_rects: list[tuple[str, tuple[int, int, int, int]]],
+) -> list[str]:
+    if element.get("type") not in {"image", "avatar"} or element.get("codeBlockImage"):
+        return []
+    payload = element.get("displayPayload") or {}
+    resolution = element.get("sourceResolution") or {}
+    display = resolution.get("display") or {}
+    is_screenshot_crop = (
+        str(payload.get("kind") or "") == "screenshot-crop"
+        or str(display.get("selected") or "") == "screenshot-crop"
+        or bool(element.get("displaySourceCrop"))
+    )
+    if not is_screenshot_crop:
+        return []
+    image_rect = _rect_of(element)
+    if image_rect is None:
+        return []
+    contaminated = []
+    for text_id, text_rect in text_rects:
+        text_area = max(1, text_rect[2] * text_rect[3])
+        if _intersection_area(image_rect, text_rect) / text_area >= 0.5:
+            contaminated.append(text_id)
+    return contaminated
+
+
+def _replace_text_contaminated_crops(elements: list[dict]) -> int:
+    text_rects = []
+    for element in elements:
+        if element.get("type") != "text" or element.get("codeBlockImage"):
+            continue
+        if not (
+            str(element.get("text") or "").strip()
+            or element.get("lines")
+            or element.get("richRuns")
+        ):
+            continue
+        rect = _rect_of(element)
+        if rect is not None:
+            text_rects.append((str(element.get("id") or ""), rect))
+
+    replaced = 0
+    for element in elements:
+        text_ids = _screenshot_crop_contains_text(element, text_rects)
+        if not text_ids:
+            continue
+        element.pop("imageBase64", None)
+        element.pop("displaySourceCrop", None)
+        element["type"] = "image"
+        element["generatedImageRequired"] = True
+        element["sourceCropContamination"] = text_ids
+        element["imagePrompt"] = str(
+            element.get("alt")
+            or element.get("name")
+            or "website image without overlaid text"
+        )[:500]
+        replaced += 1
+    return replaced
 
 
 def _covered_by_own_plate(rect, plates) -> bool:
@@ -709,6 +1059,10 @@ def build_direct_design(
             for index in text_model.get("inlineConsumedIndices", [])
             if isinstance(index, int)
         }
+    primary_text_element_ids = _primary_text_element_ids(
+        list(som_json.get("elements") or []),
+        text_blocks_by_source,
+    )
     if profile is None:
         # 与采集端取同一个 profile：url 由 precise_agent 注入 provenance（见该文件）。
         profile = load_profile(provenance.get("url"))
@@ -926,6 +1280,8 @@ def build_direct_design(
             if text_model is not None and etype == "text" and isinstance(dom_index, int)
             else None
         )
+        if text_block is not None and e.get("id") not in primary_text_element_ids:
+            continue
         if text_block is not None:
             e = dict(e)
             e["text"] = str(text_block.get("text") or e.get("text") or "")
@@ -992,17 +1348,59 @@ def build_direct_design(
             "style": out_style,
         }
         _carry_clip(element, e)
-        _apply_clipped_text_lines(
-            out_style,
-            element_type=etype,
-            x=x,
-            y=y,
-            width=w,
-            height=h,
-            clip=element.get("clip"),
-        )
-        _carry_name(element, e)
         _carry_dom_index(element, e)
+        is_textual = (
+            etype in {"text", "button", "input"}
+            and bool(str(element.get("text") or "").strip())
+        )
+        if is_textual:
+            ancestor_clip, fully_clipped = _dom_ancestor_clip(
+                element,
+                dom_nodes,
+            )
+            if fully_clipped:
+                skipped_occluded += 1
+                continue
+            if ancestor_clip is not None:
+                clip_x, clip_y, clip_w, clip_h = ancestor_clip
+                visible_left = max(x, clip_x)
+                visible_right = min(x + w, clip_x + clip_w)
+                if visible_right <= visible_left:
+                    skipped_occluded += 1
+                    continue
+                x = visible_left
+                w = visible_right - visible_left
+                element["x"] = x
+                element["width"] = w
+                element["clip"] = ancestor_clip
+                element["clipToBounds"] = True
+            inherited_cap, inherited_ellipsis = _dom_inherited_text_cap(
+                element,
+                dom_nodes,
+                float(out_style.get("lineHeight") or 0),
+            )
+            if inherited_cap > 0:
+                existing_cap = int(out_style.get("maxLines") or 0)
+                out_style["maxLines"] = (
+                    min(existing_cap, inherited_cap)
+                    if existing_cap > 0
+                    else inherited_cap
+                )
+            if inherited_ellipsis:
+                element["textOverflow"] = "ellipsis"
+        if is_textual:
+            _apply_clipped_text_lines(
+                out_style,
+                element_type=etype,
+                x=x,
+                y=y,
+                width=w,
+                height=h,
+                clip=element.get("clip"),
+            )
+        _carry_name(element, e)
+        if e.get("alt"):
+            element["alt"] = str(e["alt"])[:500]
         _carry_flag(element, e, "textLineBox")
         _carry_box(element, e, "textBox")
         # Axure 出口的落字对齐输入（见 rendering/axure_adapter）：第一行行框 + 行数
@@ -1047,6 +1445,9 @@ def build_direct_design(
                 for line in text_block.get("measuredLines", [])
                 if isinstance(line, dict)
             ]
+            element["measuredLineCount"] = int(
+                text_block.get("measuredLineCount") or 0
+            )
         for key in (
             "clipToBounds",
             "overflowX",
@@ -1059,6 +1460,14 @@ def build_direct_design(
         ):
             if e.get(key) not in (None, "", 0, False):
                 element[key] = e[key]
+        if etype == "text":
+            x, y, w, h = _normalize_measured_text_geometry(
+                element,
+                x,
+                y,
+                w,
+                h,
+            )
         _carry_asset_metadata(element, e)
         # 裁剪：文字必须靠 clipPath（字形长度 ≠ 盒子），先看裁剪后的可见部分是不是
         # 整块被后画的浮层底板盖住——盖住就整个丢掉；形状则直接把盒子夹进裁剪矩形，
@@ -1219,6 +1628,34 @@ def build_direct_design(
             }
             if asset.get("visualFallbackReason"):
                 common["visualFallbackReason"] = asset["visualFallbackReason"]
+            if str(asset.get("displayMode") or "") == "skip":
+                if (
+                    asset.get("kind") == "background-image"
+                    and (
+                        str(source_node.get("text") or "").strip()
+                        or bool(source_node.get("richRuns"))
+                    )
+                ):
+                    element = {
+                        **common,
+                        "type": "image",
+                        "text": "",
+                        "name": (
+                            f"img.background {w}×{h}"
+                            if not str(source_node.get("alt") or "").strip()
+                            else f"img.background \"{source_node['alt']}\""
+                        ),
+                        "style": {"fillColor": "transparent"},
+                        "generatedImageRequired": True,
+                        "imagePrompt": str(
+                            source_node.get("alt")
+                            or source_node.get("title")
+                            or source_node.get("bgImage")
+                            or "website background image"
+                        )[:500],
+                    }
+                    elements.append(element)
+                continue
             if asset.get("kind") == "text":
                 element = {
                     **common,
@@ -1251,7 +1688,17 @@ def build_direct_design(
                 elements.append(element)
                 continue
             b64 = None
-            if image_path:
+            verified_payload = _verified_visual_asset_payload(asset, image_path)
+            if verified_payload is not None:
+                b64 = base64.b64encode(verified_payload).decode("ascii")
+            elif (
+                str(source_node.get("text") or "").strip()
+                or bool(source_node.get("richRuns"))
+            ):
+                # Never source-crop a text-bearing surface into an image layer.
+                # The native text nodes already reproduce that text.
+                continue
+            elif image_path:
                 b64 = _crop_image_b64(
                     image_path,
                     x,
@@ -1270,8 +1717,17 @@ def build_direct_design(
             }
             if b64:
                 element["imageBase64"] = b64
-                element["displaySourceCrop"] = True
+                if verified_payload is None:
+                    element["displaySourceCrop"] = True
             elements.append(element)
+
+    elements, code_block_images = _materialize_code_block_images(
+        elements,
+        dom_nodes,
+        image_path=image_path,
+        canvas=canvas,
+    )
+    regenerated_crops = _replace_text_contaminated_crops(elements)
 
     if dom_nodes:
         kept_by_dom_clip: list[dict] = []
@@ -1331,6 +1787,8 @@ def build_direct_design(
         "overlays": overlay_count,
         "backdrops": len(backdrops),
         "image_backfilled": image_backfilled,
+        "code_block_images": code_block_images,
+        "regenerated_text_contaminated_crops": regenerated_crops,
         "skipped_transparent_containers": skipped_containers,
         "merged_backdrop_clones": merged_clones,
         "skipped_under_backdrop": skipped_under_backdrop,

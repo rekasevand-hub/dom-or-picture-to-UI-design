@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import copy
 import hashlib
 import io
@@ -133,9 +134,9 @@ def _recover_with_transport(
                     "source bytes are not a supported raster image",
                 )
             expected = expected_sizes.get(source_url)
-            if expected is not None and any(
-                abs(actual - declared) > 1.0
-                for actual, declared in zip(natural_size, expected, strict=True)
+            if expected is not None and not _natural_size_matches(
+                natural_size,
+                expected,
             ):
                 raise AssetRecoveryError(
                     "natural-size-mismatch",
@@ -186,7 +187,7 @@ def _recover_with_transport(
                 }
             )
     upgraded = copy.deepcopy(dict(design))
-    _apply_verified_sources(upgraded, verified)
+    _apply_verified_sources(upgraded, verified, output_dir=destination)
     status_counts = {
         "verified-original": len(verified),
         "reference-only": len(rows) - len(verified),
@@ -251,6 +252,8 @@ def _source_urls(
 def _apply_verified_sources(
     design: dict[str, Any],
     verified: Mapping[str, Mapping[str, Any]],
+    *,
+    output_dir: Path,
 ) -> None:
     for item in design.get("elements") or []:
         if not isinstance(item, dict) or item.get("type") != "image":
@@ -273,6 +276,28 @@ def _apply_verified_sources(
         item["displayPayload"] = dict(upgraded["display_payload"])
         item["replacement"] = dict(upgraded["replacement"])
         item["sourceResolution"] = fuse_asset_record(upgraded)
+        locator = Path(str(recovered["locator"]))
+        payload_path = output_dir / locator
+        if payload_path.is_file():
+            item["imageBase64"] = _display_image_base64(
+                payload_path.read_bytes(),
+                mime=str(recovered["mime"]),
+            )
+        item.pop("displaySourceCrop", None)
+        item.pop("generatedImageRequired", None)
+        item.pop("generationReferenceImageBase64", None)
+        item.pop("sourceCropContamination", None)
+        item.pop("imagePrompt", None)
+
+
+def _display_image_base64(payload: bytes, *, mime: str) -> str:
+    if mime in {"image/png", "image/jpeg"}:
+        return base64.b64encode(payload).decode("ascii")
+    with Image.open(io.BytesIO(payload)) as source:
+        image = source.convert("RGBA" if "A" in source.getbands() else "RGB")
+        output = io.BytesIO()
+        image.save(output, format="PNG", optimize=True)
+    return base64.b64encode(output.getvalue()).decode("ascii")
 
 
 def _validate_source_url(source_url: str) -> None:
@@ -291,6 +316,24 @@ def _validate_source_url(source_url: str) -> None:
         return
     if not address.is_global:
         raise AssetRecoveryError("private-host", "private hosts are not allowed")
+
+
+def _natural_size_matches(
+    actual: tuple[float, float],
+    expected: tuple[float, float],
+) -> bool:
+    if all(
+        abs(a - b) <= 1.0
+        for a, b in zip(actual, expected, strict=True)
+    ):
+        return True
+    actual_width, actual_height = actual
+    expected_width, expected_height = expected
+    if min(actual_width, actual_height, expected_width, expected_height) <= 0:
+        return False
+    actual_ratio = actual_width / actual_height
+    expected_ratio = expected_width / expected_height
+    return abs(actual_ratio - expected_ratio) <= expected_ratio * 0.03
 
 
 def _image_identity(payload: bytes) -> tuple[str | None, tuple[float, float] | None]:

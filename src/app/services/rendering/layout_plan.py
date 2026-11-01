@@ -65,6 +65,15 @@ def _box_ok(node: dict) -> bool:
         return False
 
 
+def _horizontal_context(node: dict) -> bool:
+    """Whether direct children form a visual left-to-right sequence."""
+    display = str(node.get("display") or "block")
+    if display in {"flex", "inline-flex"}:
+        direction = str(node.get("flexDirection") or "row")
+        return not direction.startswith("column")
+    return display in {"flow-root", "inline", "inline-block"}
+
+
 def _int(value) -> int:
     try:
         return int(float(value))
@@ -96,6 +105,115 @@ def _frame_element(dom_index: int, node: dict, items: list[tuple[int, tuple[str,
     }
 
 
+def _promote_shared_member_clip(owner: dict, members: list[dict]) -> None:
+    """Move an exact shared ancestor clip from row members onto their Frame."""
+    if owner.get("clip") or owner.get("clipToBounds"):
+        return
+    try:
+        owner_box = (
+            int(owner.get("x") or 0),
+            int(owner.get("y") or 0),
+            int(owner.get("width") or 0),
+            int(owner.get("height") or 0),
+        )
+    except (TypeError, ValueError):
+        return
+    clips: set[tuple[int, int, int, int]] = set()
+    for member in members:
+        clip = member.get("clip")
+        if not isinstance(clip, (list, tuple)) or len(clip) != 4:
+            continue
+        try:
+            clips.add(tuple(int(value) for value in clip))
+        except (TypeError, ValueError):
+            return
+    if len(clips) != 1:
+        return
+    clip = next(iter(clips))
+    if any(abs(actual - expected) > 1 for actual, expected in zip(clip, owner_box)):
+        return
+    owner["clipToBounds"] = True
+    for member in members:
+        member_clip = member.get("clip")
+        if isinstance(member_clip, (list, tuple)) and len(member_clip) == 4:
+            try:
+                if tuple(int(value) for value in member_clip) == clip:
+                    member.pop("clip", None)
+            except (TypeError, ValueError):
+                pass
+
+
+def _mark_single_line_members(owner: dict, members: list[dict]) -> None:
+    """Rows only one line tall must keep their text members on one line."""
+    layout = owner.get("layout") or {}
+    if layout.get("mode") != "HORIZONTAL":
+        return
+    try:
+        owner_height = float(owner.get("height") or 0)
+    except (TypeError, ValueError):
+        return
+    for member in members:
+        if member.get("type") != "text":
+            continue
+        box = member.get("textEmBox")
+        if not isinstance(box, (list, tuple)) or len(box) != 4:
+            continue
+        try:
+            text_height = float(box[3])
+        except (TypeError, ValueError):
+            continue
+        if text_height > 0 and owner_height <= text_height * 1.5:
+            member["singleLine"] = True
+
+
+def _clamp_small_child_overhang(elements: list[dict], dom_nodes: list[dict]) -> int:
+    """Keep small normal-flow child overhangs inside their DOM parent border.
+
+    Browser measurement can leave a text/control box a few pixels wider than its parent
+    because of margins or fractional layout. When that unchecked width reaches Figma's
+    text engine it can add an unexpected wrap. Only direct normal-flow non-image children
+    with at most a 24px/10% overhang are adjusted; absolute art and deliberate large
+    bleed-throughs keep their original geometry.
+    """
+    clamped = 0
+    for element in elements:
+        if element.get("type") not in {"text", "button", "container", "input"}:
+            continue
+        dom_index = element.get("domIndex")
+        if not isinstance(dom_index, int) or not 0 <= dom_index < len(dom_nodes):
+            continue
+        node = dom_nodes[dom_index]
+        parent_index = node.get("pIdx")
+        if not isinstance(parent_index, int) or not 0 <= parent_index < len(dom_nodes):
+            continue
+        if str(node.get("position") or "static") in {"absolute", "fixed"}:
+            continue
+        parent = dom_nodes[parent_index]
+        try:
+            parent_x = int(round(float(parent.get("x") or 0)))
+            parent_right = parent_x + int(round(float(parent.get("w") or 0)))
+            child_x = int(round(float(element.get("x") or 0)))
+            child_right = child_x + int(round(float(element.get("width") or 0)))
+        except (TypeError, ValueError):
+            continue
+        if parent_right <= parent_x or child_right <= parent_right:
+            continue
+        overhang = child_right - parent_right
+        limit = max(24, int(round((parent_right - parent_x) * 0.10)))
+        if overhang > limit or child_x < parent_x - limit:
+            continue
+        shift_left = max(0, parent_x - child_x)
+        new_width = int(element.get("width") or 0) - overhang - shift_left
+        if new_width < 1:
+            continue
+        element["x"] = child_x + shift_left
+        element["width"] = new_width
+        node["x"] = element["x"]
+        node["w"] = new_width
+        clamped += 1
+    return clamped
+
+
 def build_layout_plan(elements: list[dict], dom_nodes: list[dict] | None) -> int:
     """给够格的容器元素写上 `layout` / `layoutChildren`；返回写了几个。
 
@@ -113,6 +231,9 @@ def build_layout_plan(elements: list[dict], dom_nodes: list[dict] | None) -> int
             by_dom.setdefault(dom_index, []).append(i)
     if not by_dom:
         return 0
+
+    dom_nodes = [dict(node) for node in dom_nodes]
+    _clamp_small_child_overhang(elements, dom_nodes)
 
     kids = _children_table(dom_nodes)
     dom_of_node = {id(node): i for i, node in enumerate(dom_nodes)}
@@ -139,6 +260,7 @@ def build_layout_plan(elements: list[dict], dom_nodes: list[dict] | None) -> int
         if i in memo:
             return memo[i]
         memo[i] = None                      # 防环（DOM 树无环，这里只是兜底）
+        horizontal = _horizontal_context(dom_nodes[i])
         items: list[tuple[int, tuple[str, int]]] = []
         geom: list[int] = []
         for j in kids[i]:
@@ -162,29 +284,58 @@ def build_layout_plan(elements: list[dict], dom_nodes: list[dict] | None) -> int
         items = own_items + items
         geom = [i] * len(own_items) + geom
 
-        if len(items) >= 2:
+        if len(items) >= 2 and str(dom_nodes[i].get("tag") or "").lower() not in {
+            "html",
+            "body",
+        }:
             nodes = []
-            for (d, _h), g in zip(items, geom):
+            for (d, h), g in zip(items, geom):
                 source = dom_nodes[g]
                 if g == d or not _box_ok(source):
-                    nodes.append(dom_nodes[d])
-                    continue
+                    source = dom_nodes[d]
                 node = dict(source)     # 用包装层的盒子量布局，成员身份仍是那个图元
+                item = elements[h[1]] if h[0] == "e" else fresh[h[1]]
+                measured = item.get("textEmBox")
+                if horizontal and item.get("type") == "text" and isinstance(measured, list) and len(measured) == 4:
+                    try:
+                        mx, my, mw, mh = (int(value) for value in measured)
+                        if mw > 0 and mh > 0:
+                            node["x"], node["y"] = mx, my
+                            node["w"], node["h"] = mw, mh
+                    except (TypeError, ValueError):
+                        pass
                 dom_of_node[id(node)] = d
                 nodes.append(node)
+            if horizontal:
+                ordered = sorted(
+                    zip(items, geom, nodes),
+                    key=lambda row: (
+                        float(row[2].get("x") or 0),
+                        float(row[2].get("y") or 0),
+                    ),
+                )
+                items = [row[0] for row in ordered]
+                geom = [row[1] for row in ordered]
+                nodes = [row[2] for row in ordered]
             got = li.infer_container(dom_nodes[i], nodes, parent_of(i))
             spec = got.get("layout")
-            if spec:
-                if box is None:
-                    fresh.append(_frame_element(i, dom_nodes[i], items, elements, fresh))
-                    handle: tuple[str, int] = ("n", len(fresh) - 1)
-                else:
-                    handle = ("e", box)
-                plans[i] = {"handle": handle,
-                            "layout": {k: spec[k] for k in LAYOUT_KEYS if k in spec},
-                            "items": items, "got": got}
-                memo[i] = [((i, handle), i)]
-                return memo[i]
+            if box is None:
+                fresh.append(_frame_element(i, dom_nodes[i], items, elements, fresh))
+                handle: tuple[str, int] = ("n", len(fresh) - 1)
+            else:
+                handle = ("e", box)
+            plans[i] = {
+                "handle": handle,
+                "layout": (
+                    {k: spec[k] for k in LAYOUT_KEYS if k in spec}
+                    if spec
+                    else None
+                ),
+                "items": items,
+                "got": got,
+            }
+            memo[i] = [((i, handle), i)]
+            return memo[i]
 
         memo[i] = list(zip(items, geom))
         return memo[i]
@@ -216,7 +367,8 @@ def build_layout_plan(elements: list[dict], dom_nodes: list[dict] | None) -> int
     for dom_index, plan in plans.items():
         handle = plan["handle"]
         el = elements[handle[1]] if handle[0] == "e" else fresh[handle[1]]
-        el["layout"] = dict(plan["layout"])
+        if plan["layout"] is not None:
+            el["layout"] = dict(plan["layout"])
         members = [elements[h[1]] if h[0] == "e" else fresh[h[1]]
                    for _d, h in plan["items"]]
         children = [{"id": member.get("id")} for member in members]
@@ -236,6 +388,26 @@ def build_layout_plan(elements: list[dict], dom_nodes: list[dict] | None) -> int
             if item.get("grow"):
                 entry["grow"] = int(item["grow"])
         el["layoutChildren"] = children
+        _promote_shared_member_clip(el, members)
+        _mark_single_line_members(el, members)
+
+    # Overlay/fixed elements establish a stacking context. Propagate that context
+    # to descendants so the frame shell sorts before its children and the frame
+    # fill stays behind its own content.
+    for dom_index, plan in plans.items():
+        handle = plan["handle"]
+        owner = elements[handle[1]] if handle[0] == "e" else fresh[handle[1]]
+        if not owner.get("overlay"):
+            continue
+        owner_z = _int(owner.get("zIndex"))
+        stack = list(kids[dom_index])
+        while stack:
+            descendant = stack.pop()
+            stack.extend(kids[descendant])
+            for element_index in by_dom.get(descendant, []):
+                child = elements[element_index]
+                child["overlay"] = True
+                child["zIndex"] = max(_int(child.get("zIndex")), owner_z)
 
     for pos, _k, element in sorted(
             ((insert_pos(el.get("domIndex")), k, el) for k, el in enumerate(fresh)),

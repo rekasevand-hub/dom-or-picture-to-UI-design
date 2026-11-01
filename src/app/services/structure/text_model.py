@@ -210,9 +210,18 @@ def _measured_lines(node: Mapping[str, Any]) -> list[dict[str, Any]]:
             result.append(item)
         if result:
             return result
+    try:
+        measured_line_count = int(node.get("textEmLines") or 0)
+    except (TypeError, ValueError):
+        measured_line_count = 0
     box = node.get("textEmBox")
     text = str(node.get("text") or "")
-    if isinstance(box, (list, tuple)) and len(box) == 4 and text:
+    if (
+        measured_line_count <= 1
+        and isinstance(box, (list, tuple))
+        and len(box) == 4
+        and text
+    ):
         line: dict[str, Any] = {
             "text": text,
             "box": [int(value) for value in box],

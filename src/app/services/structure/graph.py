@@ -16,7 +16,14 @@ def add_container(graph: dict, bbox: list[int], role: str = "", source: str = ""
                   confidence: float = 1.0, style: dict | None = None,
                   overlay: bool = False, z_index: int = 0,
                   clip: list[int] | None = None, name: str = "",
-                  dom_index: int | None = None) -> None:
+                  dom_index: int | None = None,
+                  clip_to_bounds: bool = False,
+                  overflow_x: str = "",
+                  overflow_y: str = "",
+                  client_width: int = 0,
+                  client_height: int = 0,
+                  scroll_width: int = 0,
+                  scroll_height: int = 0) -> None:
     """加一个容器；clip 是“祖先裁剪矩形”（overflow ≠ visible 的祖先边界，
     见 capture.DOM_JS），输出端据此把内容裁到容器内。
     dom_index 记「这个容器来自采集数组里的第几个节点」，供 Auto Layout 侧按 DOM
@@ -32,6 +39,20 @@ def add_container(graph: dict, bbox: list[int], role: str = "", source: str = ""
         c["name"] = name
     if dom_index is not None:
         c["domIndex"] = int(dom_index)
+    if clip_to_bounds:
+        c["clipToBounds"] = True
+    if overflow_x:
+        c["overflowX"] = overflow_x
+    if overflow_y:
+        c["overflowY"] = overflow_y
+    for key, value in (
+        ("clientWidth", client_width),
+        ("clientHeight", client_height),
+        ("scrollWidth", scroll_width),
+        ("scrollHeight", scroll_height),
+    ):
+        if value > 0:
+            c[key] = int(value)
     graph["containers"].append(c)
 
 
@@ -44,6 +65,15 @@ def add_element(graph: dict, bbox: list[int], type_: str = "rectangle", text: st
                 text_box: list[int] | None = None,
                 text_em_box: list[int] | None = None, text_em_lines: int = 0,
                 text_lines: list[dict] | None = None,
+                rich_runs: list[dict] | None = None,
+                clip_to_bounds: bool = False,
+                overflow_x: str = "",
+                overflow_y: str = "",
+                text_overflow: str = "",
+                client_width: int = 0,
+                client_height: int = 0,
+                scroll_width: int = 0,
+                scroll_height: int = 0,
                 asset_identity: dict | None = None,
                 source_crop: dict | None = None,
                 clip: list[int] | None = None, name: str = "",
@@ -80,6 +110,33 @@ def add_element(graph: dict, bbox: list[int], type_: str = "rectangle", text: st
             for line in text_lines
             if isinstance(line, dict) and str(line.get("text") or "").strip()
         ]
+    if rich_runs:
+        el["richRuns"] = [
+            {
+                "start": int(run.get("start") or 0),
+                "end": int(run.get("end") or 0),
+                "text": str(run.get("text") or ""),
+                "style": dict(run.get("style") or {}),
+            }
+            for run in rich_runs
+            if isinstance(run, dict)
+        ]
+    if clip_to_bounds:
+        el["clipToBounds"] = True
+    if overflow_x:
+        el["overflowX"] = overflow_x
+    if overflow_y:
+        el["overflowY"] = overflow_y
+    if text_overflow:
+        el["textOverflow"] = text_overflow
+    for key, value in (
+        ("clientWidth", client_width),
+        ("clientHeight", client_height),
+        ("scrollWidth", scroll_width),
+        ("scrollHeight", scroll_height),
+    ):
+        if value > 0:
+            el[key] = int(value)
     if asset_identity:
         el["assetIdentity"] = dict(asset_identity)
     if source_crop:
