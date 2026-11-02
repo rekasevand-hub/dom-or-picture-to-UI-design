@@ -77,6 +77,8 @@ class Config:
     vision_native_grounding: bool = field(default_factory=lambda: os.getenv("VISION_NATIVE_GROUNDING", "false").lower() in ("1", "true", "yes"))
     vision_max_tokens: int = field(default_factory=lambda: int(os.getenv("VISION_MAX_TOKENS", "16000")))
     vision_timeout: int = field(default_factory=lambda: int(os.getenv("VISION_TIMEOUT", "120")))
+    vision_tile_max_height: int = field(default_factory=lambda: int(os.getenv("VISION_TILE_MAX_HEIGHT", "4096")))
+    vision_tile_overlap: int = field(default_factory=lambda: int(os.getenv("VISION_TILE_OVERLAP", "256")))
     vision_max_image_bytes: int = field(default_factory=lambda: int(os.getenv("VISION_MAX_IMAGE_BYTES", str(25 * 1024 * 1024))))
     vision_max_response_bytes: int = field(default_factory=lambda: int(os.getenv("VISION_MAX_RESPONSE_BYTES", str(5 * 1024 * 1024))))
     vision_max_attempts: int = field(default_factory=lambda: int(os.getenv("VISION_MAX_ATTEMPTS", "3")))
