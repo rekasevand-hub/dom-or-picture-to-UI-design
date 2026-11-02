@@ -1,0 +1,375 @@
+{
+  "schema_version": "image-enrichment-truth/1.0",
+  "sample_id": "IMG-ACCTOKEN-API",
+  "image_sha256": "7c61218aceb8f1f7f39950e9250d23ed327eb79715fe965bab69c4bdcbb0f404",
+  "image_size": [
+    2544,
+    1336
+  ],
+  "review": {
+    "status": "reviewed",
+    "reviewed_at": "2026-11-03",
+    "method": "Manual visual inspection of the frozen PNG; OCR was used only to locate candidate text boxes.",
+    "model_candidates_promoted": false
+  },
+  "critical_texts": [
+    "ACCTOKEN",
+    "控制台",
+    "首页",
+    "模型广场",
+    "创作",
+    "Agent 优惠",
+    "社区",
+    "接入文档",
+    "常用",
+    "概览",
+    "数据看板",
+    "API 密钥",
+    "使用日志",
+    "个人",
+    "创作者入驻",
+    "钱包",
+    "发票",
+    "推荐官",
+    "我的等级",
+    "一个 Key 能调站内全部模型；给不同的工具各建一个，用量和花费分开记。",
+    "创建 API 密钥",
+    "按名称筛选…",
+    "按 Key 筛选…",
+    "状态: 全部",
+    "显示的列",
+    "名称",
+    "状态",
+    "额度",
+    "分组·限制",
+    "最后使用",
+    "过期",
+    "原型绘制",
+    "9月3日创建",
+    "已启用",
+    "sk-••••dtVI",
+    "不限额度",
+    "default",
+    "全部模型",
+    "1 分钟前",
+    "永不",
+    "共1个",
+    "每页20个",
+    "第1页，共1页",
+    "© 2026 武汉山河世纪科技有限公司",
+    "ICP备2026030291号-1",
+    "用户协议",
+    "隐私政策",
+    "联系邮箱: developer@acctoken.com"
+  ],
+  "controls": [
+    {
+      "name": "Create API key button",
+      "type": "button",
+      "bbox": [
+        2160,
+        235,
+        294,
+        75
+      ],
+      "value": "创建 API 密钥",
+      "state": "enabled",
+      "critical": true
+    },
+    {
+      "name": "Name filter field",
+      "type": "input",
+      "bbox": [
+        560,
+        340,
+        481,
+        80
+      ],
+      "value": "",
+      "state": "enabled",
+      "critical": true
+    },
+    {
+      "name": "Key filter field",
+      "type": "input",
+      "bbox": [
+        1064,
+        340,
+        437,
+        80
+      ],
+      "value": "",
+      "state": "enabled",
+      "critical": true
+    },
+    {
+      "name": "Status filter",
+      "type": "select",
+      "bbox": [
+        1531,
+        339,
+        287,
+        80
+      ],
+      "value": "全部",
+      "state": "enabled",
+      "critical": true
+    },
+    {
+      "name": "Visible columns button",
+      "type": "button",
+      "bbox": [
+        2222,
+        340,
+        224,
+        79
+      ],
+      "value": "显示的列",
+      "state": "enabled",
+      "critical": true
+    },
+    {
+      "name": "Row checkbox",
+      "type": "checkbox",
+      "bbox": [
+        595,
+        475,
+        42,
+        42
+      ],
+      "value": "",
+      "state": "unchecked",
+      "critical": true
+    },
+    {
+      "name": "Reveal API key button",
+      "type": "icon-button",
+      "bbox": [
+        1310,
+        605,
+        48,
+        42
+      ],
+      "value": "显示密钥",
+      "state": "enabled",
+      "critical": true
+    },
+    {
+      "name": "Copy API key button",
+      "type": "icon-button",
+      "bbox": [
+        1380,
+        605,
+        49,
+        42
+      ],
+      "value": "复制密钥",
+      "state": "enabled",
+      "critical": true
+    },
+    {
+      "name": "Row actions button",
+      "type": "icon-button",
+      "bbox": [
+        2323,
+        606,
+        42,
+        42
+      ],
+      "value": "更多操作",
+      "state": "enabled",
+      "critical": true
+    },
+    {
+      "name": "Previous page button",
+      "type": "pagination",
+      "bbox": [
+        2276,
+        712,
+        63,
+        62
+      ],
+      "value": "上一页",
+      "state": "disabled",
+      "critical": true
+    },
+    {
+      "name": "Next page button",
+      "type": "pagination",
+      "bbox": [
+        2346,
+        712,
+        63,
+        62
+      ],
+      "value": "下一页",
+      "state": "enabled",
+      "critical": true
+    }
+  ],
+  "containers": [
+    {
+      "name": "Page",
+      "role": "page",
+      "bbox": [
+        0,
+        0,
+        2544,
+        1336
+      ],
+      "critical": true
+    },
+    {
+      "name": "Top navigation",
+      "role": "header",
+      "bbox": [
+        0,
+        0,
+        2544,
+        110
+      ],
+      "critical": true
+    },
+    {
+      "name": "Sidebar",
+      "role": "sidebar",
+      "bbox": [
+        0,
+        110,
+        503,
+        1170
+      ],
+      "critical": true
+    },
+    {
+      "name": "Main content",
+      "role": "main",
+      "bbox": [
+        503,
+        110,
+        2041,
+        1170
+      ],
+      "critical": true
+    },
+    {
+      "name": "Page title",
+      "role": "content",
+      "bbox": [
+        560,
+        158,
+        1884,
+        145
+      ],
+      "critical": true
+    },
+    {
+      "name": "API key filters",
+      "role": "toolbar",
+      "bbox": [
+        560,
+        339,
+        1886,
+        82
+      ],
+      "critical": true
+    },
+    {
+      "name": "API key table",
+      "role": "table",
+      "bbox": [
+        560,
+        451,
+        1884,
+        347
+      ],
+      "critical": true
+    },
+    {
+      "name": "Footer",
+      "role": "footer",
+      "bbox": [
+        0,
+        1280,
+        2544,
+        56
+      ],
+      "critical": true
+    }
+  ],
+  "tables": [
+    {
+      "name": "API keys",
+      "bbox": [
+        560,
+        451,
+        1884,
+        347
+      ],
+      "header_texts": [
+        "名称",
+        "状态",
+        "API 密钥",
+        "额度",
+        "分组·限制",
+        "最后使用",
+        "过期"
+      ],
+      "rows": [
+        [
+          "原型绘制",
+          "已启用",
+          "sk-••••dtVI",
+          "不限额度",
+          "default / 全部模型",
+          "1 分钟前",
+          "永不"
+        ]
+      ],
+      "critical": true
+    }
+  ],
+  "assets": [
+    {
+      "name": "ACCTOKEN brand mark",
+      "kind": "logo",
+      "bbox": [
+        94,
+        16,
+        86,
+        88
+      ],
+      "critical": true,
+      "minimum_iou": 0.8,
+      "occurrence_count": 1
+    },
+    {
+      "name": "User avatar",
+      "kind": "avatar",
+      "bbox": [
+        2386,
+        21,
+        63,
+        63
+      ],
+      "critical": false,
+      "minimum_iou": 0.7,
+      "occurrence_count": 1
+    }
+  ],
+  "backgrounds": [],
+  "visual_policy": {
+    "mae_max": 20.0,
+    "bad_pixel_threshold": 30,
+    "bad_pixel_ratio_max": 0.15,
+    "underlay_visible_ratio_max": 0.0,
+    "content_coverage_min": 0.02
+  },
+  "product_contract": {
+    "mode": "fixed-canvas-1:1",
+    "component_reuse": false,
+    "responsive_reflow": false,
+    "external_provenance_required": false,
+    "visible_full_screenshot_underlay": "blocked"
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "schema_version": "image-to-slice-benchmark/1.0",
+  "frozen_at": "2026-11-02T00:30:00+08:00",
+  "source": "user-provided screenshots",
+  "samples": [
+    {
+      "id": "IMG-ARTICLE",
+      "path": "tests/fixtures/image_to_slice_benchmark_2026-11-02/IMG-ARTICLE.png",
+      "width": 2544,
+      "height": 6156,
+      "sha256": "e6feadee97294d568d9d310a17c6902a825735fcadf728fba0375875ba09419d",
+      "purpose": "long-form article with code blocks, text hierarchy, navigation, sidebar, and floating controls",
+      "direct_ai_input": false,
+      "direct_ai_input_reason": "height exceeds the upstream 4096-pixel image-understanding limit"
+    },
+    {
+      "id": "IMG-FLEXWEAVER-ADMIN",
+      "path": "tests/fixtures/image_to_slice_benchmark_2026-11-02/IMG-FLEXWEAVER-ADMIN.png",
+      "width": 1920,
+      "height": 826,
+      "sha256": "c01805877d68c86b2465d675c323f51e68a1ecd8226583dbdb129d5017eced55",
+      "purpose": "desktop admin form with sidebar, navigation, table, and repeated controls",
+      "direct_ai_input": true
+    },
+    {
+      "id": "IMG-ACCTOKEN-API",
+      "path": "tests/fixtures/image_to_slice_benchmark_2026-11-02/IMG-ACCTOKEN-API.png",
+      "width": 2544,
+      "height": 1336,
+      "sha256": "7c61218aceb8f1f7f39950e9250d23ed327eb79715fe965bab69c4bdcbb0f404",
+      "purpose": "dark dashboard with cards, masked credentials, table, badges, and dense navigation",
+      "direct_ai_input": true
+    }
+  ],
+  "input_requirements": [
+    {
+      "id": "IMG-PHOTO-OVERLAY",
+      "status": "required",
+      "outstanding": true,
+      "path": null,
+      "reason": "A real background-capable screenshot is required to benchmark photo, overlay, mask and reconstruction behavior.",
+      "evidence_status": "not-supplied",
+      "synthetic_fixture_role": "test-only-not-product-evidence"
+    }
+  ]
+}

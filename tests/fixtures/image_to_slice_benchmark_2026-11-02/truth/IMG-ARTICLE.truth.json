@@ -1,0 +1,279 @@
+{
+  "schema_version": "image-enrichment-truth/1.0",
+  "sample_id": "IMG-ARTICLE",
+  "image_sha256": "e6feadee97294d568d9d310a17c6902a825735fcadf728fba0375875ba09419d",
+  "image_size": [
+    2544,
+    6156
+  ],
+  "review": {
+    "status": "reviewed",
+    "reviewed_at": "2026-11-03",
+    "method": "Manual visual inspection of the frozen long-page PNG; OCR only located candidate text boxes. All control, container and asset boxes use original 2544x6156 page coordinates.",
+    "model_candidates_promoted": false,
+    "used_prepared_segments_as_truth": false
+  },
+  "critical_texts": [
+    "稀土掘金",
+    "首页",
+    "沸点",
+    "课程",
+    "APP",
+    "AI用量",
+    "作品广场",
+    "专家标注",
+    "探索稀土掘金",
+    "创作者中心",
+    "登录",
+    "两数之和：从暴力破解到哈希表优化，一文搞懂经典算法题！",
+    "烟袅破辰",
+    "2025-12-10",
+    "763",
+    "阅读4分钟",
+    "在 LeetCode 上，“两数之和”（Two Sum）是最经典的入门算法题之一。",
+    "问题描述",
+    "给定一个整数数组 nums 和一个目标值 target，找出数组中两个数的索引，使得它们的和等于 target。",
+    "nums = [2, 7, 11, 15], target = 9",
+    "输出: [0, 1] 因为 nums[0] + nums[1] = 2 + 7 = 9",
+    "方法一：暴力破解 —— O(n²) 时间复杂度",
+    "方法二：哈希表优化 —— O(n) 时间复杂度（ES5 版本）",
+    "核心思想：",
+    "对于当前元素 nums[i]，我们只需要知道 target - nums[i] 是否已经出现在前面的元素中。",
+    "如果存在，就找到了答案；否则，将当前元素存入哈希表，继续遍历。",
+    "function twoSum(nums, target) {",
+    "const diffs = {}; // 使用对象模拟 HashMap",
+    "const diffs = new Map(); // 使用 Map，支持任意类型 key",
+    "原理分析：",
+    "优点：",
+    "时间复杂度：O(n)，只遍历一次。",
+    "空间复杂度：O(n)，用于存储哈希表。",
+    "实现简洁，适合生产环境。",
+    "注意：这里使用的是普通对象 {} 模拟哈希表，适用于 ES5 环境。",
+    "方法三：哈希表优化 —— O(n) 时间复杂度（ES6 Map 版本）",
+    "ES6 提供了原生的 Map 数据结构，更适合做键值映射。",
+    "对比 Object vs Map：",
+    "目录",
+    "搜索建议",
+    "精选内容",
+    "找对属于你的技术圈子",
+    "回复「进群」加入官方微信群"
+  ],
+  "controls": [
+    {
+      "name": "Site search field",
+      "type": "input",
+      "bbox": [
+        1738,
+        38,
+        284,
+        49
+      ],
+      "value": "",
+      "state": "enabled",
+      "critical": true
+    },
+    {
+      "name": "Creator center button",
+      "type": "button",
+      "bbox": [
+        2033,
+        39,
+        126,
+        48
+      ],
+      "value": "创作者中心",
+      "state": "enabled",
+      "critical": true
+    },
+    {
+      "name": "Login button",
+      "type": "button",
+      "bbox": [
+        2172,
+        36,
+        67,
+        50
+      ],
+      "value": "登录",
+      "state": "enabled",
+      "critical": true
+    },
+    {
+      "name": "Follow author button",
+      "type": "button",
+      "bbox": [
+        1915,
+        341,
+        212,
+        48
+      ],
+      "value": "关注",
+      "state": "enabled",
+      "critical": true
+    },
+    {
+      "name": "Message author button",
+      "type": "button",
+      "bbox": [
+        2143,
+        341,
+        212,
+        48
+      ],
+      "value": "私信",
+      "state": "enabled",
+      "critical": true
+    },
+    {
+      "name": "Collapse table of contents button",
+      "type": "button",
+      "bbox": [
+        2322,
+        602,
+        143,
+        55
+      ],
+      "value": "收起",
+      "state": "enabled",
+      "critical": true
+    },
+    {
+      "name": "First code copy button",
+      "type": "button",
+      "bbox": [
+        1570,
+        1195,
+        110,
+        50
+      ],
+      "value": "复制代码",
+      "state": "enabled",
+      "critical": true
+    }
+  ],
+  "containers": [
+    {
+      "name": "Page",
+      "role": "page",
+      "bbox": [
+        0,
+        0,
+        2544,
+        6156
+      ],
+      "critical": true
+    },
+    {
+      "name": "Top navigation",
+      "role": "header",
+      "bbox": [
+        0,
+        0,
+        2544,
+        80
+      ],
+      "critical": true
+    },
+    {
+      "name": "Article canvas",
+      "role": "article",
+      "bbox": [
+        191,
+        111,
+        1707,
+        5930
+      ],
+      "critical": true
+    },
+    {
+      "name": "Article body",
+      "role": "content",
+      "bbox": [
+        191,
+        189,
+        1707,
+        5852
+      ],
+      "critical": true
+    },
+    {
+      "name": "Right rail",
+      "role": "aside",
+      "bbox": [
+        1910,
+        103,
+        528,
+        6053
+      ],
+      "critical": true
+    },
+    {
+      "name": "Left floating actions",
+      "role": "toolbar",
+      "bbox": [
+        19,
+        150,
+        72,
+        5820
+      ],
+      "critical": true
+    }
+  ],
+  "tables": [],
+  "assets": [
+    {
+      "name": "Juejin logo mark",
+      "kind": "logo",
+      "bbox": [
+        42,
+        34,
+        56,
+        52
+      ],
+      "critical": true,
+      "minimum_iou": 0.8,
+      "occurrence_count": 1
+    },
+    {
+      "name": "Author avatar",
+      "kind": "avatar",
+      "bbox": [
+        1920,
+        122,
+        68,
+        68
+      ],
+      "critical": false,
+      "minimum_iou": 0.7,
+      "occurrence_count": 1
+    },
+    {
+      "name": "Community QR code",
+      "kind": "image",
+      "bbox": [
+        2328,
+        3555,
+        140,
+        140
+      ],
+      "critical": false,
+      "minimum_iou": 0.7,
+      "occurrence_count": 1
+    }
+  ],
+  "backgrounds": [],
+  "visual_policy": {
+    "mae_max": 20.0,
+    "bad_pixel_threshold": 30,
+    "bad_pixel_ratio_max": 0.15,
+    "underlay_visible_ratio_max": 0.0,
+    "content_coverage_min": 0.02
+  },
+  "product_contract": {
+    "mode": "fixed-canvas-1:1",
+    "component_reuse": false,
+    "responsive_reflow": false,
+    "external_provenance_required": false,
+    "visible_full_screenshot_underlay": "blocked"
+  }
+}

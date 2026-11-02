@@ -1,0 +1,494 @@
+{
+  "schema_version": "image-enrichment-truth/1.0",
+  "sample_id": "IMG-FLEXWEAVER-ADMIN",
+  "image_sha256": "c01805877d68c86b2465d675c323f51e68a1ecd8226583dbdb129d5017eced55",
+  "image_size": [
+    1920,
+    826
+  ],
+  "review": {
+    "status": "reviewed",
+    "reviewed_at": "2026-11-03",
+    "method": "Manual visual inspection of the frozen PNG; OCR was used only to locate candidate text boxes.",
+    "model_candidates_promoted": false
+  },
+  "critical_texts": [
+    "TETUO AUTO",
+    "自动备份",
+    "名称",
+    "显示名称",
+    "执行时间",
+    "禁用",
+    "执行者",
+    "下次执行时间",
+    "托管",
+    "执行成功",
+    "SUCCESS",
+    "执行",
+    "以auto用户身份执行",
+    "手动执行",
+    "备注",
+    "任务执行历史",
+    "暂停自动刷新",
+    "复制",
+    "导出",
+    "刷新",
+    "表内搜索",
+    "持续时长",
+    "启动时间",
+    "状态",
+    "执行结果"
+  ],
+  "controls": [
+    {
+      "name": "Name field",
+      "type": "input",
+      "bbox": [
+        424,
+        139,
+        236,
+        40
+      ],
+      "value": "auto_backup",
+      "state": "enabled",
+      "critical": true
+    },
+    {
+      "name": "Display name field",
+      "type": "input",
+      "bbox": [
+        871,
+        139,
+        329,
+        40
+      ],
+      "value": "自动备份",
+      "state": "enabled",
+      "critical": true
+    },
+    {
+      "name": "Schedule field",
+      "type": "input",
+      "bbox": [
+        1444,
+        139,
+        421,
+        40
+      ],
+      "value": "0 30 3 * * ?",
+      "state": "enabled",
+      "critical": true
+    },
+    {
+      "name": "Disable checkbox",
+      "type": "checkbox",
+      "bbox": [
+        425,
+        200,
+        25,
+        25
+      ],
+      "value": "",
+      "state": "unchecked",
+      "critical": true
+    },
+    {
+      "name": "Executor field",
+      "type": "input",
+      "bbox": [
+        869,
+        190,
+        329,
+        36
+      ],
+      "value": "auto",
+      "state": "disabled",
+      "critical": true
+    },
+    {
+      "name": "Next run field",
+      "type": "input",
+      "bbox": [
+        1443,
+        190,
+        426,
+        36
+      ],
+      "value": "2026-11-02 3:30:00",
+      "state": "disabled",
+      "critical": true
+    },
+    {
+      "name": "Custodian checkbox",
+      "type": "checkbox",
+      "bbox": [
+        425,
+        249,
+        25,
+        25
+      ],
+      "value": "",
+      "state": "unchecked",
+      "critical": true
+    },
+    {
+      "name": "Last run success checkbox",
+      "type": "checkbox",
+      "bbox": [
+        762,
+        245,
+        25,
+        25
+      ],
+      "value": "执行成功",
+      "state": "checked",
+      "critical": true
+    },
+    {
+      "name": "Last run time field",
+      "type": "input",
+      "bbox": [
+        868,
+        239,
+        329,
+        34
+      ],
+      "value": "2026-11-01 3:30:00",
+      "state": "disabled",
+      "critical": true
+    },
+    {
+      "name": "Run command field",
+      "type": "input",
+      "bbox": [
+        424,
+        289,
+        1043,
+        35
+      ],
+      "value": "/devops/service/backup",
+      "state": "enabled",
+      "critical": true
+    },
+    {
+      "name": "Run as auto checkbox",
+      "type": "checkbox",
+      "bbox": [
+        1642,
+        292,
+        22,
+        22
+      ],
+      "value": "以auto用户身份执行",
+      "state": "checked",
+      "critical": true
+    },
+    {
+      "name": "Manual run button",
+      "type": "button",
+      "bbox": [
+        1692,
+        286,
+        113,
+        39
+      ],
+      "value": "手动执行",
+      "state": "enabled",
+      "critical": true
+    },
+    {
+      "name": "Notes field",
+      "type": "textarea",
+      "bbox": [
+        424,
+        338,
+        1438,
+        84
+      ],
+      "value": "2023年12月16日：修改成凌晨3：30执行备份",
+      "state": "enabled",
+      "critical": true
+    },
+    {
+      "name": "Pause auto refresh button",
+      "type": "button",
+      "bbox": [
+        307,
+        501,
+        131,
+        36
+      ],
+      "value": "暂停自动刷新",
+      "state": "enabled",
+      "critical": true
+    },
+    {
+      "name": "Copy button",
+      "type": "button",
+      "bbox": [
+        447,
+        501,
+        66,
+        36
+      ],
+      "value": "复制",
+      "state": "enabled",
+      "critical": true
+    },
+    {
+      "name": "Export button",
+      "type": "button",
+      "bbox": [
+        513,
+        501,
+        33,
+        36
+      ],
+      "value": "导出",
+      "state": "enabled",
+      "critical": true
+    },
+    {
+      "name": "Refresh button",
+      "type": "button",
+      "bbox": [
+        546,
+        501,
+        86,
+        36
+      ],
+      "value": "刷新",
+      "state": "enabled",
+      "critical": true
+    },
+    {
+      "name": "Table search field",
+      "type": "input",
+      "bbox": [
+        1711,
+        501,
+        168,
+        36
+      ],
+      "value": "",
+      "state": "enabled",
+      "critical": true
+    },
+    {
+      "name": "First history checkbox",
+      "type": "checkbox",
+      "bbox": [
+        322,
+        607,
+        20,
+        20
+      ],
+      "value": "",
+      "state": "unchecked",
+      "critical": true
+    }
+  ],
+  "containers": [
+    {
+      "name": "Page",
+      "role": "page",
+      "bbox": [
+        0,
+        0,
+        1920,
+        826
+      ],
+      "critical": true
+    },
+    {
+      "name": "Top navigation",
+      "role": "header",
+      "bbox": [
+        0,
+        0,
+        1920,
+        54
+      ],
+      "critical": true
+    },
+    {
+      "name": "Sidebar",
+      "role": "sidebar",
+      "bbox": [
+        0,
+        54,
+        286,
+        772
+      ],
+      "critical": true
+    },
+    {
+      "name": "Main content",
+      "role": "main",
+      "bbox": [
+        286,
+        54,
+        1634,
+        772
+      ],
+      "critical": true
+    },
+    {
+      "name": "Backup form",
+      "role": "form",
+      "bbox": [
+        286,
+        99,
+        1634,
+        349
+      ],
+      "critical": true
+    },
+    {
+      "name": "Execution history",
+      "role": "panel",
+      "bbox": [
+        286,
+        449,
+        1634,
+        377
+      ],
+      "critical": true
+    },
+    {
+      "name": "History table",
+      "role": "table",
+      "bbox": [
+        307,
+        560,
+        1593,
+        264
+      ],
+      "critical": true
+    }
+  ],
+  "tables": [
+    {
+      "name": "Execution history",
+      "bbox": [
+        307,
+        560,
+        1593,
+        264
+      ],
+      "header_texts": [
+        "#",
+        "执行时间",
+        "持续时长",
+        "执行者",
+        "启动时间",
+        "状态",
+        "执行结果"
+      ],
+      "rows": [
+        [
+          "1",
+          "2026-11-01 03:30:00",
+          "31649",
+          "auto",
+          "2026-10-31 11:16:00",
+          "2",
+          "{\"error\":\"SUCCESS\",\"message\":\"SUCCESS\"}"
+        ],
+        [
+          "2",
+          "2026-10-31 03:30:00",
+          "31374",
+          "auto",
+          "2026-10-30 19:10:43",
+          "2",
+          "{\"error\":\"SUCCESS\",\"message\":\"SUCCESS\"}"
+        ],
+        [
+          "3",
+          "2026-10-30 03:30:00",
+          "94608",
+          "auto",
+          "2026-10-26 11:22:28",
+          "2",
+          "{\"error\":\"SUCCESS\",\"message\":\"SUCCESS\"}"
+        ],
+        [
+          "4",
+          "2026-10-29 03:30:00",
+          "30939",
+          "auto",
+          "2026-10-26 11:22:28",
+          "2",
+          "{\"error\":\"SUCCESS\",\"message\":\"SUCCESS\"}"
+        ],
+        [
+          "5",
+          "2026-10-28 03:30:00",
+          "61508",
+          "auto",
+          "2026-10-26 11:22:28",
+          "2",
+          "{\"error\":\"SUCCESS\",\"message\":\"SUCCESS\"}"
+        ]
+      ],
+      "critical": true
+    }
+  ],
+  "assets": [
+    {
+      "name": "TETUO AUTO logo",
+      "kind": "logo",
+      "bbox": [
+        21,
+        18,
+        196,
+        32
+      ],
+      "critical": true,
+      "minimum_iou": 0.8,
+      "occurrence_count": 1
+    },
+    {
+      "name": "FlexWeaver application icon",
+      "kind": "icon",
+      "bbox": [
+        329,
+        23,
+        20,
+        20
+      ],
+      "critical": false,
+      "minimum_iou": 0.7,
+      "occurrence_count": 1
+    },
+    {
+      "name": "User avatar",
+      "kind": "avatar",
+      "bbox": [
+        1706,
+        14,
+        38,
+        38
+      ],
+      "critical": false,
+      "minimum_iou": 0.7,
+      "occurrence_count": 1
+    }
+  ],
+  "backgrounds": [],
+  "visual_policy": {
+    "mae_max": 20.0,
+    "bad_pixel_threshold": 30,
+    "bad_pixel_ratio_max": 0.15,
+    "underlay_visible_ratio_max": 0.0,
+    "content_coverage_min": 0.02
+  },
+  "product_contract": {
+    "mode": "fixed-canvas-1:1",
+    "component_reuse": false,
+    "responsive_reflow": false,
+    "external_provenance_required": false,
+    "visible_full_screenshot_underlay": "blocked"
+  }
+}
