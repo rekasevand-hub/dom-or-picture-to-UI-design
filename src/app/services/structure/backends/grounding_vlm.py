@@ -62,6 +62,19 @@ def parse_vlm_json(raw: str, image_w: int, image_h: int) -> dict:
         if box is None:
             continue
         out["elements"].append({"bbox": box, "type": t, "text": str(e.get("text", ""))})
+    try:
+        from src.app.services.structure.image_enrichment.parsing import (
+            parse_enrichment_response,
+        )
+
+        enrichment = parse_enrichment_response(raw, image_w, image_h)
+        out["assets"] = enrichment["assets"]
+        out["backgrounds"] = enrichment["backgrounds"]
+        out["enrichmentDiagnostics"] = enrichment["diagnostics"]
+    except ValueError:
+        out["assets"] = []
+        out["backgrounds"] = []
+        out["enrichmentDiagnostics"] = []
     return out
 
 

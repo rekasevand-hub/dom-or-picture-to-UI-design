@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import tempfile
 from collections import Counter
@@ -17,11 +18,28 @@ from src.app.services.structure.backends.grounding_reliability import (
 )
 from src.app.services.structure.graph import new_graph, add_container, add_element
 from src.app.services.structure.image_enrichment.merge import merge_tiled_graphs
+from src.app.services.structure.image_enrichment.assets import (
+    classify_full_screenshot_underlay,
+    recover_visible_assets,
+)
+from src.app.services.structure.image_enrichment.backgrounds import (
+    create_background_candidates,
+)
+from src.app.services.structure.image_enrichment.prompts import (
+    build_grounding_tile_prompt,
+)
 from src.app.services.structure.image_enrichment.tiling import (
     crop_image_tile,
     plan_image_tiles,
 )
 from src.app.services.structure.providers.base import BaseProvider, ProviderContext
+
+
+class ImageEnrichmentBlockedError(ValueError):
+    def __init__(self, graph: dict, message: str) -> None:
+        super().__init__(message)
+        self.code = "blocked-full-screenshot-underlay"
+        self.graph = graph
 
 
 def _default_backend(cfg) -> GroundingBackend:
@@ -39,6 +57,13 @@ def _positive_int(value: Any, name: str) -> int:
 def _non_negative_int(value: Any, name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise ValueError(f"{name} must be a non-negative integer")
+    return value
+
+
+def _image_enrichment_mode(cfg: Any) -> str:
+    value = str(getattr(cfg, "image_enrichment_mode", "off") or "off").lower()
+    if value not in {"off", "analyze", "apply"}:
+        raise ValueError("image_enrichment_mode must be off, analyze or apply")
     return value
 
 
@@ -83,7 +108,79 @@ def _is_majority_background(path: str, threshold: float = 0.96) -> bool:
     return dominant / len(pixels) >= threshold
 
 
-def _tile_prompt(tile: dict[str, Any], ctx: ProviderContext) -> str:
+def _translate_bbox_object(
+    value: Any,
+    source_x: int,
+    source_y: int,
+) -> Any:
+    try:
+        if isinstance(value, dict):
+            x = int(value["x"]) + source_x
+            y = int(value["y"]) + source_y
+            width = int(value["width"])
+            height = int(value["height"])
+        elif isinstance(value, (list, tuple)) and len(value) == 4:
+            x = int(value[0]) + source_x
+            y = int(value[1]) + source_y
+            width = int(value[2])
+            height = int(value[3])
+        else:
+            return value
+    except (KeyError, TypeError, ValueError):
+        return value
+    return [x, y, width, height]
+
+
+def _translate_enrichment_candidates(
+    raw: dict,
+    tile: dict[str, Any],
+) -> dict[str, Any]:
+    source_x, source_y, _source_width, _source_height = tile["source_rect"]
+    assets = []
+    for asset in raw.get("assets") or []:
+        if isinstance(asset, dict):
+            item = copy.deepcopy(asset)
+            item["bbox"] = _translate_bbox_object(
+                item.get("bbox"),
+                source_x,
+                source_y,
+            )
+            assets.append(item)
+    backgrounds = []
+    for background in raw.get("backgrounds") or []:
+        if not isinstance(background, dict):
+            continue
+        item = copy.deepcopy(background)
+        item["bbox"] = _translate_bbox_object(
+            item.get("bbox"),
+            source_x,
+            source_y,
+        )
+        item["overlays"] = [
+            {
+                **dict(overlay),
+                "bbox": _translate_bbox_object(
+                    overlay.get("bbox"),
+                    source_x,
+                    source_y,
+                ),
+            }
+            for overlay in item.get("overlays") or []
+            if isinstance(overlay, dict)
+        ]
+        backgrounds.append(item)
+    return {
+        "assets": assets,
+        "backgrounds": backgrounds,
+        "diagnostics": list(raw.get("enrichmentDiagnostics") or []),
+    }
+
+
+def _tile_prompt(
+    tile: dict[str, Any],
+    ctx: ProviderContext,
+    enrichment_mode: str = "off",
+) -> str:
     from src.app.services.structure.backends.grounding_vlm import PROMPT
 
     metadata = {
@@ -91,13 +188,28 @@ def _tile_prompt(tile: dict[str, Any], ctx: ProviderContext) -> str:
         "source_rect": tile.get("source_rect"),
         "page_size": [ctx.image_w, ctx.image_h],
     }
-    return "\n".join(
+    prompt = "\n".join(
         [
             PROMPT,
             f"Tile metadata: {json.dumps(metadata, sort_keys=True)}",
             "All returned bbox values are normalized to this tile image and will be translated to page coordinates.",
         ]
     )
+    if enrichment_mode != "off":
+        prompt = "\n".join(
+            [
+                prompt,
+                build_grounding_tile_prompt(
+                    tile,
+                    {
+                        "image_size": [ctx.image_w, ctx.image_h],
+                        "image_enrichment_mode": enrichment_mode,
+                    },
+                ),
+                "Return one JSON object containing containers, elements, assets, and backgrounds.",
+            ]
+        )
+    return prompt
 
 
 def _repair_prompt(prompt: str, error: GroundingRequestError) -> str:
@@ -139,6 +251,7 @@ def _graph_from_raw(
     raw: dict,
     ctx: ProviderContext,
     tile: dict[str, Any],
+    enrichment_mode: str = "off",
 ) -> dict:
     graph = new_graph(ctx.image_path, ctx.image_w, ctx.image_h, "grounding")
     source_x, source_y, _source_w, _source_h = tile["source_rect"]
@@ -174,6 +287,8 @@ def _graph_from_raw(
             source="grounding",
         )
     graph["provenance"]["tiling"] = {"tile": dict(tile)}
+    if enrichment_mode != "off":
+        graph["imageEnrichment"] = _translate_enrichment_candidates(raw, tile)
     return graph
 
 
@@ -218,6 +333,217 @@ def _collect_report(backend: GroundingBackend) -> dict[str, Any] | None:
     return dict(transformed)
 
 
+def _merge_enrichment_candidates(graphs: list[dict]) -> dict[str, Any]:
+    assets: list[dict] = []
+    backgrounds: list[dict] = []
+    diagnostics: list[dict] = []
+    seen_assets: set[tuple[Any, ...]] = set()
+    seen_backgrounds: set[tuple[Any, ...]] = set()
+    for graph in graphs:
+        value = graph.get("imageEnrichment")
+        if not isinstance(value, dict):
+            continue
+        for asset in value.get("assets") or []:
+            if not isinstance(asset, dict):
+                continue
+            key = (
+                str(asset.get("name") or ""),
+                str(asset.get("kind") or ""),
+                json.dumps(asset.get("bbox"), sort_keys=True),
+            )
+            if key not in seen_assets:
+                seen_assets.add(key)
+                assets.append(copy.deepcopy(asset))
+        for background in value.get("backgrounds") or []:
+            if not isinstance(background, dict):
+                continue
+            key = (
+                str(background.get("id") or background.get("name") or ""),
+                json.dumps(background.get("bbox"), sort_keys=True),
+            )
+            if key not in seen_backgrounds:
+                seen_backgrounds.add(key)
+                backgrounds.append(copy.deepcopy(background))
+        diagnostics.extend(copy.deepcopy(value.get("diagnostics") or []))
+    return {
+        "assets": assets,
+        "backgrounds": backgrounds,
+        "diagnostics": diagnostics,
+    }
+
+
+def _detect_graph_underlays(
+    graph: dict,
+    width: int,
+    height: int,
+) -> list[dict[str, Any]]:
+    underlays = []
+    for element in graph.get("elements") or []:
+        if not isinstance(element, dict):
+            continue
+        if str(element.get("type") or "").lower() not in {"image", "avatar"}:
+            continue
+        result = classify_full_screenshot_underlay(
+            {
+                "name": element.get("assetName") or element.get("name"),
+                "kind": element.get("assetKind") or element.get("kind"),
+                "bbox": element.get("bbox"),
+                "role": element.get("role"),
+                "background": element.get("background"),
+            },
+            graph,
+            width=width,
+            height=height,
+        )
+        if result["is_underlay"]:
+            underlays.append(
+                {
+                    "name": str(
+                        element.get("assetName")
+                        or element.get("name")
+                        or element.get("id")
+                        or ""
+                    ),
+                    "bbox": list(element.get("bbox") or []),
+                    "classification": result,
+                }
+            )
+    return underlays
+
+
+def _finalize_image_enrichment(
+    graph: dict,
+    candidates: dict[str, Any],
+    ctx: ProviderContext,
+    mode: str,
+) -> dict:
+    if mode == "off":
+        return graph
+    original_elements = copy.deepcopy(graph.get("elements") or [])
+    working = graph if mode == "apply" else copy.deepcopy(graph)
+    working["imageEnrichment"] = {
+        **copy.deepcopy(candidates),
+        "mode": mode,
+        "status": "analyzing" if mode == "analyze" else "applying",
+        "tiling": copy.deepcopy((graph.get("provenance") or {}).get("tiling") or {}),
+    }
+    work_dir = Path(ctx.output_dir or ".") / "image_enrichment"
+    recovery_report: dict[str, Any] = {}
+    if candidates.get("assets"):
+        working, recovery_report = recover_visible_assets(
+            working,
+            Path(ctx.image_path),
+            work_dir=work_dir,
+        )
+        if mode == "apply":
+            graph = working
+    enrichment = working.setdefault("imageEnrichment", {})
+    enrichment["backgroundCandidates"] = []
+    if mode == "apply" and candidates.get("backgrounds"):
+        with Image.open(ctx.image_path) as source_image:
+            image = source_image.convert("RGB")
+            for background in candidates["backgrounds"]:
+                enrichment["backgroundCandidates"].append(
+                    create_background_candidates(
+                        image,
+                        background,
+                        list(background.get("overlays") or []),
+                        work_dir,
+                    )
+                )
+    diagnostics = list(candidates.get("diagnostics") or [])
+    diagnostics.extend(
+        {
+            "code": item.get("reason", "asset-deduplicated"),
+            "path": "$.imageEnrichment.assets",
+            "message": "asset candidate was deduplicated",
+            "asset": item,
+        }
+        for item in recovery_report.get("deduplicated") or []
+    )
+    underlays = [
+        *(recovery_report.get("underlays") or []),
+        *_detect_graph_underlays(
+            working,
+            width=ctx.image_w,
+            height=ctx.image_h,
+        ),
+    ]
+    unique_underlays = []
+    for item in underlays:
+        key = (
+            str(item.get("name") or ""),
+            json.dumps(item.get("bbox"), sort_keys=True),
+        )
+        if all(
+            (
+                str(existing.get("name") or ""),
+                json.dumps(existing.get("bbox"), sort_keys=True),
+            )
+            != key
+            for existing in unique_underlays
+        ):
+            unique_underlays.append(item)
+    generated_payloads = []
+    for asset in enrichment.get("assets") or []:
+        generated = asset.get("generatedApproximation")
+        if isinstance(generated, dict) and generated.get("bytes_present"):
+            generated_payloads.append(
+                {
+                    "asset": asset.get("name"),
+                    **generated,
+                }
+            )
+    for background in enrichment.get("backgroundCandidates") or []:
+        clean = background.get("cleanCandidate")
+        if isinstance(clean, dict):
+            generated_payloads.append(
+                {
+                    "background": background.get("id"),
+                    **clean,
+                }
+            )
+    enrichment.update(
+        {
+            "mode": mode,
+            "status": (
+                "blocked-full-screenshot-underlay"
+                if mode == "apply" and unique_underlays
+                else "applied"
+                if mode == "apply"
+                else "underlay-detected"
+                if unique_underlays
+                else "analyzed"
+            ),
+            "assets": copy.deepcopy(enrichment.get("assets") or []),
+            "backgrounds": copy.deepcopy(candidates.get("backgrounds") or []),
+            "generatedPayloads": generated_payloads,
+            "diagnostics": diagnostics,
+            "underlays": unique_underlays,
+            "provenance": {
+                "source": "grounding-image-enrichment/1.0",
+                "authority": "candidate",
+                "originalAssets": False,
+                "hiddenRegionRecovery": "candidate-only",
+            },
+        }
+    )
+    graph["imageEnrichment"] = copy.deepcopy(enrichment)
+    graph["sliceAnalysis"] = {
+        "assets": copy.deepcopy(enrichment["assets"]),
+        "backgrounds": copy.deepcopy(enrichment["backgrounds"]),
+        "provenance": copy.deepcopy(enrichment["provenance"]),
+    }
+    if mode == "analyze":
+        graph["elements"] = original_elements
+    if mode == "apply" and unique_underlays:
+        raise ImageEnrichmentBlockedError(
+            graph,
+            "blocked-full-screenshot-underlay",
+        )
+    return graph
+
+
 class GroundingProvider(BaseProvider):
     name = "grounding"
 
@@ -226,6 +552,7 @@ class GroundingProvider(BaseProvider):
 
     def run(self, ctx: ProviderContext) -> dict:
         backend = _default_backend(self.cfg)
+        enrichment_mode = _image_enrichment_mode(self.cfg)
         max_height = _positive_int(
             int(getattr(self.cfg, "vision_tile_max_height", 4096)),
             "vision_tile_max_height",
@@ -235,7 +562,19 @@ class GroundingProvider(BaseProvider):
             "vision_tile_overlap",
         )
         if ctx.image_h <= max_height:
-            raw = backend.ground(ctx.image_path, ctx.image_w, ctx.image_h)
+            tile = _single_tile(ctx.image_w, ctx.image_h)
+            if enrichment_mode == "off":
+                raw = backend.ground(ctx.image_path, ctx.image_w, ctx.image_h)
+            else:
+                raw = _call_backend(
+                    backend,
+                    ctx.image_path,
+                    ctx.image_w,
+                    ctx.image_h,
+                    prompt=_tile_prompt(tile, ctx, enrichment_mode),
+                    strategy_id="grounding-enrichment",
+                    tile=tile,
+                )
             if not _has_structure(raw) and not _is_majority_background(
                 ctx.image_path
             ):
@@ -243,8 +582,7 @@ class GroundingProvider(BaseProvider):
                     "empty-structure",
                     "Grounding returned no structure for a non-background image",
                 )
-            tile = _single_tile(ctx.image_w, ctx.image_h)
-            graph = _graph_from_raw(raw, ctx, tile)
+            graph = _graph_from_raw(raw, ctx, tile, enrichment_mode)
             report = _collect_report(backend)
             if report is not None:
                 graph["provenance"]["grounding_reliability"] = report
@@ -255,6 +593,12 @@ class GroundingProvider(BaseProvider):
             if report is not None:
                 final["provenance"]["grounding_reliability"] = report
             final["provenance"]["tiling"] = tiling_report
+            final = _finalize_image_enrichment(
+                final,
+                _translate_enrichment_candidates(raw, tile),
+                ctx,
+                enrichment_mode,
+            )
             return final
 
         with tempfile.TemporaryDirectory(prefix="grounding-tiles-") as temp_dir:
@@ -292,6 +636,12 @@ class GroundingProvider(BaseProvider):
             "mode": "tiled",
             "tile_reports": tile_reports,
         }
+        final = _finalize_image_enrichment(
+            final,
+            _merge_enrichment_candidates(tile_graphs),
+            ctx,
+            enrichment_mode,
+        )
         return final
 
     def _ground_tile(
@@ -308,7 +658,8 @@ class GroundingProvider(BaseProvider):
         tile_image = crop_image_tile(source_image, tile)
         tile_path = temp_dir / f"{tile['id']}.png"
         tile_image.save(tile_path)
-        prompt = _tile_prompt(tile, ctx)
+        enrichment_mode = _image_enrichment_mode(self.cfg)
+        prompt = _tile_prompt(tile, ctx, enrichment_mode)
         reports: list[dict[str, Any]] = []
 
         try:
@@ -376,7 +727,7 @@ class GroundingProvider(BaseProvider):
         report = _collect_report(backend)
         if report is not None:
             reports.append(report)
-        graph = _graph_from_raw(raw, ctx, tile)
+        graph = _graph_from_raw(raw, ctx, tile, enrichment_mode)
         return [graph], _tile_record(tile, status), reports
 
     def _retry_with_smaller_tiles(

@@ -52,6 +52,13 @@ def _delivery_profile_default() -> DeliveryProfile:
     return value  # type: ignore[return-value]
 
 
+def _image_enrichment_mode_default() -> str:
+    value = (os.getenv("IMAGE_ENRICHMENT_MODE") or "off").strip().lower()
+    if value not in {"off", "analyze", "apply"}:
+        raise ValueError("IMAGE_ENRICHMENT_MODE must be one of: off, analyze, apply")
+    return value
+
+
 @dataclass(frozen=True)
 class Config:
     """运行时可配置的参数。"""
@@ -99,6 +106,7 @@ class Config:
     image_generation_base_url: str | None = field(default_factory=lambda: _env_opt("IMAGE_GENERATION_BASE_URL"))
     image_generation_api_key: str | None = field(default_factory=lambda: _env_opt("IMAGE_GENERATION_API_KEY"))
     image_generation_timeout: int = field(default_factory=lambda: int(os.getenv("IMAGE_GENERATION_TIMEOUT", "20")))
+    image_enrichment_mode: str = field(default_factory=_image_enrichment_mode_default)
 
     # --- SoM -> DesignSpec 分批生成（长页面防截断；每批 60-100 个 id 推荐） ---
     som_batch_enabled: bool = field(default_factory=lambda: os.getenv("SOM_BATCH_ENABLED", "true").lower() in ("1", "true", "yes"))

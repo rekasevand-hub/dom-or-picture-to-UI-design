@@ -29,6 +29,10 @@ class JSONDecodeError(ValueError):
     pass
 
 
+class GroundingUnavailableError(RuntimeError):
+    pass
+
+
 class ImageRouteFallbackTests(unittest.TestCase):
     def test_image_auto_prefers_grounding_then_cv(self) -> None:
         cfg = SimpleNamespace(vision_api_key="configured")
@@ -44,12 +48,23 @@ class ImageRouteFallbackTests(unittest.TestCase):
             ["cv"],
         )
 
+    def test_enrichment_mode_does_not_change_image_route_order(self) -> None:
+        cfg = SimpleNamespace(
+            vision_api_key="configured",
+            image_enrichment_mode="apply",
+        )
+        self.assertEqual(
+            route_order("image", None, cfg, have_dom=False),
+            ["grounding", "cv"],
+        )
+
     def test_service_unavailability_allows_fallback(self) -> None:
         for error in (
             APIConnectionError("connection refused"),
             APITimeoutError("request timed out"),
             RateLimitError("429 too many requests"),
             InternalServerError("503 service unavailable"),
+            GroundingUnavailableError("all endpoints exhausted"),
         ):
             with self.subTest(error=type(error).__name__):
                 self.assertEqual(

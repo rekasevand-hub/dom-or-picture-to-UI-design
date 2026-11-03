@@ -272,6 +272,26 @@ class PreciseAgent:
                 strategy_attempts.append({"strategy": r, "status": "selected"})
                 break
             except Exception as exc:
+                if (
+                    getattr(exc, "code", "")
+                    == "blocked-full-screenshot-underlay"
+                ):
+                    blocked_graph = getattr(exc, "graph", None)
+                    if isinstance(blocked_graph, dict):
+                        save_graph(
+                            blocked_graph,
+                            str(out / "10_pagegraph.json"),
+                        )
+                        (out / "image_enrichment.json").write_text(
+                            json.dumps(
+                                blocked_graph.get("imageEnrichment") or {},
+                                ensure_ascii=False,
+                                indent=2,
+                            )
+                            + "\n",
+                            encoding="utf-8",
+                        )
+                    raise
                 if grounding_report is None and getattr(exc, "report", None) is not None:
                     report = exc.report
                     grounding_report = (
@@ -386,9 +406,28 @@ class PreciseAgent:
                     "added_count": image_region_recovery.get("added_count"),
                 }
         save_graph(graph, str(out / "10_pagegraph.json"))
+        if graph.get("imageEnrichment"):
+            (out / "image_enrichment.json").write_text(
+                json.dumps(
+                    graph["imageEnrichment"],
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
         annotate_som(graph, str(out))
 
         som_json = json.loads((out / "11_som.json").read_text(encoding="utf-8"))
+        if graph.get("imageEnrichment"):
+            som_json["imageEnrichment"] = graph["imageEnrichment"]
+        if graph.get("sliceAnalysis"):
+            som_json["sliceAnalysis"] = graph["sliceAnalysis"]
+        if graph.get("imageEnrichment") or graph.get("sliceAnalysis"):
+            (out / "11_som.json").write_text(
+                json.dumps(som_json, ensure_ascii=False, indent=1),
+                encoding="utf-8",
+            )
         # 人工框选的“权威像素区”：--pick-crops 在采集后弹出框选窗口（写 manual_crops.json），
         # 之后只要该文件在输出目录里就自动重放（无头、可复现，见 som/crop_picker.py）。
         self._pick_crops_if_needed(pick_crops, image, out, graph["route"])
@@ -1044,6 +1083,20 @@ class PreciseAgent:
                 "asset_claim": "display-replacement-only",
                 "original_asset_claimed": False,
             }
+            enrichment = som_json.get("imageEnrichment")
+            if isinstance(enrichment, dict):
+                manifest["imageEnrichment"] = {
+                    "mode": enrichment.get("mode"),
+                    "status": enrichment.get("status"),
+                    "asset_count": len(enrichment.get("assets") or []),
+                    "background_count": len(
+                        enrichment.get("backgroundCandidates")
+                        or enrichment.get("backgrounds")
+                        or []
+                    ),
+                    "underlay_count": len(enrichment.get("underlays") or []),
+                }
+                manifest["imageMVP"]["enrichmentMode"] = enrichment.get("mode")
         (out / "manifest.json").write_text(
             json.dumps(manifest, ensure_ascii=False, indent=1), encoding="utf-8"
         )
