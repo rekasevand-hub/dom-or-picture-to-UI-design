@@ -40,6 +40,15 @@ class _TextRenderAdapter(_RecordingAdapter):
         pass
 
 
+class _NativeRenderAdapter(_RecordingAdapter):
+    def create_frame(self, spec):
+        self.calls.append(("create_frame", dict(spec)))
+        return "frame:1"
+
+    def flush(self) -> None:
+        pass
+
+
 class FigmaAdapterEditTests(unittest.TestCase):
     def test_multiline_rich_text_falls_back_to_wrapped_plain_lines(self) -> None:
         adapter = _TextRenderAdapter()
@@ -462,6 +471,69 @@ class FigmaAdapterEditTests(unittest.TestCase):
 
         self.assertEqual(adapter.calls[0][0], "create_image")
         self.assertEqual(adapter.calls[0][1]["parentId"], "9:9")
+
+    def test_native_figma_render_keeps_text_and_image_payload_counts(self) -> None:
+        adapter = _NativeRenderAdapter()
+        design = {
+            "canvas": {"width": 320, "height": 180, "background": "#ffffff"},
+            "elements": [
+                {
+                    "id": "title",
+                    "type": "text",
+                    "text": "Native title",
+                    "x": 10,
+                    "y": 10,
+                    "width": 140,
+                    "height": 24,
+                    "style": {"fontSize": 16, "textColor": "#111111"},
+                },
+                {
+                    "id": "hero",
+                    "type": "image",
+                    "x": 10,
+                    "y": 50,
+                    "width": 120,
+                    "height": 80,
+                    "imageBase64": "aW1hZ2UtYnl0ZXM=",
+                    "imageMVP": {"generated": True},
+                },
+            ],
+        }
+
+        adapter.render_design(design)
+
+        text_calls = [params for action, params in adapter.calls if action == "create_text"]
+        image_calls = [params for action, params in adapter.calls if action == "create_image"]
+        self.assertEqual(text_calls[0]["text"], "Native title")
+        self.assertEqual(image_calls[0]["imageBase64"], "aW1hZ2UtYnl0ZXM=")
+        report = adapter.native_render_report()
+        self.assertEqual(report["status"], "pass")
+        self.assertEqual(report["expected"]["native_text"], 1)
+        self.assertEqual(report["actual"]["native_text"], 1)
+        self.assertEqual(report["expected"]["image_fills"], 1)
+        self.assertEqual(report["actual"]["image_fills"], 1)
+
+    def test_native_figma_render_rejects_full_screenshot_underlay(self) -> None:
+        adapter = _NativeRenderAdapter()
+        design = {
+            "canvas": {"width": 320, "height": 180, "background": "#ffffff"},
+            "elements": [
+                {
+                    "id": "full-underlay",
+                    "type": "image",
+                    "x": 0,
+                    "y": 0,
+                    "width": 320,
+                    "height": 180,
+                    "imageBase64": "aW1hZ2U=",
+                }
+            ],
+        }
+
+        with self.assertRaisesRegex(ValueError, "underlay"):
+            adapter.render_design(design)
+
+        self.assertEqual(adapter.calls, [])
 
     def test_image_fill_report_targets_explicit_root(self) -> None:
         adapter = _RecordingAdapter()

@@ -665,6 +665,94 @@ def build_image_design(
     return design
 
 
+def audit_native_reconstruction(design: Mapping[str, Any]) -> dict[str, Any]:
+    """Reject visible source screenshots used as the native frame background."""
+
+    canvas = design.get("canvas") or {}
+    try:
+        page_width = int(canvas.get("width") or 0)
+        page_height = int(canvas.get("height") or 0)
+    except (TypeError, ValueError):
+        page_width = page_height = 0
+    page_area = page_width * page_height
+    underlays = []
+    for element in design.get("elements") or []:
+        if not isinstance(element, Mapping):
+            continue
+        element_type = str(element.get("type") or "").lower()
+        if element_type not in {"image", "avatar"} and not element.get(
+            "imageBase64"
+        ):
+            continue
+        role = str(element.get("role") or "").lower()
+        asset_kind = str(
+            element.get("assetKind")
+            or (element.get("assetIdentity") or {}).get("kind")
+            or ""
+        ).lower()
+        if (
+            role == "background"
+            or asset_kind == "background"
+            or element.get("background") is True
+        ):
+            continue
+        try:
+            box = _normalized_box(element.get("bbox"), page_width, page_height)
+        except Exception:
+            box = _normalized_box(
+                [
+                    element.get("x"),
+                    element.get("y"),
+                    element.get("width"),
+                    element.get("height"),
+                ],
+                page_width,
+                page_height,
+            )
+        if box is None:
+            try:
+                width = int(element.get("width") or 0)
+                height = int(element.get("height") or 0)
+            except (TypeError, ValueError):
+                width = height = 0
+            area_ratio = width * height / page_area if page_area else 0.0
+        else:
+            area_ratio = box[2] * box[3] / page_area if page_area else 0.0
+        explicit_reference = bool(
+            element.get("referenceUnderlay")
+            or role == "reference-underlay"
+        )
+        if explicit_reference or area_ratio >= 0.95:
+            underlays.append(
+                {
+                    "id": str(element.get("id") or ""),
+                    "name": str(element.get("name") or ""),
+                    "reason": (
+                        "explicit-reference-underlay"
+                        if explicit_reference
+                        else "spans-page"
+                    ),
+                    "area_ratio": round(area_ratio, 6),
+                }
+            )
+    return {
+        "status": "blocked" if underlays else "pass",
+        "underlays": underlays,
+        "native_text_count": sum(
+            bool(str(element.get("text") or ""))
+            and str(element.get("type") or "").lower()
+            in {"text", "button", "input"}
+            for element in design.get("elements") or []
+            if isinstance(element, Mapping)
+        ),
+        "image_fill_count": sum(
+            bool(element.get("imageBase64"))
+            for element in design.get("elements") or []
+            if isinstance(element, Mapping)
+        ),
+    }
+
+
 def build_image_ir(
     graph: Mapping[str, Any],
     design: Mapping[str, Any],

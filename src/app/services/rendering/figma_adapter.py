@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import logging
@@ -26,6 +27,7 @@ from src.app.services.rendering.adapter_base import (
     _single_line_text,
 )
 from src.app.services.rendering.write_job_ledger import CompensationScope
+from src.app.services.structure.image_contract import audit_native_reconstruction
 from src.config.settings import Config
 
 logger = logging.getLogger(__name__)
@@ -491,6 +493,11 @@ class FigmaBridgeAdapter(PrototypeAdapter):
         self._semantic_rendered: dict[str, dict[str, Any]] = {}
         self._semantic_componentization_attempted = False
         self.semantic_componentization_result: dict[str, Any] | None = None
+        self._native_text_nodes: list[dict[str, Any]] = []
+        self._native_image_nodes: list[dict[str, Any]] = []
+        self._native_expected_design: dict[str, Any] | None = None
+        self.last_native_audit: dict[str, Any] = {}
+        self.last_native_render_report: dict[str, Any] = {}
 
         try:
             import websocket
@@ -618,6 +625,68 @@ class FigmaBridgeAdapter(PrototypeAdapter):
         node_id = self._send("create_frame", spec)
         self._record_semantic_node(node_id, spec, node_type="FRAME")
         return node_id
+
+    def render_design(self, design: dict[str, Any]) -> None:
+        audit = audit_native_reconstruction(design)
+        self.last_native_audit = audit
+        reference_mode = bool(
+            (design.get("_meta") or {}).get("referenceMode")
+            or ((design.get("_meta") or {}).get("imageMVP") or {}).get(
+                "referenceMode"
+            )
+        )
+        active = design
+        if audit["status"] == "blocked":
+            if not reference_mode:
+                raise ValueError(
+                    "visible full-screenshot underlay is blocked in native reconstruction"
+                )
+            blocked_ids = {
+                item["id"] for item in audit["underlays"] if item.get("id")
+            }
+            active = copy.deepcopy(design)
+            active["elements"] = [
+                element
+                for element in active.get("elements") or []
+                if str(element.get("id") or "") not in blocked_ids
+            ]
+        self._native_expected_design = copy.deepcopy(active)
+        self._native_text_nodes = []
+        self._native_image_nodes = []
+        super().render_design(active)
+        self.last_native_render_report = self.native_render_report()
+
+    def native_render_report(self) -> dict[str, Any]:
+        design = self._native_expected_design or {}
+        expected_text = sum(
+            bool(str(element.get("text") or ""))
+            and not element.get("imageBase64")
+            for element in design.get("elements") or []
+            if isinstance(element, Mapping)
+        )
+        expected_images = sum(
+            bool(element.get("imageBase64"))
+            for element in design.get("elements") or []
+            if isinstance(element, Mapping)
+        )
+        actual_text = len(getattr(self, "_native_text_nodes", []))
+        actual_images = len(getattr(self, "_native_image_nodes", []))
+        return {
+            "status": (
+                "pass"
+                if expected_text == actual_text and expected_images == actual_images
+                else "mismatch"
+            ),
+            "expected": {
+                "native_text": expected_text,
+                "image_fills": expected_images,
+            },
+            "actual": {
+                "native_text": actual_text,
+                "image_fills": actual_images,
+            },
+            "underlay_audit": self.last_native_audit,
+        }
 
     def _record_semantic_node(
         self,
@@ -899,6 +968,10 @@ class FigmaBridgeAdapter(PrototypeAdapter):
     ) -> str | None:
         params = _with_parent(spec, parent_id)
         node_id = self._send("create_text", params)
+        self._native_text_nodes = [
+            *getattr(self, "_native_text_nodes", []),
+            {"node_id": node_id, "text": str(spec.get("text") or "")},
+        ]
         self._record_semantic_node(node_id, params, node_type="TEXT")
         return node_id
 
@@ -991,6 +1064,10 @@ class FigmaBridgeAdapter(PrototypeAdapter):
     ) -> str | None:
         params = _with_parent(spec, parent_id)
         node_id = self._send("create_image", params)
+        self._native_image_nodes = [
+            *getattr(self, "_native_image_nodes", []),
+            {"node_id": node_id, "imageBase64": params.get("imageBase64")},
+        ]
         self._record_semantic_node(node_id, params, node_type="RECTANGLE")
         return node_id
 
