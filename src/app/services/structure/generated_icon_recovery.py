@@ -14,6 +14,9 @@ from typing import Any, Mapping
 from PIL import Image, ImageDraw
 
 from src.app.services.structure.asset_fusion import fuse_asset_record
+from src.app.services.structure.image_enrichment.generation import (
+    generate_asset_approximation,
+)
 
 
 GENERATOR = "codex-pillow-icon-v1"
@@ -58,20 +61,32 @@ def generate_icon_approximations(
         color = _ink_color(element.get("imageBase64"))
         generation_mode = "deterministic-fallback"
         generated_request = None
+        generation_result = None
         if is_missing_image:
             generated_request = _missing_image_request(
                 element,
                 width=width,
                 height=height,
             )
-            payload = (
-                image_generator(generated_request)
-                if image_generator is not None
-                else _generate_image_provider(generated_request, cfg)
-            )
+            if image_generator is not None:
+                payload = image_generator(generated_request)
+            else:
+                generation_result = _generate_image_candidate(
+                    generated_request,
+                    cfg,
+                )
+                payload = (
+                    generation_result.get("payload")
+                    if generation_result is not None
+                    else None
+                )
             if payload:
                 payload = _normalize_image_payload(payload, width, height)
-                generation_mode = "provider-generated"
+                generation_mode = (
+                    str(generation_result.get("method") or "provider-generated")
+                    if generation_result is not None
+                    else "provider-generated"
+                )
             else:
                 svg_source = (
                     svg_generator(generated_request)
@@ -110,28 +125,55 @@ def generate_icon_approximations(
             if is_icon
             else _missing_image_prompt(element, width, height)
         )
+        generated_flag = (
+            bool(generation_result.get("generated"))
+            if generation_result is not None
+            else generation_mode in {"provider-generated", "vlm-svg"}
+        )
         candidate = {
-            "generator": IMAGE_GENERATOR if is_missing_image else GENERATOR,
+            "generator": (
+                str((generation_result or {}).get("generator") or IMAGE_GENERATOR)
+                if is_missing_image
+                else GENERATOR
+            ),
             "model": (
-                str(getattr(cfg, "image_generation_model", "") or MODEL)
+                str(
+                    (generation_result or {}).get("model")
+                    or getattr(cfg, "image_generation_model", "")
+                    or MODEL
+                )
                 if is_missing_image
                 else MODEL
             ),
             "input_reference": (
-                f"{element.get('id')}:{element.get('name')}:"
-                f"{display.get('payload_sha256')}"
+                str(
+                    (generation_result or {}).get("input_reference")
+                    or (
+                        f"{element.get('id')}:{element.get('name')}:"
+                        f"{display.get('payload_sha256')}"
+                    )
+                )
             ),
-            "prompt": prompt,
-            "prompt_version": PROMPT_VERSION,
-            "review_status": REVIEW_STATUS,
+            "prompt": str((generation_result or {}).get("prompt") or prompt),
+            "prompt_version": str(
+                (generation_result or {}).get("prompt_version") or PROMPT_VERSION
+            ),
             "payload_sha256": digest,
             "bytes_present": True,
             "use_class": "icon-crop" if is_icon else (
                 "image-generated"
-                if generation_mode in {"provider-generated", "vlm-svg"}
+                if generated_flag
                 else "image-placeholder"
             ),
             "generation_mode": generation_mode,
+            "generation_method": generation_mode,
+            "original": False,
+            "generated": generated_flag,
+            "review_status": (
+                str((generation_result or {}).get("review_status") or REVIEW_STATUS)
+                if generation_result is not None
+                else REVIEW_STATUS
+            ),
             "semantic": semantic,
             "locator": f"icons/{target.name}",
         }
@@ -247,34 +289,14 @@ def _missing_image_request(
     }
 
 
-def _generate_image_provider(
+def _generate_image_candidate(
     request: Mapping[str, Any],
     cfg: Any | None,
-) -> bytes | None:
+) -> dict[str, Any] | None:
     if cfg is None:
         return None
-    api_key = getattr(cfg, "image_generation_api_key", None)
-    if not api_key:
-        return None
     try:
-        import openai
-
-        client = openai.OpenAI(
-            base_url=(
-                getattr(cfg, "image_generation_base_url", None)
-                or getattr(cfg, "vision_base_url", None)
-            ),
-            api_key=api_key,
-            timeout=float(getattr(cfg, "image_generation_timeout", 20)),
-        )
-        response = client.images.generate(
-            model=getattr(cfg, "image_generation_model", "gpt-image-1"),
-            prompt=str(request["prompt"]),
-            size="1024x1024",
-            response_format="b64_json",
-        )
-        encoded = response.data[0].b64_json
-        return base64.b64decode(encoded) if encoded else None
+        return generate_asset_approximation(dict(request), cfg)
     except Exception:
         return None
 
