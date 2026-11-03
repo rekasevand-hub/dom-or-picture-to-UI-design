@@ -15,6 +15,7 @@ from src.app.services.structure.image_contract import (
     recover_image_region_candidates,
     select_ocr_languages,
 )
+from src.app.services.structure.image_enrichment.assets import recover_visible_assets
 
 
 def _rgb(value: str) -> tuple[int, int, int]:
@@ -765,6 +766,83 @@ class ImageContractTests(unittest.TestCase):
             [40, 40, 140, 40],
         )
         self.assertEqual(element["style"]["fillColor"], "#2f6fed")
+
+    def test_recovered_asset_becomes_figma_image_payload_and_underlay_is_skipped(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw_dir:
+            root = Path(raw_dir)
+            path = root / "asset-map.png"
+            image = Image.new("RGB", (400, 220), "#ffffff")
+            draw = ImageDraw.Draw(image)
+            draw.rectangle((220, 90, 299, 149), fill="#2f6fed")
+            draw.text((50, 30), "Title", fill="#172033")
+            draw.rectangle((50, 70, 129, 99), fill="#335577")
+            image.save(path)
+            graph = {
+                "image": str(path),
+                "image_w": 400,
+                "image_h": 220,
+                "route": "grounding",
+                "containers": [],
+                "elements": [
+                    {
+                        "id": 1,
+                        "bbox": [50, 30, 80, 20],
+                        "type": "text",
+                        "text": "Title",
+                        "source": "grounding",
+                    },
+                    {
+                        "id": 2,
+                        "bbox": [50, 70, 80, 30],
+                        "type": "button",
+                        "text": "Save",
+                        "source": "grounding",
+                    },
+                ],
+                "imageEnrichment": {
+                    "assets": [
+                        {
+                            "name": "blue_cover",
+                            "kind": "illustration",
+                            "bbox": [220, 90, 80, 60],
+                            "critical": False,
+                        },
+                        {
+                            "name": "full_page_underlay",
+                            "kind": "screenshot",
+                            "bbox": [0, 0, 400, 220],
+                            "critical": False,
+                        },
+                    ]
+                },
+                "provenance": {"route": "grounding"},
+            }
+            recovered, report = recover_visible_assets(
+                graph,
+                path,
+                work_dir=root / "work",
+            )
+            reference = inspect_image_reference(path)
+            design = build_image_design(recovered, reference)
+
+        images = [
+            element for element in design["elements"] if element["type"] == "image"
+        ]
+        self.assertEqual(len(images), 1)
+        self.assertTrue(images[0]["imageBase64"])
+        self.assertTrue(images[0]["imageMVP"]["reference_only"])
+        self.assertFalse(images[0]["imageMVP"]["generated"])
+        self.assertEqual(
+            images[0]["displayPayload"]["payload_sha256"],
+            images[0]["visibleCrop"]["payload_sha256"],
+        )
+        self.assertEqual(report["underlay_count"], 1)
+        self.assertEqual(
+            design["_meta"]["imageMVP"]["referenceUnderlays"][0]["name"],
+            "full_page_underlay",
+        )
 
 
 if __name__ == "__main__":

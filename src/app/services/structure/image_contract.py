@@ -19,6 +19,9 @@ from src.app.services.structure.asset_metadata import (
     attach_display_payload,
     build_asset_record,
 )
+from src.app.services.structure.image_enrichment.assets import (
+    classify_full_screenshot_underlay,
+)
 
 SCHEMA_VERSION = "image-figma-mvp/1.0"
 REFERENCE_SCHEMA_VERSION = "image-reference/1.0"
@@ -371,6 +374,12 @@ def build_image_design(
     elements: list[dict[str, Any]] = []
     route = str(graph.get("route") or "grounding")
     presentation = f"{route}-pixel-sampled-fixed-coordinate"
+    enrichment = graph.get("imageEnrichment")
+    reference_underlays = (
+        copy.deepcopy(enrichment.get("referenceUnderlays") or [])
+        if isinstance(enrichment, Mapping)
+        else []
+    )
 
     for container in graph.get("containers") or []:
         if not isinstance(container, Mapping):
@@ -405,6 +414,33 @@ def build_image_design(
             continue
         x, y, w, h = bbox
         candidate_type = str(item.get("type") or "rectangle").lower()
+        if candidate_type in {"image", "avatar"}:
+            classification = classify_full_screenshot_underlay(
+                {
+                    "name": item.get("assetName") or item.get("name"),
+                    "kind": item.get("assetKind") or item.get("kind"),
+                    "bbox": list(bbox),
+                    "role": item.get("role"),
+                    "background": item.get("background"),
+                },
+                graph,
+                width=width,
+                height=height,
+            )
+            if classification["is_underlay"]:
+                evidence = {
+                    "name": str(item.get("assetName") or item.get("name") or ""),
+                    "kind": str(item.get("assetKind") or item.get("kind") or ""),
+                    "bbox": list(bbox),
+                    "classification": classification,
+                }
+                if not any(
+                    existing.get("name") == evidence["name"]
+                    and existing.get("bbox") == evidence["bbox"]
+                    for existing in reference_underlays
+                ):
+                    reference_underlays.append(evidence)
+                continue
         element_type = {
             "link": "text",
             "avatar": "image",
@@ -501,16 +537,42 @@ def build_image_design(
             element["style"] = style
             element["imageMVP"]["textStatus"] = "grounding-candidate"
         elif element_type in {"image", "avatar"}:
-            x, y, w, h = _refine_image_box(image_path, bbox)
+            visible_crop = item.get("visibleCrop") or item.get("sourceCrop")
+            payload = None
+            digest = None
+            source_rect = None
+            if isinstance(visible_crop, Mapping):
+                displayed = _normalized_box(
+                    visible_crop.get("display_box"),
+                    width,
+                    height,
+                )
+                if displayed is not None:
+                    x, y, w, h = displayed
+                crop_path = Path(str(visible_crop.get("path") or ""))
+                if crop_path.is_file():
+                    payload = base64.b64encode(crop_path.read_bytes()).decode("ascii")
+                    digest = hashlib.sha256(
+                        base64.b64decode(payload)
+                    ).hexdigest()
+                source_rect = _normalized_box(
+                    visible_crop.get("source_rect"),
+                    width,
+                    height,
+                )
+            else:
+                x, y, w, h = _refine_image_box(image_path, bbox)
             element.update({"x": x, "y": y, "width": w, "height": h})
-            payload = crop_image_b64(image_path, x, y, w, h, width, height)
+            if payload is None:
+                payload = crop_image_b64(image_path, x, y, w, h, width, height)
             if payload:
                 element["imageBase64"] = payload
-            digest = (
-                hashlib.sha256(base64.b64decode(payload)).hexdigest()
-                if payload
-                else None
-            )
+            if digest is None:
+                digest = (
+                    hashlib.sha256(base64.b64decode(payload)).hexdigest()
+                    if payload
+                    else None
+                )
             record = build_asset_record(
                 sample_id=sample_id,
                 node_index=_safe_node_index(item.get("id")),
@@ -520,6 +582,7 @@ def build_image_design(
                 display_box=(x, y, w, h),
                 display_payload_sha256=digest,
                 screenshot_sha256=screenshot_sha,
+                source_rect=source_rect,
             )
             if payload:
                 record = attach_display_payload(
@@ -531,13 +594,27 @@ def build_image_design(
             element["assetIdentity"] = {"asset_record": record}
             element["displayPayload"] = dict(record["display_payload"])
             element["replacement"] = dict(record["replacement"])
-            element["sourceResolution"] = fuse_asset_record(record)
+            source_resolution = item.get("sourceResolution")
+            element["sourceResolution"] = (
+                copy.deepcopy(dict(source_resolution))
+                if isinstance(source_resolution, Mapping)
+                else fuse_asset_record(record)
+            )
+            if isinstance(visible_crop, Mapping):
+                element["visibleCrop"] = copy.deepcopy(dict(visible_crop))
+            generated = item.get("generatedApproximation")
+            if isinstance(generated, Mapping):
+                element["generatedApproximation"] = copy.deepcopy(dict(generated))
             element["imageMVP"].update(
                 {
                     "sourceStatus": "unavailable-from-flat-image",
                     "reference_only": True,
                     "displayReplaceable": bool(payload),
                     "originalAssetClaimed": False,
+                    "generated": bool(
+                        isinstance(generated, Mapping)
+                        and generated.get("generated")
+                    ),
                 }
             )
         else:
@@ -581,6 +658,7 @@ def build_image_design(
                 },
                 "assetClaim": "display-replacement-only",
                 "originalAssetClaimed": False,
+                "referenceUnderlays": reference_underlays,
             },
         },
     }
