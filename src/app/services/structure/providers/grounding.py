@@ -25,6 +25,9 @@ from src.app.services.structure.image_enrichment.assets import (
 from src.app.services.structure.image_enrichment.backgrounds import (
     create_background_candidates,
 )
+from src.app.services.structure.image_enrichment.controls import (
+    recover_visible_controls,
+)
 from src.app.services.structure.image_enrichment.prompts import (
     build_grounding_tile_prompt,
 )
@@ -183,33 +186,26 @@ def _tile_prompt(
 ) -> str:
     from src.app.services.structure.backends.grounding_vlm import PROMPT
 
+    if enrichment_mode != "off":
+        return build_grounding_tile_prompt(
+            tile,
+            {
+                "image_size": [ctx.image_w, ctx.image_h],
+                "image_enrichment_mode": enrichment_mode,
+            },
+        )
     metadata = {
         "tile_id": tile.get("id"),
         "source_rect": tile.get("source_rect"),
         "page_size": [ctx.image_w, ctx.image_h],
     }
-    prompt = "\n".join(
+    return "\n".join(
         [
             PROMPT,
             f"Tile metadata: {json.dumps(metadata, sort_keys=True)}",
             "All returned bbox values are normalized to this tile image and will be translated to page coordinates.",
         ]
     )
-    if enrichment_mode != "off":
-        prompt = "\n".join(
-            [
-                prompt,
-                build_grounding_tile_prompt(
-                    tile,
-                    {
-                        "image_size": [ctx.image_w, ctx.image_h],
-                        "image_enrichment_mode": enrichment_mode,
-                    },
-                ),
-                "Return one JSON object containing containers, elements, assets, and backgrounds.",
-            ]
-        )
-    return prompt
 
 
 def _repair_prompt(prompt: str, error: GroundingRequestError) -> str:
@@ -233,6 +229,7 @@ def _call_backend(
     prompt: str,
     strategy_id: str,
     tile: dict[str, Any],
+    bbox_format: str = "normalized-xyxy",
 ) -> dict:
     method = getattr(backend, "ground_with_prompt", None)
     if callable(method):
@@ -242,7 +239,7 @@ def _call_backend(
             height,
             prompt,
             strategy_id=strategy_id,
-            metadata={"tile": tile},
+            metadata={"tile": tile, "bbox_format": bbox_format},
         )
     return backend.ground(image_path, width, height)
 
@@ -286,6 +283,17 @@ def _graph_from_raw(
             text=str(element.get("text") or ""),
             source="grounding",
         )
+        extracted = graph["elements"][-1]
+        for field in (
+            "controlType",
+            "controlValue",
+            "controlState",
+            "placeholder",
+            "state",
+            "value",
+        ):
+            if element.get(field) is not None:
+                extracted[field] = element[field]
     graph["provenance"]["tiling"] = {"tile": dict(tile)}
     if enrichment_mode != "off":
         graph["imageEnrichment"] = _translate_enrichment_candidates(raw, tile)
@@ -416,6 +424,7 @@ def _finalize_image_enrichment(
     candidates: dict[str, Any],
     ctx: ProviderContext,
     mode: str,
+    control_report: dict[str, Any] | None = None,
 ) -> dict:
     if mode == "off":
         return graph
@@ -518,6 +527,7 @@ def _finalize_image_enrichment(
             "assets": copy.deepcopy(enrichment.get("assets") or []),
             "backgrounds": copy.deepcopy(candidates.get("backgrounds") or []),
             "generatedPayloads": generated_payloads,
+            "controlRecovery": copy.deepcopy(control_report or {}),
             "diagnostics": diagnostics,
             "underlays": unique_underlays,
             "provenance": {
@@ -574,6 +584,7 @@ class GroundingProvider(BaseProvider):
                     prompt=_tile_prompt(tile, ctx, enrichment_mode),
                     strategy_id="grounding-enrichment",
                     tile=tile,
+                    bbox_format="source-px-xywh",
                 )
             if not _has_structure(raw) and not _is_majority_background(
                 ctx.image_path
@@ -599,6 +610,15 @@ class GroundingProvider(BaseProvider):
                 ctx,
                 enrichment_mode,
             )
+            if enrichment_mode != "off":
+                final, control_report = recover_visible_controls(
+                    final,
+                    Path(ctx.image_path),
+                    add_from_assets=enrichment_mode == "apply",
+                )
+                final["imageEnrichment"]["controlRecovery"] = copy.deepcopy(
+                    control_report
+                )
             return final
 
         with tempfile.TemporaryDirectory(prefix="grounding-tiles-") as temp_dir:
@@ -642,6 +662,15 @@ class GroundingProvider(BaseProvider):
             ctx,
             enrichment_mode,
         )
+        if enrichment_mode != "off":
+            final, control_report = recover_visible_controls(
+                final,
+                Path(ctx.image_path),
+                add_from_assets=enrichment_mode == "apply",
+            )
+            final["imageEnrichment"]["controlRecovery"] = copy.deepcopy(
+                control_report
+            )
         return final
 
     def _ground_tile(
@@ -659,6 +688,11 @@ class GroundingProvider(BaseProvider):
         tile_path = temp_dir / f"{tile['id']}.png"
         tile_image.save(tile_path)
         enrichment_mode = _image_enrichment_mode(self.cfg)
+        bbox_format = (
+            "normalized-xyxy"
+            if enrichment_mode == "off"
+            else "source-px-xywh"
+        )
         prompt = _tile_prompt(tile, ctx, enrichment_mode)
         reports: list[dict[str, Any]] = []
 
@@ -671,6 +705,7 @@ class GroundingProvider(BaseProvider):
                 prompt=prompt,
                 strategy_id="grounding-tile",
                 tile=tile,
+                bbox_format=bbox_format,
             )
             status = None
         except GroundingRequestError as exc:
@@ -688,6 +723,7 @@ class GroundingProvider(BaseProvider):
                     prompt=_repair_prompt(prompt, exc),
                     strategy_id="grounding-tile-repair",
                     tile=tile,
+                    bbox_format=bbox_format,
                 )
                 status = "recovered-by-repair"
             except GroundingRequestError as repair_error:

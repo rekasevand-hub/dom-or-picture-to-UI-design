@@ -11,7 +11,6 @@ from typing import Any
 from src.app.services.structure.graph import (
     assign_ids,
     assign_parent_depth,
-    contains,
     iou,
     new_graph,
 )
@@ -298,7 +297,10 @@ def _merge_elements(
                             )
                         )
                         continue
-                    if _adjacent_text(existing, candidate):
+                    if (
+                        candidate.get("_tile_id") != existing.get("_tile_id")
+                        and _adjacent_text(existing, candidate)
+                    ):
                         _merge_adjacent_text(candidate, existing, diagnostics)
                         matched = True
                         break

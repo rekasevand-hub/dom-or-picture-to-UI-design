@@ -239,6 +239,27 @@ def test_grounding_tile_prompt_preserves_page_and_tile_coordinates():
     assert "hash-table-optimization" in prompt
 
 
+def test_grounding_tile_prompt_returns_one_source_pixel_bbox_contract():
+    tile = {
+        "id": "tile-0000",
+        "source_rect": [0, 0, 320, 240],
+        "page_origin": [0, 0],
+    }
+
+    prompt = build_grounding_tile_prompt(
+        tile,
+        {"image_size": [320, 240]},
+    )
+
+    assert '"containers"' in prompt
+    assert '"elements"' in prompt
+    assert '"assets"' in prompt
+    assert '"backgrounds"' in prompt
+    assert "bbox objects shaped as {x, y, width, height}" in prompt
+    assert "Do not use percentages, normalized coordinates, arrays" in prompt
+    assert "0~1" not in prompt
+
+
 def test_background_mask_prompt_preserves_mask_and_baked_content_rules():
     background = {
         "id": "hero_bg",

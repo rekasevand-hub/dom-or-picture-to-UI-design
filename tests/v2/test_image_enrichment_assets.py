@@ -84,7 +84,6 @@ def test_recover_visible_assets_preserves_reference_pixels_and_missing_candidate
     assets = {
         asset["name"]: asset for asset in recovered["imageEnrichment"]["assets"]
     }
-    logo = assets["brand_logo"]
     photo = assets["grayscale_photo"]
     product = assets["occluded_product"]
 
@@ -159,6 +158,30 @@ def test_ambiguous_crop_keeps_requested_bbox_instead_of_inventing_transparency()
     photo = recovered["imageEnrichment"]["assets"][0]
     assert photo["visibleCrop"]["source_rect"] == [40, 30, 100, 70]
     assert photo["visibleCrop"]["refinement"] == "requested-bbox-fallback"
+
+
+def test_logo_refinement_unions_disconnected_visible_marks():
+    with tempfile.TemporaryDirectory() as raw_dir:
+        root = Path(raw_dir)
+        path = root / "logo.png"
+        image = Image.new("RGB", (120, 80), "white")
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((20, 10, 99, 19), fill="#354154")
+        draw.rectangle((28, 28, 90, 45), fill="#3567a9")
+        image.save(path)
+        graph = _graph(path, [_asset("brand_logo", "logo", [10, 0, 100, 60])])
+        graph["image_w"] = 120
+        graph["image_h"] = 80
+
+        recovered, _report = recover_visible_assets(
+            graph,
+            path,
+            work_dir=root / "work",
+        )
+
+    logo = recovered["imageEnrichment"]["assets"][0]
+    assert logo["visibleCrop"]["source_rect"] == [20, 10, 80, 36]
+    assert logo["visibleCrop"]["refinement"] == "connected-component-union"
 
 
 def test_duplicate_asset_uses_one_crop_and_reports_rejection():

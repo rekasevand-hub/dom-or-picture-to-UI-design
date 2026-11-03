@@ -98,13 +98,20 @@ def build_grounding_tile_prompt(tile: dict, page_context: dict) -> str:
 
     return "\n".join(
         [
-            "Analyze the attached UI tile and return enrichment candidates as one JSON object.",
+            "Analyze the attached UI tile and return one editable UI structure plus enrichment candidates as one JSON object.",
             f"Tile id: {tile_id}.",
             f"Original page size: {page_width}x{page_height} pixels.",
             f"Tile image size: {tile_width}x{tile_height} pixels.",
             f"Tile source origin on page: ({origin_x}, {origin_y}).",
-            "All bbox values must use pixel coordinates relative to this tile's top-left. Do not use percentages or coordinates relative to the full page.",
-            "Use bbox objects shaped as {x, y, width, height} in source-image pixels.",
+            "Use one bbox contract for every container, element, asset, background, and overlay.",
+            "All bbox values must use pixel coordinates relative to this tile's top-left and bbox objects shaped as {x, y, width, height}.",
+            "Do not use percentages, normalized coordinates, arrays, or coordinates relative to the full page.",
+            "Return layout containers in containers and editable controls or independent text in elements.",
+            "Allowed element types: button, checkbox, icon-button, input, link, navigation, pagination, radio, select, text, textarea, toggle, image.",
+            "For every editable control include controlValue with the exact visible value, or an empty string when there is no value.",
+            "For input, select, textarea, button, link, navigation, and pagination use controlState enabled or disabled.",
+            "For checkbox, radio, and toggle use controlState checked or unchecked.",
+            "Infer state only from visible pixels and do not invent hidden actions.",
             "Allowed asset kinds: icon, avatar, illustration, photo, product-image, complex-decoration, complex-chart, logo.",
             "Return an asset only when its exact raster appearance cannot be reliably rebuilt as ordinary text or simple CSS shapes.",
             "Do not return ordinary UI text, button backgrounds, cards, dividers, simple rectangles, circles, or layout containers as assets.",
@@ -116,7 +123,7 @@ def build_grounding_tile_prompt(tile: dict, page_context: dict) -> str:
             "Use raster-overlay only for a visually independent foreground bitmap that cannot be rebuilt as text, CSS, or a simple vector icon.",
             "Preserve baked visual content inside a background, including illustrations, scenery, products, decorative frames, artistic text, and integrated branding.",
             f"Page context: {context_text}",
-            'Return {"assets":[{"name":"specific_name","kind":"icon","bbox":{"x":0,"y":0,"width":8,"height":8},"confidence":0.0,"containsEmbeddedText":false,"reason":"why"}],"backgrounds":[{"id":"background_01","name":"specific_background","bbox":{"x":0,"y":0,"width":100,"height":100},"confidence":0.0,"reason":"why","bakedVisuals":[],"overlays":[{"id":"overlay_01","name":"overlay","kind":"code-overlay","bbox":{"x":0,"y":0,"width":20,"height":20},"confidence":0.0,"reason":"why"}]}]}',
+            'Return {"containers":[{"role":"banner","bbox":{"x":0,"y":0,"width":320,"height":40}}],"elements":[{"type":"text","text":"Visible text","bbox":{"x":8,"y":8,"width":80,"height":20}},{"type":"input","text":"auto_backup","controlValue":"auto_backup","controlState":"enabled","bbox":{"x":8,"y":40,"width":160,"height":32}}],"assets":[{"name":"specific_name","kind":"icon","bbox":{"x":0,"y":0,"width":8,"height":8},"confidence":0.0,"containsEmbeddedText":false,"reason":"why"}],"backgrounds":[{"id":"background_01","name":"specific_background","bbox":{"x":0,"y":0,"width":100,"height":100},"confidence":0.0,"reason":"why","bakedVisuals":[],"overlays":[{"id":"overlay_01","name":"overlay","kind":"code-overlay","bbox":{"x":0,"y":0,"width":20,"height":20},"confidence":0.0,"reason":"why"}]}]}',
             "Return empty arrays when no candidate exists. Return JSON only, with no Markdown or explanation.",
         ]
     )

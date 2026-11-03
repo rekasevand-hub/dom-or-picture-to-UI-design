@@ -174,6 +174,45 @@ def _refine_visible_box(
     crop = array[y : y + box_height, x : x + box_width]
     if crop.size == 0:
         return list(requested), "requested-bbox-fallback"
+    if kind == "logo":
+        gray = cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY)
+        hsv = cv2.cvtColor(crop, cv2.COLOR_RGB2HSV)
+        ink = ((gray < 253) | (hsv[..., 1] >= 25)).astype(np.uint8) * 255
+        ink = cv2.morphologyEx(
+            ink,
+            cv2.MORPH_CLOSE,
+            np.ones((3, 3), dtype=np.uint8),
+        )
+        count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(
+            ink,
+            8,
+        )
+        marks = []
+        border = max(1, min(box_width, box_height) // 20)
+        for index in range(1, count):
+            left, top, width, height, area = (
+                int(value) for value in stats[index, :5]
+            )
+            if (
+                area < max(8, box_width * box_height * 0.002)
+                or left < border
+                or top < border
+                or left + width > box_width - border
+                or top + height > box_height - border
+            ):
+                continue
+            marks.append((left, top, width, height))
+        if marks:
+            left = min(mark[0] for mark in marks)
+            top = min(mark[1] for mark in marks)
+            right = max(mark[0] + mark[2] for mark in marks)
+            bottom = max(mark[1] + mark[3] for mark in marks)
+            return [
+                x + left,
+                y + top,
+                right - left,
+                bottom - top,
+            ], "connected-component-union"
     background = _dominant_rgb(crop)
     distance = np.linalg.norm(crop.astype(np.int16) - background, axis=2)
     channel_range = crop.max(axis=2).astype(np.int16) - crop.min(axis=2).astype(
@@ -185,6 +224,11 @@ def _refine_visible_box(
         cv2.MORPH_CLOSE,
         np.ones((5, 5), dtype=np.uint8),
     )
+    border = 1 if min(box_width, box_height) < 24 else 2
+    mask[:border, :] = 0
+    mask[-border:, :] = 0
+    mask[:, :border] = 0
+    mask[:, -border:] = 0
     count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(mask, 8)
     candidates = []
     for index in range(1, count):
@@ -196,11 +240,23 @@ def _refine_visible_box(
         candidates.append((area, left, top, width, height))
     if not candidates:
         return list(requested), "requested-bbox-fallback"
-    area, left, top, width, height = max(candidates, key=lambda item: item[0])
     total_area = box_width * box_height
-    if area < total_area * 0.02 or width * height >= total_area * 0.90:
+    meaningful = [
+        candidate
+        for candidate in candidates
+        if candidate[0] >= max(8, total_area * 0.002)
+    ]
+    if not meaningful:
         return list(requested), "requested-bbox-fallback"
-    return [x + left, y + top, width, height], "connected-component"
+    left = min(candidate[1] for candidate in meaningful)
+    top = min(candidate[2] for candidate in meaningful)
+    right = max(candidate[1] + candidate[3] for candidate in meaningful)
+    bottom = max(candidate[2] + candidate[4] for candidate in meaningful)
+    width = right - left
+    height = bottom - top
+    if width * height >= total_area * 0.92:
+        return list(requested), "requested-bbox-fallback"
+    return [x + left, y + top, width, height], "connected-component-union"
 
 
 def _slug(value: Any, fallback: str) -> str:

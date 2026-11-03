@@ -13,7 +13,6 @@
     "model_candidates_promoted": false
   },
   "critical_texts": [
-    "TETUO AUTO",
     "自动备份",
     "名称",
     "显示名称",
@@ -273,19 +272,6 @@
       "value": "",
       "state": "enabled",
       "critical": true
-    },
-    {
-      "name": "First history checkbox",
-      "type": "checkbox",
-      "bbox": [
-        322,
-        607,
-        20,
-        20
-      ],
-      "value": "",
-      "state": "unchecked",
-      "critical": true
     }
   ],
   "containers": [
@@ -362,7 +348,7 @@
         307,
         560,
         1593,
-        264
+        266
       ],
       "critical": true
     }
@@ -374,7 +360,7 @@
         307,
         560,
         1593,
-        264
+        266
       ],
       "header_texts": [
         "#",
@@ -447,7 +433,10 @@
       ],
       "critical": true,
       "minimum_iou": 0.8,
-      "occurrence_count": 1
+      "occurrence_count": 1,
+      "embedded_texts": [
+        "TETUO AUTO"
+      ]
     },
     {
       "name": "FlexWeaver application icon",

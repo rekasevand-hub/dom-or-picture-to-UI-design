@@ -381,6 +381,19 @@ class PreciseAgent:
                 json.dumps(image_region_recovery, ensure_ascii=False, indent=2) + "\n",
                 encoding="utf-8",
             )
+            if isinstance(graph.get("imageEnrichment"), dict):
+                from src.app.services.structure.image_enrichment.controls import (
+                    recover_visible_controls,
+                )
+
+                graph, control_recovery = recover_visible_controls(
+                    graph,
+                    Path(str(image)),
+                    add_from_assets=(
+                        str(graph["imageEnrichment"].get("mode") or "") == "apply"
+                    ),
+                )
+                graph["imageEnrichment"]["controlRecovery"] = control_recovery
 
         assign_ids(graph)
         assign_parent_depth(graph)

@@ -200,6 +200,24 @@ def merge_ocr_candidates(
             existing = [
                 current for current in existing if current["key"] not in replaced_keys
             ]
+        overlong = [
+            current
+            for current in existing
+            if len(current["normalized"]) > max(32, len(normalized) * 2)
+            and normalized in current["normalized"]
+            and _box_coverage(line["bbox"], current["bbox"]) >= 0.5
+        ]
+        if overlong:
+            replaced_covered.extend(overlong)
+            replaced_keys.update(current["key"] for current in overlong)
+            merged["elements"] = [
+                item
+                for item in merged.get("elements") or []
+                if _ocr_candidate_key(item) not in replaced_keys
+            ]
+            existing = [
+                current for current in existing if current["key"] not in replaced_keys
+            ]
         if any(
             normalized == current["normalized"]
             or (
@@ -375,6 +393,11 @@ def build_image_design(
     route = str(graph.get("route") or "grounding")
     presentation = f"{route}-pixel-sampled-fixed-coordinate"
     enrichment = graph.get("imageEnrichment")
+    enrichment_mode = (
+        str(enrichment.get("mode") or "")
+        if isinstance(enrichment, Mapping)
+        else ""
+    )
     reference_underlays = (
         copy.deepcopy(enrichment.get("referenceUnderlays") or [])
         if isinstance(enrichment, Mapping)
@@ -441,11 +464,43 @@ def build_image_design(
                 ):
                     reference_underlays.append(evidence)
                 continue
+        control_value = str(item.get("controlValue") or item.get("value") or "")
+        control_type = str(
+            item.get("controlType") or candidate_type
+        ).lower()
+        raw_control_text = str(control_value or item.get("text") or "")
+        if (
+            control_type == "icon-button"
+            and w >= 100
+            and h >= 28
+            and any(
+                token in _ui_text(raw_control_text)
+                for token in ("search", "搜索", "筛选")
+            )
+        ):
+            control_type = "input"
+        search_placeholder = (
+            control_type == "input"
+            and any(
+                token in _ui_text(raw_control_text)
+                for token in ("search", "搜索", "筛选")
+            )
+        )
+        if search_placeholder:
+            control_value = ""
         element_type = {
             "link": "text",
             "avatar": "image",
             "circle": "circle",
-        }.get(candidate_type, candidate_type)
+            "checkbox": "input",
+            "icon-button": "button",
+            "navigation": "button",
+            "pagination": "button",
+            "radio": "input",
+            "select": "input",
+            "textarea": "input",
+            "toggle": "input",
+        }.get(control_type, candidate_type)
         if element_type not in {
             "text",
             "button",
@@ -456,7 +511,35 @@ def build_image_design(
             "circle",
         }:
             element_type = "rectangle"
-        text = str(item.get("text") or "")
+        is_control = control_type in {
+            "button",
+            "checkbox",
+            "icon-button",
+            "input",
+            "link",
+            "navigation",
+            "pagination",
+            "radio",
+            "select",
+            "textarea",
+            "toggle",
+        }
+        if (
+            enrichment_mode in {"analyze", "apply"}
+            and is_control
+            and not search_placeholder
+            and not control_value
+        ):
+            control_value = _text_inside_box(graph, bbox, width, height)
+        if (
+            enrichment_mode == "apply"
+            and candidate_type == "icon-button"
+            and not control_value
+            and w <= 64
+            and h <= 64
+        ):
+            continue
+        text = "" if search_placeholder else control_value or str(item.get("text") or "")
         rendered_text = text if element_type in {"text", "button", "input"} else ""
         element: dict[str, Any] = {
             "id": str(item.get("id") or ""),
@@ -476,6 +559,16 @@ def build_image_design(
                 "generated": False,
             },
         }
+        if enrichment_mode in {"analyze", "apply"} and is_control:
+            element["controlType"] = control_type
+            element["controlValue"] = (
+                ""
+                if search_placeholder
+                else control_value or str(item.get("text") or "")
+            )
+            element["controlState"] = str(
+                item.get("controlState") or item.get("state") or ""
+            )
 
         if element_type == "text":
             local_surface = (
@@ -496,6 +589,9 @@ def build_image_design(
                         "height": h,
                     }
                 )
+                if enrichment_mode in {"analyze", "apply"}:
+                    element["controlType"] = "button"
+                    element["controlState"] = element.get("controlState") or "enabled"
                 text_color, _ink_box, _band_height = _foreground_color(
                     image_path, surface_box
                 )
@@ -594,6 +690,28 @@ def build_image_design(
             element["assetIdentity"] = {"asset_record": record}
             element["displayPayload"] = dict(record["display_payload"])
             element["replacement"] = dict(record["replacement"])
+            identity = item.get("assetIdentity")
+            asset_name = (
+                item.get("assetName")
+                or item.get("name")
+                or (
+                    identity.get("name")
+                    if isinstance(identity, Mapping)
+                    else ""
+                )
+            )
+            asset_kind = (
+                item.get("assetKind")
+                or item.get("kind")
+                or (
+                    identity.get("kind")
+                    if isinstance(identity, Mapping)
+                    else ""
+                )
+                or "image"
+            )
+            element["assetName"] = str(asset_name or "")
+            element["assetKind"] = str(asset_kind or "image")
             source_resolution = item.get("sourceResolution")
             element["sourceResolution"] = (
                 copy.deepcopy(dict(source_resolution))
@@ -623,6 +741,8 @@ def build_image_design(
 
         elements.append(element)
 
+    if enrichment_mode in {"analyze", "apply"}:
+        elements = _dedupe_design_elements(elements)
     image_count = sum(element["type"] in {"image", "avatar"} for element in elements)
     text_count = sum(element["type"] == "text" for element in elements)
     design = {
@@ -901,6 +1021,92 @@ def _normalized_box(
     if x1 - x0 < 1 or y1 - y0 < 1:
         return None
     return x0, y0, x1 - x0, y1 - y0
+
+
+def _text_inside_box(
+    graph: Mapping[str, Any],
+    box: tuple[int, int, int, int],
+    width: int,
+    height: int,
+) -> str:
+    target_area = box[2] * box[3]
+    ranked: list[tuple[float, str]] = []
+    for item in graph.get("elements") or []:
+        if not isinstance(item, Mapping) or str(item.get("type") or "").lower() != "text":
+            continue
+        text = str(item.get("text") or "").strip()
+        candidate = _normalized_box(item.get("bbox"), width, height)
+        if not text or candidate is None:
+            continue
+        left = max(box[0], candidate[0])
+        top = max(box[1], candidate[1])
+        right = min(box[0] + box[2], candidate[0] + candidate[2])
+        bottom = min(box[1] + box[3], candidate[1] + candidate[3])
+        overlap = max(0, right - left) * max(0, bottom - top)
+        candidate_area = candidate[2] * candidate[3]
+        if candidate_area and overlap / candidate_area >= 0.80:
+            ranked.append((overlap / max(1, target_area), text))
+    return max(ranked)[1] if ranked else ""
+
+
+def _ui_text(value: Any) -> str:
+    return re.sub(r"\s+", "", str(value or "")).casefold()
+
+
+def _contains_design_box(outer: Mapping[str, Any], inner: Mapping[str, Any]) -> bool:
+    try:
+        ox, oy = float(outer["x"]), float(outer["y"])
+        ow, oh = float(outer["width"]), float(outer["height"])
+        ix, iy = float(inner["x"]), float(inner["y"])
+        iw, ih = float(inner["width"]), float(inner["height"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    return ox <= ix and oy <= iy and ix + iw <= ox + ow and iy + ih <= oy + oh
+
+
+def _dedupe_design_elements(elements: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    controls = [
+        element
+        for element in elements
+        if element.get("controlType")
+        and str(element.get("controlValue") or element.get("text") or "").strip()
+    ]
+    without_shadow_text = []
+    for element in elements:
+        if str(element.get("type") or "") != "text":
+            without_shadow_text.append(element)
+            continue
+        normalized = _ui_text(element.get("text"))
+        shadowed = any(
+            _contains_design_box(control, element)
+            and normalized
+            and normalized in _ui_text(
+                control.get("controlValue") or control.get("text")
+            )
+            for control in controls
+        )
+        if not shadowed:
+            without_shadow_text.append(element)
+
+    deduped: list[dict[str, Any]] = []
+    for element in without_shadow_text:
+        duplicate = False
+        for existing in deduped:
+            if (
+                str(element.get("type") or "") != str(existing.get("type") or "")
+                or _ui_text(element.get("controlValue") or element.get("text"))
+                != _ui_text(existing.get("controlValue") or existing.get("text"))
+                or not element.get("controlType")
+            ):
+                continue
+            if _contains_design_box(existing, element) or _contains_design_box(
+                element, existing
+            ):
+                duplicate = True
+                break
+        if not duplicate:
+            deduped.append(element)
+    return deduped
 
 
 def _candidate_authority(source: Any) -> str:

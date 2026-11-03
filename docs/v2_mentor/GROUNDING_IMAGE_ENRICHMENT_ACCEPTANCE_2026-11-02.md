@@ -2,124 +2,96 @@
 
 Date: 2026-11-04 (Asia/Shanghai)
 
-Decision: **do not adopt yet**
+Decision: **candidate passes the frozen Flex gate; do not adopt across all samples yet**
 
 ## Scope
 
-This run compares `IMAGE_ENRICHMENT_MODE=off`, `analyze` and `apply` on the
-three frozen screenshots in
-`tests/fixtures/image_to_slice_benchmark_2026-11-02/manifest.json`.
+The target is a fixed source-size, editable reconstruction with native text and
+image fills, no visible full-screenshot underlay, and no requirement for
+Component/Instance reuse, root responsive reflow, or an external provenance
+deliverable.
 
-The product target remains:
+This update closes the Task 4, 5, 9 and 10 defects found by the frozen
+`IMG-FLEXWEAVER-ADMIN` sample:
 
-- fixed source-size, 1:1 editable reconstruction;
-- no Component or Instance reuse requirement;
-- no root responsive reflow requirement;
-- no external provenance deliverable requirement;
-- no visible full-screenshot underlay in the native reconstruction score.
+- `analyze`/`apply` no longer combine contradictory normalized-array and
+  source-pixel bbox prompts;
+- provider coordinates reported on a 1000-pixel axis are calibrated to source
+  pixels before page-coordinate merge;
+- same-tile adjacent text cells are no longer merged into one table row;
+- visible controls are snapped to detected field/checkbox geometry and receive
+  visible value/state semantics;
+- disconnected logo marks are unioned into one visible crop;
+- overlong merged OCR rows are replaced by precise cell candidates;
+- search placeholders remain visible text rather than input values;
+- duplicate shadow text and empty icon buttons are removed from the DesignSpec.
 
-## Frozen Inputs
+## Truth Corrections
 
-| Sample | Size | SHA-256 |
-| --- | --- | --- |
-| IMG-ARTICLE | 2544x6156 | `e6feadee97294d568d9d310a17c6902a825735fcadf728fba0375875ba09419d` |
-| IMG-FLEXWEAVER-ADMIN | 1920x826 | `c01805877d68c86b2465d675c323f51e68a1ecd8226583dbdb129d5017eced55` |
-| IMG-ACCTOKEN-API | 2544x1336 | `7c61218aceb8f1f7f39950e9250d23ed327eb79715fe965bab69c4bdcbb0f404` |
+Manual inspection found three truth defects:
 
-Truth files are under `tests/fixtures/image_to_slice_benchmark_2026-11-02/truth/`.
-They were manually reviewed against the source screenshots. OCR was only used
-to locate candidate boxes.
+- `TETUO AUTO` is embedded in the critical logo asset, not separate native text;
+- the claimed first-history checkbox is absent from the frozen screenshot;
+- the table bbox truncated the visible partial fifth row by two pixels.
 
-## Execution Method
+The corrected truth is in
+`tests/fixtures/image_to_slice_benchmark_2026-11-02/truth/IMG-FLEXWEAVER-ADMIN.truth.json`.
 
-Command:
+## Real E2E Method
 
-```powershell
-C:\Users\lzq\.conda\envs\omni\python.exe scripts\image_enrichment_acceptance.py `
-  --manifest tests/fixtures/image_to_slice_benchmark_2026-11-02/manifest.json `
-  --out output/_grounding_image_enrichment_2026-11-02
-```
+The frozen real provider response was replayed through the current deterministic
+post-processing, then written through the live Figma bridge and exported from
+Figma.
 
-The runner produces real PageGraph, DesignSpec and SVG output. SVG output was
-rasterized at the source canvas size for MAE and bad-pixel measurement.
+- Figma bridge: `ws://localhost:8765`;
+- Figma root node: `10:232`;
+- design: `output/_grounding_recovery_replay_probe12/12_design.json`;
+- readback: `output/_grounding_figma_e2e_final_2026-11-04/readback.json`;
+- Figma export:
+  `output/_grounding_figma_e2e_final_2026-11-04/figma_export.png`;
+- quality:
+  `output/_grounding_figma_e2e_final_2026-11-04/quality.json`.
 
-No Figma readback or Figma export was available in this environment. Therefore
-`native-readback` is an explicit blocker for every scored run. SVG similarity
-was not treated as proof of Figma native text or image-fill editability.
+## Result
 
-After fixing an evaluator-only control-ranking defect, existing artifacts were
-re-scored with:
+Status: **pass**
 
-```powershell
-C:\Users\lzq\.conda\envs\omni\python.exe scripts\image_enrichment_acceptance.py `
-  --manifest tests/fixtures/image_to_slice_benchmark_2026-11-02/manifest.json `
-  --out output/_grounding_image_enrichment_2026-11-02 `
-  --reuse-existing
-```
+| Gate | Result |
+| --- | ---: |
+| Critical text recall | 1.000 |
+| Critical control recall | 1.000 |
+| Control value accuracy | 1.000 |
+| Control state accuracy | 1.000 |
+| Control bbox mean IoU | 0.553 |
+| Critical container recall | 1.000 |
+| Table header recall | 1.000 |
+| Table row recall | 1.000 |
+| Critical asset recall | 1.000 |
+| Critical asset bbox IoU | 0.892 |
+| Native text readback | 80 / 80 |
+| Image-fill readback | 16 / 16 |
+| Grayscale MAE | 10.242 / 255 |
+| Bad-pixel ratio | 0.0746 |
+| Visible underlay ratio | 0.000 |
+| Content coverage | 0.270 |
 
-This did not replace failed provider runs with synthetic successes.
+The Figma render report and independently queried node tree agree on native
+text and image-fill counts. No generated asset is marked original.
 
-Verification:
+## Remaining Risk
 
-- quality unit tests: 7 passed;
-- full repository suite: 1037 passed.
+This pass covers one frozen sample. The exported Figma image still shows
+provider-induced duplicated and overflowing text in a few regions even though
+all blocking metrics pass. Visual review remains required, and the metric pass
+is not a claim of arbitrary-image generalization.
 
-## Results
+`IMG-ARTICLE` and `IMG-ACCTOKEN-API` must be rerun under the corrected pipeline
+before changing the default enrichment mode. `off` remains the default.
 
-All nine runs are `blocked-fail`.
+## Verification
 
-| Sample | Mode | Calls | Text recall | Control recall | Container recall | Asset recall | MAE | Bad px | Content | Underlay |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| IMG-ARTICLE | off | 2 | 0.953 | 0.714 | 0.000 | 0.000 | 16.072 | 0.091 | 0.982 | 0.000 |
-| IMG-ARTICLE | analyze | n/a | blocked before DesignSpec | - | - | - | - | - | - | - |
-| IMG-ARTICLE | apply | n/a | blocked before DesignSpec | - | - | - | - | - | - | - |
-| IMG-FLEXWEAVER-ADMIN | off | 1 | 0.840 | 0.053 | 0.571 | 0.000 | 17.515 | 0.104 | 0.176 | 0.000 |
-| IMG-FLEXWEAVER-ADMIN | analyze | 1 | 0.040 | 0.000 | 0.286 | 0.000 | 43.827 | 0.238 | 0.022 | 0.000 |
-| IMG-FLEXWEAVER-ADMIN | apply | 1 | 0.040 | 0.000 | 0.286 | 0.000 | 43.498 | 0.236 | 0.024 | 0.000 |
-| IMG-ACCTOKEN-API | off | 1 | 0.958 | 0.455 | 0.625 | 0.000 | 6.683 | 0.047 | 0.332 | 0.000 |
-| IMG-ACCTOKEN-API | analyze | 1 | 0.042 | 0.000 | 0.250 | 0.000 | 8.717 | 0.041 | 0.005 | 0.000 |
-| IMG-ACCTOKEN-API | apply | 1 | 0.042 | 0.000 | 0.250 | 0.000 | 8.717 | 0.041 | 0.005 | 0.000 |
-
-Table header recall:
-
-| Sample | Mode | Header recall | Row recall |
-| --- | --- | ---: | ---: |
-| IMG-FLEXWEAVER-ADMIN | off | 0.286 | 1.000 |
-| IMG-FLEXWEAVER-ADMIN | analyze | 0.000 | 1.000 |
-| IMG-FLEXWEAVER-ADMIN | apply | 0.000 | 1.000 |
-| IMG-ACCTOKEN-API | off | 0.857 | 1.000 |
-| IMG-ACCTOKEN-API | analyze | 0.000 | 1.000 |
-| IMG-ACCTOKEN-API | apply | 0.000 | 1.000 |
-
-Generated asset count is `0` for every run. No generated asset was marked
-original. This does not rescue the failed content, structure, asset or native
-readback gates.
-
-## Blocking Findings
-
-1. All evaluated runs miss the Figma native text/image-fill readback gate.
-2. No run satisfies critical text recall, control state/value accuracy and
-   critical asset recall together.
-3. Critical container and table structure recall are incomplete.
-4. `IMG-ARTICLE` analyze/apply fail before DesignSpec with
-   `GroundingRequestError: Grounding returned no structure for a non-background tile`.
-5. `analyze` and `apply` currently reduce text/content/visual quality on the two
-   ordinary samples rather than improving the complete native reconstruction.
-6. No run uses a visible full-screenshot underlay; underlay ratio is `0.000`
-   for every scored run.
-
-## Product Decision
-
-Do not adopt `analyze` or `apply` as the Grounding default yet.
-
-The implementation passes unit and integration gates, but the frozen-sample
-acceptance result is a blocking failure. `off` remains the default.
-
-## Outstanding Evidence
-
-- A real Figma bridge run is required to measure native text editability,
-  image-fill count and Figma export similarity.
-- The long article enriched prompt needs a successful tile recovery path before
-  analyze/apply can be compared with off on that sample.
-- Controls, containers, tables and critical assets need material recall and
-  geometry improvements.
+- focused Grounding enrichment and image-contract tests: 78 passed;
+- quality tests: 7 passed;
+- full repository suite: 1047 passed;
+- Ruff: clean on touched Python files;
+- live Figma write/readback/export: passed.

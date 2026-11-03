@@ -11,7 +11,10 @@ from PIL import Image
 from src.app.services.structure.backends.grounding_reliability import (
     GroundingRequestError,
 )
-from src.app.services.structure.backends.grounding_vlm import GroundingVLM
+from src.app.services.structure.backends.grounding_vlm import (
+    GroundingVLM,
+    parse_vlm_json,
+)
 from src.app.services.structure.image_enrichment.tiling import plan_image_tiles
 from src.app.services.structure.providers.base import ProviderContext
 from src.app.services.structure.providers.grounding import GroundingProvider
@@ -335,3 +338,87 @@ def test_grounding_vlm_tile_prompt_uses_supplied_prompt_and_parses_json():
     assert parsed["elements"][0]["bbox"] == [20, 20, 80, 10]
     assert parsed["elements"][0]["text"] == "Tile"
     assert backend.last_request_metadata["tile"]["id"] == "tile-0000"
+
+
+def test_grounding_vlm_tile_contract_parses_source_pixel_xywh():
+    class _Runtime:
+        def run(self, *, image_bytes, prompt, invoke):
+            assert image_bytes == b"tile-bytes"
+            value, _usage = invoke("https://vision.test/v1")
+            return SimpleNamespace(
+                value=value,
+                report=_Report("tile-0000"),
+            )
+
+    class _Completions:
+        def create(self, **_kwargs):
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content=(
+                                '{"containers":[{"bbox":{"x":0,"y":0,'
+                                '"width":200,"height":30},"role":"banner"}],'
+                                '"elements":[{"bbox":{"x":20,"y":40,'
+                                '"width":80,"height":24},"type":"text",'
+                                '"text":"Heading"}],"assets":[],"backgrounds":[]}'
+                            )
+                        )
+                    )
+                ],
+                usage=None,
+            )
+
+    client = SimpleNamespace(
+        chat=SimpleNamespace(completions=_Completions())
+    )
+    cfg = SimpleNamespace(
+        vision_model="vision-test",
+        vision_timeout=5,
+        vision_max_image_bytes=1024,
+        vision_max_response_bytes=4096,
+    )
+    with tempfile.TemporaryDirectory() as raw_dir:
+        path = Path(raw_dir) / "tile.png"
+        path.write_bytes(b"tile-bytes")
+        backend = GroundingVLM(
+            cfg,
+            runtime=_Runtime(),
+            client_factory=lambda _endpoint, _timeout: client,
+        )
+        parsed = backend.ground_with_prompt(
+            str(path),
+            200,
+            100,
+            "Source-pixel tile prompt",
+            strategy_id="grounding-enrichment",
+            metadata={
+                "tile": {"id": "tile-0000"},
+                "bbox_format": "source-px-xywh",
+            },
+        )
+
+    assert parsed["containers"][0]["bbox"] == [0, 0, 200, 30]
+    assert parsed["elements"][0]["bbox"] == [20, 40, 80, 24]
+
+
+def test_grounding_vlm_calibrates_provider_thousand_pixel_x_axis():
+    raw = (
+        '{"containers":[{"bbox":{"x":0,"y":0,"width":144,"height":826},'
+        '"role":"sidebar"}],"elements":[{"bbox":{"x":220,"y":172,'
+        '"width":340,"height":32},"type":"input","text":"auto_backup",'
+        '"controlValue":"auto_backup","controlState":"enabled"}],'
+        '"assets":[],"backgrounds":[]}'
+    )
+
+    parsed = parse_vlm_json(
+        raw,
+        1920,
+        826,
+        bbox_format="source-px-xywh",
+    )
+
+    assert parsed["containers"][0]["bbox"] == [0, 0, 276, 826]
+    assert parsed["elements"][0]["bbox"] == [422, 172, 653, 32]
+    assert parsed["elements"][0]["controlValue"] == "auto_backup"
+    assert parsed["elements"][0]["controlState"] == "enabled"

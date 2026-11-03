@@ -162,6 +162,30 @@ def test_merge_reports_ambiguous_duplicates_without_dropping_them():
     assert ambiguous[0]["tile_ids"] == ["tile-0000", "tile-0001"]
 
 
+def test_merge_keeps_adjacent_text_cells_from_the_same_tile():
+    graphs = [
+        _graph(
+            "tile-0000",
+            0,
+            elements=[
+                _element([20, 10, 40, 12], text="Started"),
+                _element([62, 10, 40, 12], text="Status"),
+            ],
+        )
+    ]
+
+    merged, report = merge_tiled_graphs(graphs, 200, 400)
+
+    assert [element["text"] for element in merged["elements"]] == [
+        "Started",
+        "Status",
+    ]
+    assert not any(
+        item["code"] == "adjacent_text_merged"
+        for item in report["diagnostics"]
+    )
+
+
 def test_merge_reading_order_is_deterministic_across_input_order():
     graphs = [
         _graph(

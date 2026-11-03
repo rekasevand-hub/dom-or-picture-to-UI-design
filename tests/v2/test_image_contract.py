@@ -696,6 +696,44 @@ class ImageContractTests(unittest.TestCase):
             ["cv:omniparser", "ocr-supplement:easyocr"],
         )
 
+    def test_ocr_precise_cells_replace_one_overlong_merged_row(self) -> None:
+        graph = {
+            "image": "sample.png",
+            "image_w": 1200,
+            "image_h": 800,
+            "route": "cv",
+            "containers": [],
+            "elements": [
+                {
+                    "bbox": [300, 700, 800, 40],
+                    "type": "text",
+                    "text": "4 2026-10-29 03:30:00 30939 auto 2026-10-26 11:22:28 2",
+                    "source": "cv:omniparser",
+                }
+            ],
+            "provenance": {"route": "cv"},
+        }
+        observations = [
+            {
+                "text": "2026-10-29 03:30:00",
+                "bbox": [400, 700, 160, 20],
+                "confidence": 0.99,
+            },
+            {
+                "text": "30939",
+                "bbox": [650, 700, 60, 20],
+                "confidence": 0.99,
+            },
+        ]
+
+        merged, report = merge_ocr_candidates(graph, observations)
+
+        self.assertEqual(
+            [item["text"] for item in merged["elements"]],
+            ["2026-10-29 03:30:00", "30939"],
+        )
+        self.assertEqual(report["replaced_covered_count"], 1)
+
     def test_image_region_recovery_finds_embedded_visual_but_not_header(self) -> None:
         with tempfile.TemporaryDirectory() as raw_dir:
             path = Path(raw_dir) / "dashboard.png"
@@ -834,6 +872,8 @@ class ImageContractTests(unittest.TestCase):
         self.assertTrue(images[0]["imageBase64"])
         self.assertTrue(images[0]["imageMVP"]["reference_only"])
         self.assertFalse(images[0]["imageMVP"]["generated"])
+        self.assertEqual(images[0]["assetName"], "blue_cover")
+        self.assertEqual(images[0]["assetKind"], "illustration")
         self.assertEqual(
             images[0]["displayPayload"]["payload_sha256"],
             images[0]["visibleCrop"]["payload_sha256"],

@@ -23,6 +23,16 @@ if TYPE_CHECKING:
     from src.config import Config
 
 ALLOWED_TYPES = {"button", "input", "text", "link", "image"}
+ENRICHED_TYPES = ALLOWED_TYPES | {
+    "checkbox",
+    "icon-button",
+    "navigation",
+    "pagination",
+    "radio",
+    "select",
+    "textarea",
+    "toggle",
+}
 
 
 def _norm_box(b, image_w, image_h):
@@ -43,31 +53,174 @@ def _norm_box(b, image_w, image_h):
     return [px0, py0, px1 - px0, py1 - py0]
 
 
-def parse_vlm_json(raw: str, image_w: int, image_h: int) -> dict:
+def _source_px_box(
+    value: Any,
+    image_w: int,
+    image_h: int,
+    *,
+    x_scale: float = 1.0,
+    y_scale: float = 1.0,
+    scale_width: bool = True,
+    scale_height: bool = True,
+) -> list[int] | None:
+    if isinstance(value, Mapping):
+        values = (
+            value.get("x"),
+            value.get("y"),
+            value.get("width"),
+            value.get("height"),
+        )
+    elif isinstance(value, (list, tuple)) and len(value) == 4:
+        values = tuple(value)
+    else:
+        return None
+    try:
+        x, y, width, height = (float(item) for item in values)
+    except (TypeError, ValueError):
+        return None
+    effective_width = width * x_scale if scale_width else width
+    effective_height = height * y_scale if scale_height else height
+    left = max(0.0, min(x * x_scale, x * x_scale + effective_width))
+    top = max(0.0, min(y * y_scale, y * y_scale + effective_height))
+    right = min(
+        float(image_w),
+        max(x * x_scale, x * x_scale + effective_width),
+    )
+    bottom = min(
+        float(image_h),
+        max(y * y_scale, y * y_scale + effective_height),
+    )
+    px0, py0 = int(round(left)), int(round(top))
+    px1, py1 = int(round(right)), int(round(bottom))
+    if px1 - px0 < 2 or py1 - py0 < 2:
+        return None
+    return [px0, py0, px1 - px0, py1 - py0]
+
+
+def parse_vlm_json(
+    raw: str,
+    image_w: int,
+    image_h: int,
+    *,
+    bbox_format: str = "normalized-xyxy",
+) -> dict:
+    if bbox_format not in {"normalized-xyxy", "source-px-xywh"}:
+        raise ValueError(f"unsupported bbox format: {bbox_format}")
     m = re.search(r"\{[\s\S]*\}", raw)
     if not m:
         raise ValueError("VLM 输出中没有 JSON 对象")
     data = json.loads(m.group(0))
+    source_items = [
+        item
+        for key in ("containers", "elements", "assets", "backgrounds")
+        for item in (data.get(key) or [])
+        if isinstance(item, Mapping)
+    ]
+    raw_x_values = [
+        float((item.get("bbox") or {}).get("x", 0))
+        for item in source_items
+        if isinstance(item.get("bbox"), Mapping)
+        and isinstance((item.get("bbox") or {}).get("x"), (int, float))
+    ]
+    x_scale = (
+        image_w / 1000.0
+        if image_w > 1000
+        and raw_x_values
+        and max(raw_x_values) <= 1000
+        else 1.0
+    )
+    y_scale = 1.0
     out = {"containers": [], "elements": []}
     for c in data.get("containers", []):
-        box = _norm_box(c.get("bbox"), image_w, image_h)
+        box = (
+            _source_px_box(
+                c.get("bbox"),
+                image_w,
+                image_h,
+                x_scale=x_scale,
+                y_scale=1.0,
+                scale_width=(
+                    float((c.get("bbox") or {}).get("x", 0))
+                    + float((c.get("bbox") or {}).get("width", 0))
+                    <= 1000
+                ),
+                scale_height=False,
+            )
+            if bbox_format == "source-px-xywh"
+            else _norm_box(c.get("bbox"), image_w, image_h)
+        )
         if box is None:
             continue
         out["containers"].append({"bbox": box, "role": str(c.get("role", ""))})
     for e in data.get("elements", []):
         t = str(e.get("type", "rectangle"))
-        if t not in ALLOWED_TYPES:
+        allowed_types = (
+            ENRICHED_TYPES if bbox_format == "source-px-xywh" else ALLOWED_TYPES
+        )
+        if t not in allowed_types:
             continue
-        box = _norm_box(e.get("bbox"), image_w, image_h)
+        box = (
+            _source_px_box(
+                e.get("bbox"),
+                image_w,
+                image_h,
+                x_scale=x_scale,
+                y_scale=y_scale,
+            )
+            if bbox_format == "source-px-xywh"
+            else _norm_box(e.get("bbox"), image_w, image_h)
+        )
         if box is None:
             continue
-        out["elements"].append({"bbox": box, "type": t, "text": str(e.get("text", ""))})
+        element = {"bbox": box, "type": t, "text": str(e.get("text", ""))}
+        for field in (
+            "controlType",
+            "controlValue",
+            "controlState",
+            "placeholder",
+            "state",
+            "value",
+        ):
+            if e.get(field) is not None:
+                element[field] = e.get(field)
+        out["elements"].append(element)
     try:
         from src.app.services.structure.image_enrichment.parsing import (
             parse_enrichment_response,
         )
 
         enrichment = parse_enrichment_response(raw, image_w, image_h)
+        if x_scale > 1.0 or y_scale > 1.0:
+            for asset in enrichment["assets"]:
+                box = asset.get("bbox")
+                if isinstance(box, list) and len(box) == 4:
+                    asset["bbox"] = _source_px_box(
+                        box,
+                        image_w,
+                        image_h,
+                        x_scale=x_scale,
+                        y_scale=y_scale,
+                    )
+            for background in enrichment["backgrounds"]:
+                box = background.get("bbox")
+                if isinstance(box, list) and len(box) == 4:
+                    background["bbox"] = _source_px_box(
+                        box,
+                        image_w,
+                        image_h,
+                        x_scale=x_scale,
+                        y_scale=y_scale,
+                    )
+                for overlay in background.get("overlays") or []:
+                    box = overlay.get("bbox")
+                    if isinstance(box, list) and len(box) == 4:
+                        overlay["bbox"] = _source_px_box(
+                            box,
+                            image_w,
+                            image_h,
+                            x_scale=x_scale,
+                            y_scale=y_scale,
+                        )
         out["assets"] = enrichment["assets"]
         out["backgrounds"] = enrichment["backgrounds"]
         out["enrichmentDiagnostics"] = enrichment["diagnostics"]
@@ -226,8 +379,16 @@ class GroundingVLM(GroundingBackend):
                     "response-too-large",
                     f"Grounding response exceeds {max_response_bytes} bytes",
                 )
+            bbox_format = str(
+                (metadata or {}).get("bbox_format") or "normalized-xyxy"
+            )
             try:
-                parsed = parse_vlm_json(raw, image_w, image_h)
+                parsed = parse_vlm_json(
+                    raw,
+                    image_w,
+                    image_h,
+                    bbox_format=bbox_format,
+                )
             except (json.JSONDecodeError, ValueError) as exc:
                 error = GroundingRequestError(
                     "response-invalid",

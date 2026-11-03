@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
-import math
 import re
 import unicodedata
 from collections import Counter
@@ -39,6 +37,11 @@ def _normalize(value: Any) -> str:
 
 def _display_text(value: Any) -> str:
     return " ".join(str(value or "").split())
+
+
+def _table_text(value: Any) -> str:
+    text = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def _bbox(value: Any) -> list[int] | None:
@@ -338,22 +341,34 @@ def _table_metrics(
             for item in texts
             if table_bbox is not None
             and _element_bbox(item) is not None
-            and _contains(table_bbox, _element_bbox(item))
+            and (
+                _intersection(table_bbox, _element_bbox(item) or [0, 0, 0, 0])
+                / max(
+                    1,
+                    (_element_bbox(item) or [0, 0, 0, 0])[2]
+                    * (_element_bbox(item) or [0, 0, 0, 0])[3],
+                )
+                >= 0.5
+            )
         ]
-        normalized_inside = {_normalize(item.get("text")) for item in inside}
-        header_matches = sum(_normalize(header) in normalized_inside for header in headers)
+        normalized_inside = {_table_text(item.get("text")) for item in inside}
+        header_matches = sum(_table_text(header) in normalized_inside for header in headers)
         header_elements = [
-            item for item in inside if _normalize(item.get("text")) in {
-                _normalize(header) for header in headers
+            item for item in inside if _table_text(item.get("text")) in {
+                _table_text(header) for header in headers
             }
         ]
-        header_bottom = max(
-            (
-                (_element_bbox(item) or [0, 0, 0, 0])[1]
-                + (_element_bbox(item) or [0, 0, 0, 0])[3]
-            )
-            for item in header_elements
-        ) if header_elements else (table_bbox[1] if table_bbox else 0)
+        if header_elements:
+            header_boxes = [
+                _element_bbox(item) or [0, 0, 0, 0]
+                for item in header_elements
+            ]
+            header_top = min(box[1] for box in header_boxes)
+            heights = sorted(box[3] for box in header_boxes if box[3] > 0)
+            header_height = heights[len(heights) // 2] if heights else 0
+            header_bottom = header_top + header_height
+        else:
+            header_bottom = table_bbox[1] if table_bbox else 0
         body = [
             item
             for item in inside
@@ -370,13 +385,36 @@ def _table_metrics(
             if not bands or abs(center - bands[-1]) > max(4, box[3] * 0.5):
                 bands.append(center)
         expected_rows = len(table.get("rows") or [])
-        row_recall = min(1.0, len(bands) / expected_rows) if expected_rows else 1.0
+        visible_normalized = {
+            _normalize(item.get("text"))
+            for item in inside
+            if _normalize(item.get("text"))
+        }
+        matched_rows = 0
+        for expected_row in table.get("rows") or []:
+            tokens = [
+                _normalize(cell)
+                for cell in expected_row or []
+                if _normalize(cell)
+            ]
+            required = min(2, len(tokens))
+            matched = sum(
+                any(token in visible for visible in visible_normalized)
+                for token in tokens
+            )
+            if required and matched >= required:
+                matched_rows += 1
+        row_recall = (
+            matched_rows / expected_rows
+            if expected_rows
+            else 1.0
+        )
         rows.append(
             {
                 "name": str(table.get("name") or ""),
                 "header_recall": header_matches / len(headers) if headers else 1.0,
                 "expected_rows": expected_rows,
-                "observed_rows": len(bands),
+                "observed_rows": matched_rows,
                 "row_recall": row_recall,
             }
         )
