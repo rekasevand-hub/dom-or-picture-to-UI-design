@@ -397,7 +397,7 @@ git commit -m "feat: add bounded grounding repair controller"
 - Consumes backend protocol: `ground(image_path: str | Path, image_w: int, image_h: int) -> dict[str, Any]`
 - Repair calls return ScenePlan patch operations only.
 
-- [ ] **Step 1: Write failing local-repair tests**
+- [x] **Step 1: Write failing local-repair tests**
 
 ```python
 def test_table_repair_crops_only_requested_region(tmp_path):
@@ -421,23 +421,23 @@ def test_repair_patch_boxes_are_translated_to_page_coordinates(tmp_path):
     assert patch["operations"][0]["bbox"] == [310, 570, 80, 30]
 ```
 
-- [ ] **Step 2: Run tests and verify failure**
+- [x] **Step 2: Run tests and verify failure**
 
 Run: `C:\Users\lzq\.conda\envs\omni\python.exe -m pytest tests/v2/test_grounding_local_repair.py -q`
 
 Expected: FAIL because `local_repair` does not exist.
 
-- [ ] **Step 3: Implement crop repair with existing Grounding backend**
+- [x] **Step 3: Implement crop repair with existing Grounding backend**
 
 Crop with page-bbox expansion, call the configured backend on the crop, translate bboxes back, cache by crop digest + request signature, and return patch operations.
 
-- [ ] **Step 4: Run local repair tests**
+- [x] **Step 4: Run local repair tests**
 
 Run: `C:\Users\lzq\.conda\envs\omni\python.exe -m pytest tests/v2/test_grounding_local_repair.py -q`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/app/services/structure/fidelity/local_repair.py tests/v2/test_grounding_local_repair.py
