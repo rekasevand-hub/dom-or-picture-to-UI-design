@@ -62,7 +62,7 @@
 - Produces: `build_content_inventory(bundle: Mapping[str, Any]) -> dict[str, Any]`
 - Produces: `build_geometry_manifest(bundle: Mapping[str, Any]) -> dict[str, Any]`
 
-- [ ] **Step 1: Write failing contract tests**
+- [x] **Step 1: Write failing contract tests**
 
 ```python
 def test_inventory_preserves_all_table_rows_and_full_timestamps():
@@ -95,13 +95,13 @@ def test_geometry_manifest_keeps_source_pixel_boxes():
     )
 ```
 
-- [ ] **Step 2: Run tests and verify the module is missing**
+- [x] **Step 2: Run tests and verify the module is missing**
 
 Run: `C:\Users\lzq\.conda\envs\omni\python.exe -m pytest tests/v2/test_grounding_fidelity_contracts.py -q`
 
 Expected: FAIL with `ModuleNotFoundError`.
 
-- [ ] **Step 3: Implement the evidence and inventory contracts**
+- [x] **Step 3: Implement the evidence and inventory contracts**
 
 `build_evidence_bundle` copies source records without losing provenance. Each record has `id`, `kind`, `status`, `authority`, `confidence`, `bbox`, `payload_ref`, and `reason`.
 
@@ -109,13 +109,13 @@ Expected: FAIL with `ModuleNotFoundError`.
 
 `build_geometry_manifest` emits page/header/sidebar/main/form/table/control/column/row geometry in source pixels.
 
-- [ ] **Step 4: Run the contract tests**
+- [x] **Step 4: Run the contract tests**
 
 Run: `C:\Users\lzq\.conda\envs\omni\python.exe -m pytest tests/v2/test_grounding_fidelity_contracts.py -q`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/app/services/structure/fidelity tests/v2/test_grounding_fidelity_contracts.py
