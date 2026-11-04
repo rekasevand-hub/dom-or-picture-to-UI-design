@@ -136,7 +136,7 @@ git commit -m "feat: add grounding fidelity evidence contracts"
 - Produces: `apply_scene_plan(graph: Mapping[str, Any], plan: Mapping[str, Any]) -> dict[str, Any]`
 - ScenePlan node contract: `id`, `parent_id`, `type`, `role`, `bbox`, `content_ref`, `geometry_ref`, `children`.
 
-- [ ] **Step 1: Write failing ownership tests**
+- [x] **Step 1: Write failing ownership tests**
 
 ```python
 def test_checkbox_label_has_one_text_owner():
@@ -179,23 +179,23 @@ def test_slice_asset_cannot_create_a_second_layout_tree():
     )
 ```
 
-- [ ] **Step 2: Run tests and verify they fail**
+- [x] **Step 2: Run tests and verify they fail**
 
 Run: `C:\Users\lzq\.conda\envs\omni\python.exe -m pytest tests/v2/test_grounding_scene_plan.py -q`
 
 Expected: FAIL because `scene_plan` does not exist.
 
-- [ ] **Step 3: Implement scene ownership and graph projection**
+- [x] **Step 3: Implement scene ownership and graph projection**
 
 ScenePlan resolves control labels, table cells, text duplicates, and asset payloads before `build_image_design`. `apply_scene_plan` must not introduce a new coordinate system.
 
-- [ ] **Step 4: Run scene-plan tests**
+- [x] **Step 4: Run scene-plan tests**
 
 Run: `C:\Users\lzq\.conda\envs\omni\python.exe -m pytest tests/v2/test_grounding_scene_plan.py -q`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/app/services/structure/fidelity/scene_plan.py tests/v2/test_grounding_scene_plan.py
