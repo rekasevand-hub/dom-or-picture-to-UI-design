@@ -99,6 +99,86 @@ def _has_structure(raw: Any) -> bool:
     )
 
 
+def _needs_structure_supplement(raw: Any) -> bool:
+    if not isinstance(raw, dict) or not raw.get("tables"):
+        return False
+    return (
+        len(raw.get("containers") or [])
+        + len(raw.get("elements") or [])
+        < 24
+    )
+
+
+def _merge_structure_supplement(raw: dict, supplement: dict) -> dict:
+    merged = copy.deepcopy(raw)
+    control_fields = (
+        "controlType",
+        "controlValue",
+        "controlState",
+        "placeholder",
+        "state",
+        "value",
+    )
+    structured_elements = [
+        element
+        for element in raw.get("elements") or []
+        if isinstance(element, dict)
+    ]
+    merged_elements = copy.deepcopy(supplement.get("elements") or [])
+    for element in merged_elements:
+        if not isinstance(element, dict):
+            continue
+        element_box = element.get("bbox") or []
+        candidates = []
+        for structured in structured_elements:
+            structured_box = structured.get("bbox") or []
+            text_match = (
+                str(structured.get("text") or "").strip()
+                and str(structured.get("text") or "").strip()
+                == str(element.get("text") or "").strip()
+            )
+            overlap = 0.0
+            if len(element_box) == len(structured_box) == 4:
+                left = max(float(element_box[0]), float(structured_box[0]))
+                top = max(float(element_box[1]), float(structured_box[1]))
+                right = min(
+                    float(element_box[0]) + float(element_box[2]),
+                    float(structured_box[0]) + float(structured_box[2]),
+                )
+                bottom = min(
+                    float(element_box[1]) + float(element_box[3]),
+                    float(structured_box[1]) + float(structured_box[3]),
+                )
+                intersection = max(0.0, right - left) * max(0.0, bottom - top)
+                smaller = min(
+                    float(element_box[2]) * float(element_box[3]),
+                    float(structured_box[2]) * float(structured_box[3]),
+                )
+                overlap = intersection / smaller if smaller > 0 else 0.0
+            if text_match or overlap >= 0.4:
+                candidates.append((2 * int(text_match) + overlap, structured))
+        if not candidates:
+            continue
+        structured = max(candidates, key=lambda item: item[0])[1]
+        for field in control_fields:
+            if structured.get(field) is not None:
+                element[field] = structured[field]
+        if not str(element.get("text") or "").strip():
+            element["text"] = str(
+                structured.get("controlValue")
+                or structured.get("text")
+                or ""
+            )
+    merged["containers"] = copy.deepcopy(supplement.get("containers") or [])
+    merged["elements"] = merged_elements
+    merged["structureSupplement"] = {
+        "status": "applied",
+        "containers": len(merged["containers"]),
+        "elements": len(merged["elements"]),
+    }
+    return merged
+
+
 def _is_majority_background(path: str, threshold: float = 0.96) -> bool:
     with Image.open(path) as image:
         sample = image.convert("RGB")
@@ -295,6 +375,7 @@ def _graph_from_raw(
             if element.get(field) is not None:
                 extracted[field] = element[field]
     graph["provenance"]["tiling"] = {"tile": dict(tile)}
+    graph["tables"] = copy.deepcopy(raw.get("tables") or [])
     if enrichment_mode != "off":
         graph["imageEnrichment"] = _translate_enrichment_candidates(raw, tile)
     return graph
@@ -586,6 +667,13 @@ class GroundingProvider(BaseProvider):
                     tile=tile,
                     bbox_format="source-px-xywh",
                 )
+                if _needs_structure_supplement(raw):
+                    supplement = backend.ground(
+                        ctx.image_path,
+                        ctx.image_w,
+                        ctx.image_h,
+                    )
+                    raw = _merge_structure_supplement(raw, supplement)
             if not _has_structure(raw) and not _is_majority_background(
                 ctx.image_path
             ):
@@ -707,6 +795,13 @@ class GroundingProvider(BaseProvider):
                 tile=tile,
                 bbox_format=bbox_format,
             )
+            if _needs_structure_supplement(raw):
+                supplement = backend.ground(
+                    str(tile_path),
+                    tile_image.width,
+                    tile_image.height,
+                )
+                raw = _merge_structure_supplement(raw, supplement)
             status = None
         except GroundingRequestError as exc:
             if exc.category != "response-invalid":

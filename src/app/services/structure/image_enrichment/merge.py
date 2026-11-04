@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import re
 import unicodedata
 from collections.abc import Mapping, Sequence
@@ -500,6 +501,21 @@ def merge_tiled_graphs(
     )
     graph["containers"] = containers
     graph["elements"] = elements
+    tables_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    for source_graph in normalized_graphs:
+        for table in source_graph.get("tables") or []:
+            if not isinstance(table, Mapping):
+                continue
+            key = (
+                str(table.get("name") or ""),
+                json.dumps(table.get("bbox") or [], sort_keys=True),
+            )
+            current = tables_by_key.get(key)
+            if current is None or len(table.get("rows") or []) > len(
+                current.get("rows") or []
+            ):
+                tables_by_key[key] = copy.deepcopy(dict(table))
+    graph["tables"] = list(tables_by_key.values())
     assign_ids(graph)
     assign_parent_depth(graph)
     return graph, report

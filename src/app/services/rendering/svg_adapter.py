@@ -25,6 +25,8 @@ DEFAULT_FONT_STACK = (
 class SVGMockAdapter(PrototypeAdapter):
     """SVG 兜底适配器。"""
 
+    supports_vectors = True
+
     def __init__(self, output_path: str | Path, font_stack: str | None = None):
         self.output_path = Path(output_path)
         self.font_stack = font_stack or DEFAULT_FONT_STACK
@@ -400,6 +402,23 @@ class SVGMockAdapter(PrototypeAdapter):
             image_el.set("clip-path", f"url(#{clip_id})")
         self._apply_opacity(image_el, spec)
         self._append(image_el, spec)
+        return None
+
+    def create_vector(
+        self, spec: dict[str, Any], parent_id: str | None = None
+    ) -> str | None:
+        raw = str(spec.get("vectorSvg") or "").strip()
+        if not raw:
+            return None
+        try:
+            node = ET.fromstring(raw)
+        except ET.ParseError:
+            return self.create_image(spec, parent_id=parent_id)
+        node.set("x", str(int(spec.get("x", 0))))
+        node.set("y", str(int(spec.get("y", 0))))
+        node.set("width", str(int(spec.get("width", 100))))
+        node.set("height", str(int(spec.get("height", 100))))
+        self._append(node, spec)
         return None
 
     @staticmethod

@@ -392,6 +392,11 @@ class PreciseAgent:
                     add_from_assets=(
                         str(graph["imageEnrichment"].get("mode") or "") == "apply"
                     ),
+                    text_observations=(
+                        ocr_supplement.get("observations")
+                        if isinstance(ocr_supplement, dict)
+                        else None
+                    ),
                 )
                 graph["imageEnrichment"]["controlRecovery"] = control_recovery
 
@@ -436,7 +441,13 @@ class PreciseAgent:
             som_json["imageEnrichment"] = graph["imageEnrichment"]
         if graph.get("sliceAnalysis"):
             som_json["sliceAnalysis"] = graph["sliceAnalysis"]
-        if graph.get("imageEnrichment") or graph.get("sliceAnalysis"):
+        if graph.get("tables"):
+            som_json["tables"] = graph["tables"]
+        if (
+            graph.get("imageEnrichment")
+            or graph.get("sliceAnalysis")
+            or graph.get("tables")
+        ):
             (out / "11_som.json").write_text(
                 json.dumps(som_json, ensure_ascii=False, indent=1),
                 encoding="utf-8",

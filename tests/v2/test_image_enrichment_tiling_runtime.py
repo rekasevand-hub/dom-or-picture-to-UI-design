@@ -361,7 +361,10 @@ def test_grounding_vlm_tile_contract_parses_source_pixel_xywh():
                                 '"width":200,"height":30},"role":"banner"}],'
                                 '"elements":[{"bbox":{"x":20,"y":40,'
                                 '"width":80,"height":24},"type":"text",'
-                                '"text":"Heading"}],"assets":[],"backgrounds":[]}'
+                                '"text":"Heading"}],"tables":[{"name":"Results",'
+                                '"bbox":{"x":0,"y":60,"width":200,"height":40},'
+                                '"header_texts":["Name"],"rows":[["Ada"]]}],'
+                                '"assets":[],"backgrounds":[]}'
                             )
                         )
                     )
@@ -400,6 +403,7 @@ def test_grounding_vlm_tile_contract_parses_source_pixel_xywh():
 
     assert parsed["containers"][0]["bbox"] == [0, 0, 200, 30]
     assert parsed["elements"][0]["bbox"] == [20, 40, 80, 24]
+    assert parsed["tables"][0]["rows"] == [["Ada"]]
 
 
 def test_grounding_vlm_calibrates_provider_thousand_pixel_x_axis():

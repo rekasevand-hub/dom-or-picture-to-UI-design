@@ -113,6 +113,8 @@ async function handleAction(action, params) {
       return await createRectangle(params);
     case "create_ellipse":
       return await createEllipse(params);
+    case "create_vector":
+      return await createVector(params);
     case "create_text":
       return await createText(params);
     case "create_image":
@@ -497,6 +499,24 @@ async function createEllipse(params) {
   return ellipse.id;
 }
 
+async function createVector(params) {
+  validateParent(params);
+  const svg = String(params.vectorSvg || "").trim();
+  if (!svg) throw new Error("create_vector 缺少 vectorSvg 参数");
+  if (typeof figma.createNodeFromSvg !== "function") {
+    throw new Error("FigJam API 不支持 createNodeFromSvg");
+  }
+  const node = figma.createNodeFromSvg(svg);
+  appendToParent(node, params);
+  node.x = Number(params.x) || 0;
+  node.y = Number(params.y) || 0;
+  if (Number(params.width) > 0 && Number(params.height) > 0) {
+    try { node.resize(Number(params.width), Number(params.height)); } catch (err) {}
+  }
+  applyPluginData(node, params);
+  return node.id;
+}
+
 const DEFAULT_TEXT_FONT = { family: "Inter", style: "Regular" };
 
 // DesignSpec 的 fontFamily 是 CSS 字体栈（computed style 原值），Figma 只认
@@ -879,6 +899,7 @@ const TRANSACTION_CREATE_ACTIONS = new Set([
   "create_frame",
   "create_rectangle",
   "create_ellipse",
+  "create_vector",
   "create_text",
   "create_image",
 ]);

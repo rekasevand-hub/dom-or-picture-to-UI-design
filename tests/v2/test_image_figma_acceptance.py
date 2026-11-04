@@ -175,6 +175,44 @@ class ImageFigmaAcceptanceTests(unittest.TestCase):
         self.assertFalse(result["asset_claims"]["original_asset"])
         self.assertTrue(result["asset_claims"]["reference_only_display"])
 
+    def test_vector_icon_does_not_inflate_reference_asset_claim_count(self) -> None:
+        bundle = _bundle()
+        bundle["design"]["elements"].append(
+            {
+                "id": "search-icon",
+                "type": "image",
+                "x": 280,
+                "y": 20,
+                "width": 24,
+                "height": 24,
+                "vectorSvg": "<svg width='24' height='24'/>",
+            }
+        )
+        bundle["readback_tree"]["children"].append(
+            {
+                "id": "1:4",
+                "type": "FRAME",
+                "x": 280,
+                "y": 20,
+                "width": 24,
+                "height": 24,
+                "children": [{"id": "1:5", "type": "VECTOR"}],
+            }
+        )
+        with tempfile.TemporaryDirectory() as raw_dir:
+            root = Path(raw_dir)
+            reference = root / "reference.png"
+            export = root / "export.png"
+            _png(reference)
+            _png(export)
+            result = evaluate_image_mvp(
+                **bundle,
+                visual_metrics=visual_similarity_metrics(reference, export),
+            )
+
+        self.assertEqual(result["status"], "pass")
+        self.assertEqual(result["dimensions"]["asset"]["status"], "pass")
+
     def test_wrong_critical_text_blocks_the_product_gate(self) -> None:
         bundle = _bundle()
         bundle["readback_tree"]["children"][0]["characters"] = "ImageMVP"

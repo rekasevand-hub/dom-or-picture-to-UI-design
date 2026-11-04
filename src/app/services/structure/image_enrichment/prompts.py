@@ -107,6 +107,7 @@ def build_grounding_tile_prompt(tile: dict, page_context: dict) -> str:
             "All bbox values must use pixel coordinates relative to this tile's top-left and bbox objects shaped as {x, y, width, height}.",
             "Do not use percentages, normalized coordinates, arrays, or coordinates relative to the full page.",
             "Return layout containers in containers and editable controls or independent text in elements.",
+            "Return every visible data table in tables with its full header_texts and rows arrays. Preserve row order and every visible cell value.",
             "Allowed element types: button, checkbox, icon-button, input, link, navigation, pagination, radio, select, text, textarea, toggle, image.",
             "For every editable control include controlValue with the exact visible value, or an empty string when there is no value.",
             "For input, select, textarea, button, link, navigation, and pagination use controlState enabled or disabled.",
@@ -123,7 +124,7 @@ def build_grounding_tile_prompt(tile: dict, page_context: dict) -> str:
             "Use raster-overlay only for a visually independent foreground bitmap that cannot be rebuilt as text, CSS, or a simple vector icon.",
             "Preserve baked visual content inside a background, including illustrations, scenery, products, decorative frames, artistic text, and integrated branding.",
             f"Page context: {context_text}",
-            'Return {"containers":[{"role":"banner","bbox":{"x":0,"y":0,"width":320,"height":40}}],"elements":[{"type":"text","text":"Visible text","bbox":{"x":8,"y":8,"width":80,"height":20}},{"type":"input","text":"auto_backup","controlValue":"auto_backup","controlState":"enabled","bbox":{"x":8,"y":40,"width":160,"height":32}}],"assets":[{"name":"specific_name","kind":"icon","bbox":{"x":0,"y":0,"width":8,"height":8},"confidence":0.0,"containsEmbeddedText":false,"reason":"why"}],"backgrounds":[{"id":"background_01","name":"specific_background","bbox":{"x":0,"y":0,"width":100,"height":100},"confidence":0.0,"reason":"why","bakedVisuals":[],"overlays":[{"id":"overlay_01","name":"overlay","kind":"code-overlay","bbox":{"x":0,"y":0,"width":20,"height":20},"confidence":0.0,"reason":"why"}]}]}',
+            'Return {"containers":[{"role":"banner","bbox":{"x":0,"y":0,"width":320,"height":40}}],"elements":[{"type":"text","text":"Visible text","bbox":{"x":8,"y":8,"width":80,"height":20}},{"type":"input","text":"auto_backup","controlValue":"auto_backup","controlState":"enabled","bbox":{"x":8,"y":40,"width":160,"height":32}}],"tables":[{"name":"results","bbox":{"x":0,"y":80,"width":320,"height":120},"header_texts":["Name","Status"],"rows":[["Ada","ready"]]}],"assets":[{"name":"specific_name","kind":"icon","bbox":{"x":0,"y":0,"width":8,"height":8},"confidence":0.0,"containsEmbeddedText":false,"reason":"why"}],"backgrounds":[{"id":"background_01","name":"specific_background","bbox":{"x":0,"y":0,"width":100,"height":100},"confidence":0.0,"reason":"why","bakedVisuals":[],"overlays":[{"id":"overlay_01","name":"overlay","kind":"code-overlay","bbox":{"x":0,"y":0,"width":20,"height":20},"confidence":0.0,"reason":"why"}]}]}',
             "Return empty arrays when no candidate exists. Return JSON only, with no Markdown or explanation.",
         ]
     )

@@ -429,6 +429,7 @@ class FigmaBridgeAdapter(PrototypeAdapter):
     # Figma 只有 FRAME 能裁子元素（clipsContent），所以走真嵌套：
     # 子元素真的挂到裁剪容器下，坐标由 adapter_base 换成父级相对。
     supports_clip_frames = True
+    supports_vectors = True
 
     def __init__(
         self,
@@ -1069,6 +1070,14 @@ class FigmaBridgeAdapter(PrototypeAdapter):
             {"node_id": node_id, "imageBase64": params.get("imageBase64")},
         ]
         self._record_semantic_node(node_id, params, node_type="RECTANGLE")
+        return node_id
+
+    def create_vector(
+        self, spec: dict[str, Any], parent_id: str | None = None
+    ) -> str | None:
+        params = _with_parent(spec, parent_id)
+        node_id = self._send("create_vector", params)
+        self._record_semantic_node(node_id, params, node_type="VECTOR")
         return node_id
 
     def set_text(self, node_id: str, text: str) -> dict[str, Any]:

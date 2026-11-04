@@ -4,6 +4,13 @@ Date: 2026-11-04 (Asia/Shanghai)
 
 Decision: **candidate passes the frozen Flex gate; do not adopt across all samples yet**
 
+Update 2026-11-04: the mentor-agent comparison exposed that the original gate
+was too permissive. A strict visual-scene gate now also blocks duplicate text
+overlap, horizontal text overflow, missing explicit fonts, missing vector
+icons, MAE above 6 and bad-pixel ratio above 5%. Under that gate the current
+teacher-informed implementation is still a visual failure on the Flex sample.
+See `TEACHER_UI_AGENT_DISTILLATION_2026-11-04.md`.
+
 ## Scope
 
 The target is a fixed source-size, editable reconstruction with native text and

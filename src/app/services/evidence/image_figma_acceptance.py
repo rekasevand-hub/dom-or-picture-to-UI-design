@@ -121,8 +121,13 @@ def evaluate_image_mvp(
     image_elements = [
         item for item in design_elements if str(item.get("type")) in {"image", "avatar"}
     ]
+    raster_image_elements = [
+        item
+        for item in image_elements
+        if item.get("imageBase64") or item.get("displayPayload")
+    ]
     expected_assets = int(truth.get("expected_asset_count") or 0)
-    claimed_assets = max(expected_assets, len(image_elements))
+    claimed_assets = max(expected_assets, len(raster_image_elements))
     asset_ir = [
         item for item in image_ir.get("assets") or [] if isinstance(item, Mapping)
     ]

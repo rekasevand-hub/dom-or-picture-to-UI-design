@@ -56,6 +56,8 @@ def _is_generated(element: dict[str, Any]) -> bool:
 class HTMLAdapter(PrototypeAdapter):
     """Write a static absolute-positioned HTML prototype and local assets."""
 
+    supports_vectors = True
+
     def __init__(
         self,
         output_dir: str | Path,
@@ -92,6 +94,11 @@ class HTMLAdapter(PrototypeAdapter):
         return None
 
     def create_image(
+        self, spec: dict[str, Any], parent_id: str | None = None
+    ) -> str | None:
+        return None
+
+    def create_vector(
         self, spec: dict[str, Any], parent_id: str | None = None
     ) -> str | None:
         return None
@@ -207,6 +214,11 @@ class HTMLAdapter(PrototypeAdapter):
                 common += ' data-reference-underlay="true"'
             if _is_generated(element):
                 common += ' data-generated="true"'
+            if element.get("vectorSvg"):
+                body.append(
+                    f'<div{common}>{element["vectorSvg"]}</div>'
+                )
+                continue
             if element_type in {"image", "avatar"} or element.get("imageBase64"):
                 payload = _image_bytes(element.get("imageBase64"))
                 digest = hashlib.sha256(payload).hexdigest()

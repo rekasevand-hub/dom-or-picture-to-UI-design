@@ -184,6 +184,42 @@ def parse_vlm_json(
             if e.get(field) is not None:
                 element[field] = e.get(field)
         out["elements"].append(element)
+    out["tables"] = []
+    if bbox_format == "source-px-xywh":
+        for table in data.get("tables") or []:
+            if not isinstance(table, Mapping):
+                continue
+            box = _source_px_box(
+                table.get("bbox"),
+                image_w,
+                image_h,
+                x_scale=x_scale,
+                y_scale=1.0,
+            )
+            if box is None:
+                continue
+            headers = [
+                str(value).strip()
+                for value in table.get("header_texts") or []
+                if str(value).strip()
+            ]
+            rows = [
+                [str(cell).strip() for cell in row]
+                for row in table.get("rows") or []
+                if isinstance(row, (list, tuple))
+            ]
+            out["tables"].append(
+                {
+                    "name": str(table.get("name") or "Table"),
+                    "bbox": box,
+                    "header_texts": headers,
+                    "columns": [
+                        str(value).strip()
+                        for value in table.get("columns") or headers
+                    ],
+                    "rows": rows,
+                }
+            )
     try:
         from src.app.services.structure.image_enrichment.parsing import (
             parse_enrichment_response,

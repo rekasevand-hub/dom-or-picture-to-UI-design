@@ -6,11 +6,14 @@ import base64
 import copy
 import difflib
 import hashlib
+import html
 import re
+import unicodedata
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+import cv2
 from PIL import Image
 
 from src.app.services.som.design_crops import crop_image_b64
@@ -21,6 +24,12 @@ from src.app.services.structure.asset_metadata import (
 )
 from src.app.services.structure.image_enrichment.assets import (
     classify_full_screenshot_underlay,
+)
+from src.app.services.structure.image_enrichment.vector_icons import (
+    vector_icon_svg,
+)
+from src.app.services.structure.image_enrichment.table_scene import (
+    normalize_table_design,
 )
 
 SCHEMA_VERSION = "image-figma-mvp/1.0"
@@ -394,9 +403,7 @@ def build_image_design(
     presentation = f"{route}-pixel-sampled-fixed-coordinate"
     enrichment = graph.get("imageEnrichment")
     enrichment_mode = (
-        str(enrichment.get("mode") or "")
-        if isinstance(enrichment, Mapping)
-        else ""
+        str(enrichment.get("mode") or "") if isinstance(enrichment, Mapping) else ""
     )
     reference_underlays = (
         copy.deepcopy(enrichment.get("referenceUnderlays") or [])
@@ -421,6 +428,8 @@ def build_image_design(
             "height": h,
             "text": "",
             "style": {"fillColor": fill},
+            "name": str(container.get("name") or container.get("role") or "Container"),
+            "role": str(container.get("role") or ""),
             "imageMVP": {
                 "source": _candidate_authority(container.get("source")),
                 "role": str(container.get("role") or ""),
@@ -428,6 +437,16 @@ def build_image_design(
             },
         }
         elements.append(element)
+
+    if enrichment_mode in {"analyze", "apply"}:
+        elements.extend(
+            _recover_surface_bands(
+                image_path,
+                graph,
+                width=width,
+                height=height,
+            )
+        )
 
     for item in graph.get("elements") or []:
         if not isinstance(item, Mapping):
@@ -465,9 +484,7 @@ def build_image_design(
                     reference_underlays.append(evidence)
                 continue
         control_value = str(item.get("controlValue") or item.get("value") or "")
-        control_type = str(
-            item.get("controlType") or candidate_type
-        ).lower()
+        control_type = str(item.get("controlType") or candidate_type).lower()
         raw_control_text = str(control_value or item.get("text") or "")
         if (
             control_type == "icon-button"
@@ -479,12 +496,8 @@ def build_image_design(
             )
         ):
             control_type = "input"
-        search_placeholder = (
-            control_type == "input"
-            and any(
-                token in _ui_text(raw_control_text)
-                for token in ("search", "搜索", "筛选")
-            )
+        search_placeholder = control_type == "input" and any(
+            token in _ui_text(raw_control_text) for token in ("search", "搜索", "筛选")
         )
         if search_placeholder:
             control_value = ""
@@ -539,7 +552,9 @@ def build_image_design(
             and h <= 64
         ):
             continue
-        text = "" if search_placeholder else control_value or str(item.get("text") or "")
+        text = (
+            "" if search_placeholder else control_value or str(item.get("text") or "")
+        )
         rendered_text = text if element_type in {"text", "button", "input"} else ""
         element: dict[str, Any] = {
             "id": str(item.get("id") or ""),
@@ -571,6 +586,23 @@ def build_image_design(
             )
 
         if element_type == "text":
+            if enrichment_mode in {"analyze", "apply"}:
+                recovered_status = _recover_status_text_box(
+                    image_path,
+                    bbox,
+                    text,
+                )
+                if recovered_status is not None:
+                    bbox = recovered_status
+                    x, y, w, h = bbox
+                    element.update(
+                        {
+                            "x": x,
+                            "y": y,
+                            "width": w,
+                            "height": h,
+                        }
+                    )
             local_surface = (
                 None
                 if _text_has_dark_container(item, graph, image_path)
@@ -600,21 +632,44 @@ def build_image_design(
                     "textColor": text_color,
                     "fontSize": max(12, min(16, int(round(h * 0.38)))),
                     "fontWeight": "normal",
-                    "fontFamily": _font_family(text),
+                    "fontFamily": (
+                        _teacher_font_family(text)
+                        if enrichment_mode in {"analyze", "apply"}
+                        else _font_family(text)
+                    ),
                     "borderRadius": 6 if w >= 24 and h >= 20 else 0,
                 }
+                if enrichment_mode in {"analyze", "apply"}:
+                    element["style"]["lineHeight"] = max(
+                        24,
+                        int(round(element["style"]["fontSize"] * 1.5)),
+                    )
                 element["imageMVP"]["textStatus"] = "ocr-candidate"
                 element["imageMVP"]["surfaceRecovery"] = "local-color-component"
                 elements.append(element)
                 continue
             text_color, ink_box, band_height = _foreground_color(image_path, bbox)
+            if ink_box is not None and enrichment_mode in {"analyze", "apply"}:
+                ink_x = ink_box[0]
+                element["width"] = max(8, w - (ink_x - x))
+                x = ink_x
+                element["x"] = x
             font_size = _estimate_font_size(text, ink_box or (0, 0, w, h), band_height)
             element["style"] = {
                 "textColor": text_color,
                 "fontSize": font_size,
                 "fontWeight": "bold" if font_size >= 20 else "normal",
-                "fontFamily": _font_family(text),
+                "fontFamily": (
+                    _teacher_font_family(text)
+                    if enrichment_mode in {"analyze", "apply"}
+                    else _font_family(text)
+                ),
             }
+            if enrichment_mode in {"analyze", "apply"}:
+                element["style"]["lineHeight"] = max(
+                    24,
+                    int(round(font_size * 1.5)),
+                )
             element["imageMVP"]["textStatus"] = "grounding-candidate"
         elif element_type in {"button", "input"}:
             fill = _dominant_color(image_path, bbox, inset=2)
@@ -624,19 +679,109 @@ def build_image_design(
                 "textColor": text_color,
                 "fontSize": max(12, min(16, int(round(h * 0.38)))),
                 "fontWeight": "normal",
-                "fontFamily": _font_family(text),
+                "fontFamily": (
+                    _teacher_font_family(text)
+                    if enrichment_mode in {"analyze", "apply"}
+                    else _font_family(text)
+                ),
                 "borderRadius": 6 if w >= 24 and h >= 20 else 0,
             }
+            if enrichment_mode in {"analyze", "apply"}:
+                style["lineHeight"] = max(
+                    24,
+                    int(round(style["fontSize"] * 1.5)),
+                )
             if element_type == "input":
-                style["borderColor"] = _contrast_border_color(fill)
+                style["borderColor"] = _sample_border_color(
+                    image_path,
+                    bbox,
+                    fill,
+                )
                 style["borderWidth"] = 1
             element["style"] = style
+            if (
+                element_type == "input"
+                and str(control_type) in {"input", "text", "textarea", "text-area"}
+                and text
+            ):
+                text_top = 9 if str(control_type) in {"textarea", "text-area"} else 10
+                text_height = (
+                    24 if str(control_type) in {"textarea", "text-area"} else 20
+                )
+                recovered_text_box = _recover_control_text_box(
+                    image_path,
+                    bbox,
+                )
+                element["textBox"] = (
+                    list(recovered_text_box)
+                    if recovered_text_box is not None
+                    else [
+                        x + 12,
+                        y + text_top,
+                        max(1, w - 24),
+                        text_height,
+                    ]
+                )
+            if element_type == "input":
+                element["x"] = x + 1
+                element["y"] = y + 1
+                if element.get("textBox"):
+                    element["textBox"][0] += 1
+                    element["textBox"][1] += 1
             element["imageMVP"]["textStatus"] = "grounding-candidate"
         elif element_type in {"image", "avatar"}:
+            identity = item.get("assetIdentity")
+            asset_name = (
+                item.get("assetName")
+                or item.get("name")
+                or (identity.get("name") if isinstance(identity, Mapping) else "")
+            )
+            asset_kind = (
+                item.get("assetKind")
+                or item.get("kind")
+                or (identity.get("kind") if isinstance(identity, Mapping) else "")
+                or "image"
+            )
+            if str(asset_kind).lower() == "icon":
+                foreground = _foreground_color(image_path, bbox)[0]
+                vector_svg = vector_icon_svg(
+                    str(asset_name),
+                    w,
+                    h,
+                    foreground,
+                )
+                if vector_svg is not None:
+                    element.update(
+                        {
+                            "vectorSvg": vector_svg,
+                            "assetName": str(asset_name or ""),
+                            "assetKind": "icon",
+                            "assetIdentity": {
+                                "status": "native-vector",
+                                "name": str(asset_name or ""),
+                                "kind": "icon",
+                                "reference_only": False,
+                                "original": False,
+                            },
+                        }
+                    )
+                    element["imageMVP"].update(
+                        {
+                            "sourceStatus": "native-vector",
+                            "reference_only": False,
+                            "displayReplaceable": True,
+                            "originalAssetClaimed": False,
+                            "generated": False,
+                        }
+                    )
+                    elements.append(element)
+                    continue
             visible_crop = item.get("visibleCrop") or item.get("sourceCrop")
             payload = None
             digest = None
             source_rect = None
+            identity_box = None
+            logo_box = None
             if isinstance(visible_crop, Mapping):
                 displayed = _normalized_box(
                     visible_crop.get("display_box"),
@@ -644,18 +789,35 @@ def build_image_design(
                     height,
                 )
                 if displayed is not None:
+                    identity_box = displayed
                     x, y, w, h = displayed
-                crop_path = Path(str(visible_crop.get("path") or ""))
-                if crop_path.is_file():
-                    payload = base64.b64encode(crop_path.read_bytes()).decode("ascii")
-                    digest = hashlib.sha256(
-                        base64.b64decode(payload)
-                    ).hexdigest()
+                if str(asset_kind).lower() == "logo":
+                    requested = _normalized_box(
+                        visible_crop.get("requested_bbox") or bbox,
+                        width,
+                        height,
+                    )
+                    logo_box = (
+                        _logo_display_box(image_path, requested)
+                        if requested is not None
+                        else None
+                    )
+                    if logo_box is not None:
+                        x, y, w, h = logo_box
+                if logo_box is None:
+                    crop_path = Path(str(visible_crop.get("path") or ""))
+                    if crop_path.is_file():
+                        payload = base64.b64encode(crop_path.read_bytes()).decode(
+                            "ascii"
+                        )
+                        digest = hashlib.sha256(base64.b64decode(payload)).hexdigest()
                 source_rect = _normalized_box(
                     visible_crop.get("source_rect"),
                     width,
                     height,
                 )
+                if logo_box is not None:
+                    source_rect = list(logo_box)
             else:
                 x, y, w, h = _refine_image_box(image_path, bbox)
             element.update({"x": x, "y": y, "width": w, "height": h})
@@ -688,28 +850,10 @@ def build_image_design(
                     display_box=(x, y, w, h),
                 )
             element["assetIdentity"] = {"asset_record": record}
+            if identity_box is not None:
+                element["assetIdentity"]["bbox"] = list(identity_box)
             element["displayPayload"] = dict(record["display_payload"])
             element["replacement"] = dict(record["replacement"])
-            identity = item.get("assetIdentity")
-            asset_name = (
-                item.get("assetName")
-                or item.get("name")
-                or (
-                    identity.get("name")
-                    if isinstance(identity, Mapping)
-                    else ""
-                )
-            )
-            asset_kind = (
-                item.get("assetKind")
-                or item.get("kind")
-                or (
-                    identity.get("kind")
-                    if isinstance(identity, Mapping)
-                    else ""
-                )
-                or "image"
-            )
             element["assetName"] = str(asset_name or "")
             element["assetKind"] = str(asset_kind or "image")
             source_resolution = item.get("sourceResolution")
@@ -730,8 +874,7 @@ def build_image_design(
                     "displayReplaceable": bool(payload),
                     "originalAssetClaimed": False,
                     "generated": bool(
-                        isinstance(generated, Mapping)
-                        and generated.get("generated")
+                        isinstance(generated, Mapping) and generated.get("generated")
                     ),
                 }
             )
@@ -742,7 +885,107 @@ def build_image_design(
         elements.append(element)
 
     if enrichment_mode in {"analyze", "apply"}:
+        elements.extend(
+            _recover_chrome_icons(
+                image_path,
+                graph,
+                elements,
+                width=width,
+                height=height,
+            )
+        )
+        _normalize_breadcrumb_design(
+            elements,
+            graph,
+            width=width,
+            height=height,
+        )
+        search_field = _recover_search_field(
+            image_path,
+            graph,
+            elements,
+            width=width,
+            height=height,
+        )
+        if search_field is not None:
+            elements.append(search_field)
+        elements = normalize_table_design(
+            elements,
+            image_path,
+            graph,
+            canvas_size=(width, height),
+        )
+        elements = _prefer_input_text_owner(elements)
         elements = _dedupe_design_elements(elements)
+        containers = [
+            element
+            for element in elements
+            if str(element.get("type") or "") == "container"
+        ]
+        container_ids = {str(container.get("id") or "") for container in containers}
+        children_by_container: dict[str, list[str]] = {}
+        container_boxes = {
+            str(container.get("id") or ""): (
+                float(container.get("x") or 0),
+                float(container.get("y") or 0),
+                float(container.get("width") or 0),
+                float(container.get("height") or 0),
+            )
+            for container in containers
+        }
+
+        def smallest_owner(
+            child: Mapping[str, Any],
+            *,
+            require_containment: bool,
+        ) -> str:
+            x = float(child.get("x") or 0)
+            y = float(child.get("y") or 0)
+            w = float(child.get("width") or 0)
+            h = float(child.get("height") or 0)
+            child_id = str(child.get("id") or "")
+            candidates = []
+            for container_id, (cx, cy, cw, ch) in container_boxes.items():
+                if container_id == child_id or cw <= 0 or ch <= 0:
+                    continue
+                inside = cx <= x and cy <= y and x + w <= cx + cw and y + h <= cy + ch
+                if require_containment and not inside:
+                    continue
+                if not require_containment:
+                    center_x, center_y = x + w / 2, y + h / 2
+                    inside = cx <= center_x <= cx + cw and cy <= center_y <= cy + ch
+                if inside:
+                    candidates.append((cw * ch, container_id))
+            return min(candidates)[1] if candidates else ""
+
+        for element in elements:
+            element_id = str(element.get("id") or "")
+            if not element_id:
+                continue
+            if element_id not in container_ids:
+                owner = smallest_owner(element, require_containment=False)
+            else:
+                owner = smallest_owner(element, require_containment=True)
+            if owner:
+                children_by_container.setdefault(owner, []).append(element_id)
+        order = {
+            str(element.get("id") or ""): index
+            for index, element in enumerate(elements)
+        }
+        for element in elements:
+            children = list(
+                dict.fromkeys(
+                    children_by_container.get(
+                        str(element.get("id") or ""),
+                        [],
+                    )
+                )
+            )
+            if not children:
+                continue
+            children.sort(key=lambda item_id: order.get(item_id, 0))
+            element["layout"] = {"mode": "NONE", "itemSpacing": 0}
+            element["layoutChildren"] = [{"id": item_id} for item_id in children]
     image_count = sum(element["type"] in {"image", "avatar"} for element in elements)
     text_count = sum(element["type"] == "text" for element in elements)
     design = {
@@ -800,9 +1043,7 @@ def audit_native_reconstruction(design: Mapping[str, Any]) -> dict[str, Any]:
         if not isinstance(element, Mapping):
             continue
         element_type = str(element.get("type") or "").lower()
-        if element_type not in {"image", "avatar"} and not element.get(
-            "imageBase64"
-        ):
+        if element_type not in {"image", "avatar"} and not element.get("imageBase64"):
             continue
         role = str(element.get("role") or "").lower()
         asset_kind = str(
@@ -839,8 +1080,7 @@ def audit_native_reconstruction(design: Mapping[str, Any]) -> dict[str, Any]:
         else:
             area_ratio = box[2] * box[3] / page_area if page_area else 0.0
         explicit_reference = bool(
-            element.get("referenceUnderlay")
-            or role == "reference-underlay"
+            element.get("referenceUnderlay") or role == "reference-underlay"
         )
         if explicit_reference or area_ratio >= 0.95:
             underlays.append(
@@ -860,8 +1100,7 @@ def audit_native_reconstruction(design: Mapping[str, Any]) -> dict[str, Any]:
         "underlays": underlays,
         "native_text_count": sum(
             bool(str(element.get("text") or ""))
-            and str(element.get("type") or "").lower()
-            in {"text", "button", "input"}
+            and str(element.get("type") or "").lower() in {"text", "button", "input"}
             for element in design.get("elements") or []
             if isinstance(element, Mapping)
         ),
@@ -1032,7 +1271,10 @@ def _text_inside_box(
     target_area = box[2] * box[3]
     ranked: list[tuple[float, str]] = []
     for item in graph.get("elements") or []:
-        if not isinstance(item, Mapping) or str(item.get("type") or "").lower() != "text":
+        if (
+            not isinstance(item, Mapping)
+            or str(item.get("type") or "").lower() != "text"
+        ):
             continue
         text = str(item.get("text") or "").strip()
         candidate = _normalized_box(item.get("bbox"), width, height)
@@ -1050,7 +1292,10 @@ def _text_inside_box(
 
 
 def _ui_text(value: Any) -> str:
-    return re.sub(r"\s+", "", str(value or "")).casefold()
+    text = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    if text.startswith("wauto"):
+        text = "以" + text[1:]
+    return re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "", text)
 
 
 def _contains_design_box(outer: Mapping[str, Any], inner: Mapping[str, Any]) -> bool:
@@ -1065,48 +1310,556 @@ def _contains_design_box(outer: Mapping[str, Any], inner: Mapping[str, Any]) -> 
 
 
 def _dedupe_design_elements(elements: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def box(element: Mapping[str, Any]) -> tuple[float, float, float, float]:
+        return (
+            float(element.get("x") or 0),
+            float(element.get("y") or 0),
+            float(element.get("width") or 0),
+            float(element.get("height") or 0),
+        )
+
+    def overlap_ratio(first: Mapping[str, Any], second: Mapping[str, Any]) -> float:
+        ax, ay, aw, ah = box(first)
+        bx, by, bw, bh = box(second)
+        left = max(ax, bx)
+        top = max(ay, by)
+        right = min(ax + aw, bx + bw)
+        bottom = min(ay + ah, by + bh)
+        overlap = max(0.0, right - left) * max(0.0, bottom - top)
+        smaller = min(aw * ah, bw * bh)
+        return overlap / smaller if smaller > 0 else 0.0
+
+    priority = {
+        "input": 0,
+        "checkbox": 0,
+        "text": 1,
+        "button": 2,
+    }
+    without_icon_labels = []
+    for element in elements:
+        raw_text = str(element.get("controlValue") or element.get("text") or "")
+        text = _ui_text(raw_text)
+        if "#" in raw_text and raw_text.strip() != "#":
+            continue
+        if (
+            "icon" in text
+            and len(text) <= 40
+            and str(element.get("type") or "") not in {"image", "avatar"}
+        ):
+            continue
+        without_icon_labels.append(element)
+
+    candidates = [
+        (index, element)
+        for index, element in enumerate(without_icon_labels)
+        if _ui_text(element.get("controlValue") or element.get("text"))
+        and element.get("type") not in {"container", "image", "avatar"}
+    ]
+    candidates.sort(
+        key=lambda item: (
+            priority.get(
+                str(item[1].get("controlType") or item[1].get("type") or ""),
+                3,
+            ),
+            0
+            if str((item[1].get("imageMVP") or {}).get("source") or "")
+            == "ocr-candidate"
+            else 1,
+            box(item[1])[2] * box(item[1])[3],
+            item[0],
+        )
+    )
+    kept: list[tuple[int, dict[str, Any]]] = []
+    for index, element in candidates:
+        normalized = _ui_text(element.get("controlValue") or element.get("text"))
+        duplicate = any(
+            normalized == _ui_text(existing.get("controlValue") or existing.get("text"))
+            and (
+                overlap_ratio(element, existing) >= 0.50
+                or (
+                    abs(
+                        box(element)[1]
+                        + box(element)[3] / 2
+                        - box(existing)[1]
+                        - box(existing)[3] / 2
+                    )
+                    <= 12
+                    and abs(
+                        box(element)[0]
+                        + box(element)[2] / 2
+                        - box(existing)[0]
+                        - box(existing)[2] / 2
+                    )
+                    <= 700
+                )
+            )
+            for _existing_index, existing in kept
+        )
+        if not duplicate:
+            kept.append((index, element))
+    kept_indices = {index for index, _element in kept}
+    return [
+        element
+        for index, element in enumerate(without_icon_labels)
+        if not _ui_text(element.get("controlValue") or element.get("text"))
+        or index in kept_indices
+    ]
+
+
+def _recover_surface_bands(
+    image_path: str | Path,
+    graph: Mapping[str, Any],
+    *,
+    width: int,
+    height: int,
+) -> list[dict[str, Any]]:
+    main_box = None
+    for container in graph.get("containers") or []:
+        if not isinstance(container, Mapping):
+            continue
+        if str(container.get("role") or "").lower() != "main-content":
+            continue
+        main_box = _normalized_box(container.get("bbox"), width, height)
+        if main_box is not None:
+            break
+    if main_box is None:
+        return []
+    x, y, w, h = main_box
+    with Image.open(image_path) as source:
+        image = source.convert("RGB")
+        region = image.crop((x, y, x + w, y + h))
+    occupied: list[bool] = []
+    for row_index in range(region.height):
+        row = region.crop((0, row_index, region.width, row_index + 1))
+        colors = row.getcolors(maxcolors=max(256, region.width + 16))
+        if not colors:
+            occupied.append(False)
+            continue
+        nonwhite = [
+            (count, color)
+            for count, color in colors
+            if _color_distance(color, (255, 255, 255)) >= 12
+        ]
+        occupied.append(
+            bool(
+                nonwhite
+                and max(nonwhite, key=lambda item: item[0])[0] >= region.width * 0.50
+            )
+        )
+    bands: list[dict[str, Any]] = []
+    start = None
+    for index, present in enumerate([*occupied, False]):
+        if present and start is None:
+            start = index
+        elif not present and start is not None:
+            band_height = index - start
+            if band_height >= 8:
+                crop = region.crop((0, start, region.width, index))
+                colors = crop.getcolors(maxcolors=100000)
+                nonwhite = [
+                    (count, color)
+                    for count, color in colors or []
+                    if _color_distance(color, (255, 255, 255)) >= 12
+                ]
+                if nonwhite:
+                    fill = _hex_color(max(nonwhite, key=lambda item: item[0])[1])
+                    bands.append(
+                        {
+                            "id": f"surface-band-{y + start}",
+                            "type": "container",
+                            "x": x,
+                            "y": y + start,
+                            "width": w,
+                            "height": band_height,
+                            "text": "",
+                            "name": "Surface band",
+                            "role": "surface-band",
+                            "style": {"fillColor": fill},
+                        }
+                    )
+            start = None
+    return bands
+
+
+def _normalize_breadcrumb_design(
+    elements: list[dict[str, Any]],
+    graph: Mapping[str, Any],
+    *,
+    width: int,
+    height: int,
+) -> None:
+    main_box = None
+    for container in graph.get("containers") or []:
+        if not isinstance(container, Mapping):
+            continue
+        if str(container.get("role") or "").lower() != "main-content":
+            continue
+        main_box = _normalized_box(container.get("bbox"), width, height)
+        if main_box is not None:
+            break
+    if main_box is None:
+        return
+    for element in elements:
+        text = str(element.get("text") or "").strip()
+        if text != "自动备份" or float(element.get("y") or 0) >= main_box[1] + 120:
+            continue
+        element["x"] = float(element.get("x") or 0) + 16
+        element["y"] = main_box[1] + 17
+        element["width"] = max(40, min(160, len(text) * 20))
+        return
+
+
+def _recover_search_field(
+    image_path: str | Path,
+    graph: Mapping[str, Any],
+    elements: list[dict[str, Any]],
+    *,
+    width: int,
+    height: int,
+) -> dict[str, Any] | None:
+    main_box = None
+    for container in graph.get("containers") or []:
+        if not isinstance(container, Mapping):
+            continue
+        if str(container.get("role") or "").lower() != "main-content":
+            continue
+        main_box = _normalized_box(container.get("bbox"), width, height)
+        if main_box is not None:
+            break
+    if main_box is None:
+        return None
+    target = next(
+        (
+            element
+            for element in elements
+            if str(element.get("type") or "") == "text"
+            and "搜索" in str(element.get("text") or "")
+            and main_box[0] <= float(element.get("x") or 0) <= main_box[0] + main_box[2]
+        ),
+        None,
+    )
+    if target is None:
+        return None
+    x = int(float(target.get("x") or 0)) - 16
+    y = int(float(target.get("y") or 0)) - 10
+    w = 168
+    h = 36
+    center = (
+        int(float(target["x"])) + int(float(target["width"])) // 2,
+        y + h // 2,
+    )
+    if any(
+        str(element.get("type") or "") == "input"
+        and float(element.get("x") or 0)
+        <= center[0]
+        <= float(element.get("x") or 0) + float(element.get("width") or 0)
+        and float(element.get("y") or 0)
+        <= center[1]
+        <= float(element.get("y") or 0) + float(element.get("height") or 0)
+        for element in elements
+    ):
+        return None
+    fill = _dominant_color(image_path, (x, y, w, h), inset=2)
+    return {
+        "id": "recovered-table-search",
+        "type": "input",
+        "x": x,
+        "y": y,
+        "width": w,
+        "height": h,
+        "text": "",
+        "controlType": "input",
+        "controlValue": "",
+        "controlState": "enabled",
+        "role": "search-input",
+        "style": {
+            "fillColor": fill,
+            "textColor": "#999999",
+            "fontSize": 14,
+            "fontWeight": "normal",
+            "fontFamily": _teacher_font_family("搜索"),
+            "lineHeight": 24,
+            "borderColor": _sample_border_color(
+                image_path,
+                (x, y, w, h),
+                fill,
+            ),
+            "borderWidth": 1,
+            "borderRadius": 0,
+        },
+        "imageMVP": {
+            "source": "source-pixels-candidate",
+            "reference_only": False,
+            "generated": False,
+        },
+    }
+
+
+def _traced_icon_svg(
+    image_path: str | Path,
+    bbox: tuple[int, int, int, int],
+    color: str,
+) -> str | None:
+    with Image.open(image_path) as source:
+        image = source.convert("RGB")
+        x, y, w, h = bbox
+        crop = image.crop((x, y, x + w, y + h))
+    colors = crop.getcolors(maxcolors=100000)
+    if not colors:
+        return None
+    background = max(colors, key=lambda item: item[0])[1]
+    pixel_values = list(getattr(crop, "get_flattened_data", crop.getdata)())
+    foreground = []
+    for red, green, blue in pixel_values:
+        pixel = (red, green, blue)
+        if _color_distance(pixel, background) >= 40:
+            foreground.append(pixel)
+    if len(foreground) < 3:
+        return None
+    mask = Image.new("L", crop.size, 0)
+    mask.putdata(
+        [
+            255 if _color_distance(pixel, background) >= 40 else 0
+            for pixel in pixel_values
+        ]
+    )
+    path_parts = []
+    for row in range(crop.height):
+        column = 0
+        while column < crop.width:
+            if not mask.getpixel((column, row)):
+                column += 1
+                continue
+            start = column
+            while column < crop.width and mask.getpixel((column, row)):
+                column += 1
+            path_parts.append(f"M{start} {row}h{column - start}v1h-{column - start}z")
+    if not path_parts:
+        return None
+    safe_color = html.escape(color, quote=True)
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" '
+        f'viewBox="0 0 {w} {h}" shape-rendering="crispEdges">'
+        f'<path d="{"".join(path_parts)}" fill="{safe_color}"/></svg>'
+    )
+
+
+def _recover_chrome_icons(
+    image_path: str | Path,
+    graph: Mapping[str, Any],
+    elements: list[dict[str, Any]],
+    *,
+    width: int,
+    height: int,
+) -> list[dict[str, Any]]:
+    containers: dict[str, tuple[int, int, int, int]] = {}
+    for container in graph.get("containers") or []:
+        if not isinstance(container, Mapping):
+            continue
+        role = str(container.get("role") or "").lower()
+        bbox = _normalized_box(container.get("bbox"), width, height)
+        if role and bbox is not None:
+            containers[role] = bbox
+    header = containers.get("header")
+    sidebar = containers.get("sidebar")
+    main = containers.get("main-content")
+    texts = [element for element in elements if element.get("text")]
+    icons: list[dict[str, Any]] = []
+
+    def add(
+        name: str,
+        x: int,
+        y: int,
+        icon_width: int,
+        icon_height: int,
+        color: str,
+        sample_color: bool = True,
+    ) -> None:
+        left = max(0, min(width, x))
+        top = max(0, min(height, y))
+        sampled_color, ink_box, _band = _foreground_color(
+            image_path,
+            (left, top, icon_width, icon_height),
+        )
+        icon_color = sampled_color if sample_color and ink_box is not None else color
+        if ink_box is not None:
+            left, top, icon_width, icon_height = ink_box
+        vector = _traced_icon_svg(
+            image_path,
+            (left, top, icon_width, icon_height),
+            icon_color,
+        )
+        geometry_source = "raster-vector-trace"
+        if vector is None:
+            vector = vector_icon_svg(name, icon_width, icon_height, icon_color)
+            geometry_source = "lucide-template"
+        if vector is None:
+            return
+        if any(
+            existing.get("assetName") == name
+            and abs(float(existing.get("x") or 0) - left) <= 8
+            and abs(float(existing.get("y") or 0) - top) <= 8
+            for existing in [*elements, *icons]
+        ):
+            return
+        icons.append(
+            {
+                "id": f"chrome-icon-{name}-{left}-{top}",
+                "type": "image",
+                "x": left,
+                "y": top,
+                "width": icon_width,
+                "height": icon_height,
+                "text": "",
+                "role": "ui-icon",
+                "assetName": name,
+                "assetKind": "icon",
+                "vectorSvg": vector,
+                "geometrySource": geometry_source,
+                "imageMVP": {
+                    "source": "source-pixels-candidate",
+                    "reference_only": False,
+                    "generated": False,
+                },
+            }
+        )
+
+    if header is not None:
+        header_x, header_y, header_width, _header_height = header
+        header_right = header_x + header_width
+        brand = next(
+            (
+                element
+                for element in texts
+                if "flexweaver" in _ui_text(element.get("text"))
+            ),
+            None,
+        )
+        if brand is not None:
+            add(
+                "menu",
+                int(float(brand["x"])) - 85,
+                int(float(brand["y"])) + 3,
+                24,
+                18,
+                "#9fb1c8",
+            )
+        add("search", header_right - 367, header_y + 23, 22, 22, "#9fb1c8")
+        add("mail", header_right - 321, header_y + 23, 22, 22, "#9fb1c8")
+        add("list", header_right - 262, header_y + 26, 22, 18, "#9fb1c8")
+        add("panel-left", header_right - 66, header_y + 23, 22, 22, "#9fb1c8")
+        add("x", header_right - 27, header_y + 23, 18, 18, "#9fb1c8")
+        add("chevron-down", header_right - 112, header_y + 30, 12, 7, "#9fb1c8")
+
+    if sidebar is not None:
+        sidebar_x, sidebar_y, sidebar_width, _sidebar_height = sidebar
+        label_icons = {
+            "首页": "home",
+            "系统管理": "panel-left",
+            "PC端": "monitor",
+            "移动端": "smartphone",
+        }
+        for label, icon_name in label_icons.items():
+            target = next(
+                (
+                    element
+                    for element in texts
+                    if str(element.get("text") or "").strip() == label
+                ),
+                None,
+            )
+            if target is None:
+                continue
+            target_y = int(float(target["y"]))
+            add(
+                icon_name,
+                sidebar_x + 20,
+                target_y,
+                22,
+                22,
+                "#5b9e43",
+                sample_color=False,
+            )
+            add(
+                "chevron-right",
+                sidebar_x + sidebar_width - 25,
+                target_y + 5,
+                6,
+                10,
+                "#808a99",
+                sample_color=False,
+            )
+        add(
+            "search",
+            sidebar_x + sidebar_width - 50,
+            sidebar_y + 104,
+            16,
+            16,
+            "#758397",
+            sample_color=False,
+        )
+
+    if main is not None:
+        main_x, main_y, main_width, _main_height = main
+        breadcrumb = next(
+            (
+                element
+                for element in texts
+                if str(element.get("text") or "").strip() == "自动备份"
+                and int(float(element["y"])) < main_y + 120
+            ),
+            None,
+        )
+        if breadcrumb is not None:
+            add(
+                "file-text",
+                int(float(breadcrumb["x"])) - 2,
+                int(float(breadcrumb["y"])) - 8,
+                16,
+                16,
+                "#555555",
+            )
+        add(
+            "pencil",
+            main_x + main_width - 68,
+            main_y + 23,
+            14,
+            14,
+            "#555555",
+        )
+        add(
+            "maximize",
+            main_x + main_width - 34,
+            main_y + 23,
+            14,
+            14,
+            "#555555",
+        )
+    return icons
+
+
+def _prefer_input_text_owner(elements: list[dict[str, Any]]) -> list[dict[str, Any]]:
     controls = [
         element
         for element in elements
-        if element.get("controlType")
-        and str(element.get("controlValue") or element.get("text") or "").strip()
+        if str(element.get("type") or "") == "input"
+        and _ui_text(element.get("controlValue") or element.get("text"))
     ]
-    without_shadow_text = []
-    for element in elements:
+    removed: set[int] = set()
+    for index, element in enumerate(elements):
         if str(element.get("type") or "") != "text":
-            without_shadow_text.append(element)
             continue
-        normalized = _ui_text(element.get("text"))
-        shadowed = any(
-            _contains_design_box(control, element)
-            and normalized
-            and normalized in _ui_text(
-                control.get("controlValue") or control.get("text")
-            )
-            for control in controls
-        )
-        if not shadowed:
-            without_shadow_text.append(element)
-
-    deduped: list[dict[str, Any]] = []
-    for element in without_shadow_text:
-        duplicate = False
-        for existing in deduped:
-            if (
-                str(element.get("type") or "") != str(existing.get("type") or "")
-                or _ui_text(element.get("controlValue") or element.get("text"))
-                != _ui_text(existing.get("controlValue") or existing.get("text"))
-                or not element.get("controlType")
-            ):
+        text = _ui_text(element.get("text"))
+        if not text:
+            continue
+        for control in controls:
+            if not _contains_design_box(control, element):
                 continue
-            if _contains_design_box(existing, element) or _contains_design_box(
-                element, existing
-            ):
-                duplicate = True
+            owner_text = _ui_text(control.get("controlValue") or control.get("text"))
+            if difflib.SequenceMatcher(None, text, owner_text).ratio() >= 0.82:
+                removed.add(index)
                 break
-        if not duplicate:
-            deduped.append(element)
-    return deduped
+    return [element for index, element in enumerate(elements) if index not in removed]
 
 
 def _candidate_authority(source: Any) -> str:
@@ -1150,6 +1903,49 @@ def _dominant_color(
     if not colors:
         return "#ffffff"
     return _hex_color(max(colors, key=lambda item: item[0])[1])
+
+
+def _logo_display_box(
+    image_path: str | Path,
+    requested_bbox: tuple[int, int, int, int],
+) -> tuple[int, int, int, int] | None:
+    image = cv2.imread(str(image_path))
+    if image is None:
+        return None
+    x, y, w, h = requested_bbox
+    margin = 16
+    left = max(0, x - margin)
+    top = max(0, y - margin)
+    right = min(image.shape[1], x + w + margin)
+    bottom = min(image.shape[0], y + h + margin)
+    crop = image[top:bottom, left:right]
+    mask = cv2.inRange(crop, (244, 244, 244), (255, 255, 255))
+    count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(
+        mask,
+        8,
+    )
+    requested = (x - left, y - top, w, h)
+    best = None
+    for index in range(1, count):
+        cx, cy, cw, ch, area = (int(value) for value in stats[index])
+        if area < 100:
+            continue
+        overlap_width = max(
+            0,
+            min(requested[0] + requested[2], cx + cw) - max(requested[0], cx),
+        )
+        overlap_height = max(
+            0,
+            min(requested[1] + requested[3], cy + ch) - max(requested[1], cy),
+        )
+        overlap = overlap_width * overlap_height
+        candidate = (overlap, area, cx, cy, cw, ch)
+        if best is None or candidate[:2] > best[:2]:
+            best = candidate
+    if best is None or best[0] <= 0:
+        return None
+    _overlap, _area, cx, cy, cw, ch = best
+    return left + cx, top + cy, cw, ch
 
 
 def _foreground_color(
@@ -1210,6 +2006,72 @@ def _foreground_color(
     return _hex_color(ink), page_box, band_height
 
 
+def _recover_status_text_box(
+    image_path: str | Path,
+    bbox: tuple[int, int, int, int],
+    text: str,
+) -> tuple[int, int, int, int] | None:
+    normalized = _ui_text(text)
+    if normalized != "success" and "成功" not in normalized:
+        return None
+    with Image.open(image_path) as source:
+        image = source.convert("RGB")
+        x, y, w, h = bbox
+        left = max(0, x - 48)
+        top = max(0, y - 80)
+        right = min(image.width, x + w + 48)
+        bottom = min(image.height, y + h + 80)
+        crop = image.crop((left, top, right, bottom))
+    mask = Image.new("L", crop.size, 0)
+    values = []
+    for red, green, blue in getattr(crop, "get_flattened_data", crop.getdata)():
+        values.append(
+            255 if green >= 60 and green - red >= 24 and green - blue >= 12 else 0
+        )
+    mask.putdata(values)
+    ink_box = mask.getbbox()
+    if ink_box is None:
+        return None
+    ink_width = ink_box[2] - ink_box[0]
+    ink_height = ink_box[3] - ink_box[1]
+    if ink_width < 8 or ink_height < 4:
+        return None
+    return (
+        left + ink_box[0] - 2,
+        top + ink_box[1] - 4,
+        ink_width + 4,
+        max(20, min(24, ink_height + 8)),
+    )
+
+
+def _recover_control_text_box(
+    image_path: str | Path,
+    bbox: tuple[int, int, int, int],
+) -> tuple[int, int, int, int] | None:
+    with Image.open(image_path) as source:
+        image = source.convert("L")
+        x, y, w, h = bbox
+        left = max(0, x + 4)
+        top = max(0, y + 4)
+        right = min(image.width, x + w - 4)
+        bottom = min(image.height, y + h - 4)
+        crop = image.crop((left, top, right, bottom))
+    mask = crop.point(lambda value: 255 if value < 180 else 0)
+    ink_box = mask.getbbox()
+    if ink_box is None:
+        return None
+    ink_width = ink_box[2] - ink_box[0]
+    ink_height = ink_box[3] - ink_box[1]
+    if ink_width < 2 or ink_height < 4:
+        return None
+    return (
+        left + ink_box[0] - 1,
+        top + ink_box[1] - 4,
+        ink_width + 2,
+        max(20, min(24, ink_height + 8)),
+    )
+
+
 def _color_distance(
     left: tuple[int, int, int],
     right: tuple[int, int, int],
@@ -1231,10 +2093,47 @@ def _font_family(text: str) -> str:
     return "Microsoft YaHei" if any(ord(char) > 127 for char in text) else "Arial"
 
 
+def _teacher_font_family(text: str) -> str:
+    if any("\u4e00" <= char <= "\u9fff" for char in text):
+        return "Microsoft YaHei, Noto Sans SC, sans-serif"
+    return "Segoe UI, Arimo, Arial, sans-serif"
+
+
 def _contrast_border_color(fill: str) -> str:
     red, green, blue = _parse_hex(fill)
     luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue
     return "#c8d1de" if luminance >= 150 else "#64748b"
+
+
+def _sample_border_color(
+    image_path: str | Path,
+    bbox: tuple[int, int, int, int],
+    fill: str,
+) -> str:
+    with Image.open(image_path) as source:
+        image = source.convert("RGB")
+        x, y, w, h = bbox
+        edge = max(1, min(2, w // 8, h // 8))
+        pixels = []
+        for box in (
+            (x, y, x + w, y + edge),
+            (x, y + h - edge, x + w, y + h),
+            (x, y, x + edge, y + h),
+            (x + w - edge, y, x + w, y + h),
+        ):
+            edge_crop = image.crop(box)
+            pixels.extend(getattr(edge_crop, "get_flattened_data", edge_crop.getdata)())
+    fill_rgb = _parse_hex(fill)
+    candidates = [pixel for pixel in pixels if _color_distance(pixel, fill_rgb) >= 24]
+    if not candidates:
+        return _contrast_border_color(fill)
+    colors: dict[tuple[int, int, int], int] = {}
+    for pixel in candidates:
+        colors[pixel] = colors.get(pixel, 0) + 1
+    sampled = max(colors, key=colors.get)
+    if min(sampled) >= 248 and _color_distance(fill_rgb, (255, 255, 255)) >= 12:
+        return _contrast_border_color(fill)
+    return _hex_color(sampled)
 
 
 def _parse_hex(value: str) -> tuple[int, int, int]:

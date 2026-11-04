@@ -145,9 +145,22 @@ def _iou(first: list[int], second: list[int]) -> float:
     return intersection / union if union > 0 else 0.0
 
 
-def _deduplicate(boxes: list[list[int]]) -> list[list[int]]:
+def _deduplicate(
+    boxes: list[list[int]],
+    *,
+    preserve_contained: bool = False,
+) -> list[list[int]]:
     kept: list[list[int]] = []
     for box in sorted(boxes, key=lambda item: (-item[2] * item[3], item[1], item[0])):
+        contained_by_merged = any(
+            preserve_contained
+            and existing[2] > box[2] * 1.25
+            and _intersection(box, existing) / max(1, box[2] * box[3]) >= 0.90
+            for existing in kept
+        )
+        if contained_by_merged:
+            kept.append(box)
+            continue
         if any(
             _iou(box, existing) >= 0.55
             or _intersection(box, existing) / max(1, min(
@@ -226,7 +239,11 @@ def _visible_rectangles(
                     min(height - y + margin_y, box_height + margin_y * 2),
                 ]
             )
-    return _deduplicate(fields), _deduplicate(checks), image
+    return (
+        _deduplicate(fields, preserve_contained=True),
+        _deduplicate(checks),
+        image,
+    )
 
 
 def _nearest_box(
@@ -469,6 +486,7 @@ def recover_visible_controls(
     image_path: Path,
     *,
     add_from_assets: bool = True,
+    text_observations: list[Mapping[str, Any]] | None = None,
 ) -> tuple[dict, dict[str, Any]]:
     """Snap model controls to visible geometry and add recoverable checkboxes."""
 
@@ -496,6 +514,11 @@ def recover_visible_controls(
         and str(element.get("type") or "").lower() == "text"
         and str(element.get("text") or "").strip()
     ]
+    for observation in text_observations or []:
+        text = str(observation.get("text") or "").strip()
+        box = _bbox(observation.get("bbox"), width, height)
+        if text and box is not None:
+            text_candidates.append(({"text": text}, box))
     snapped_count = 0
     used_fields: set[tuple[int, int, int, int]] = set()
     used_checks: set[tuple[int, int, int, int]] = set()

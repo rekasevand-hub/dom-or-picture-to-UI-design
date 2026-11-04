@@ -70,13 +70,11 @@ def _element_bbox(element: Mapping[str, Any]) -> list[int] | None:
 def _intersection(first: list[int], second: list[int]) -> int:
     width = max(
         0,
-        min(first[0] + first[2], second[0] + second[2])
-        - max(first[0], second[0]),
+        min(first[0] + first[2], second[0] + second[2]) - max(first[0], second[0]),
     )
     height = max(
         0,
-        min(first[1] + first[3], second[1] + second[3])
-        - max(first[1], second[1]),
+        min(first[1] + first[3], second[1] + second[3]) - max(first[1], second[1]),
     )
     return width * height
 
@@ -100,9 +98,7 @@ def _contains(outer: list[int], inner: list[int]) -> bool:
 
 def _design_elements(design: Mapping[str, Any]) -> list[dict[str, Any]]:
     return [
-        dict(item)
-        for item in design.get("elements") or []
-        if isinstance(item, Mapping)
+        dict(item) for item in design.get("elements") or [] if isinstance(item, Mapping)
     ]
 
 
@@ -174,11 +170,7 @@ def _control_state(element: Mapping[str, Any]) -> str:
     return str(
         element.get("controlState")
         or element.get("state")
-        or (
-            image_meta.get("state")
-            if isinstance(image_meta, Mapping)
-            else ""
-        )
+        or (image_meta.get("state") if isinstance(image_meta, Mapping) else "")
         or ""
     ).lower()
 
@@ -244,7 +236,9 @@ def _control_metrics(
     return {
         "status": (
             "pass"
-            if all(row["matched"] and row["value_ok"] and row["state_ok"] for row in rows)
+            if all(
+                row["matched"] and row["value_ok"] and row["state_ok"] for row in rows
+            )
             else "fail"
         ),
         "required_count": len(rows),
@@ -288,11 +282,7 @@ def _container_metrics(
             image_meta = candidate.get("imageMVP")
             role = str(
                 candidate.get("role")
-                or (
-                    image_meta.get("role")
-                    if isinstance(image_meta, Mapping)
-                    else ""
-                )
+                or (image_meta.get("role") if isinstance(image_meta, Mapping) else "")
             ).lower()
             iou = _iou(target_bbox, _element_bbox(candidate))
             score = (2 * int(role == target_role) + iou, iou)
@@ -352,16 +342,18 @@ def _table_metrics(
             )
         ]
         normalized_inside = {_table_text(item.get("text")) for item in inside}
-        header_matches = sum(_table_text(header) in normalized_inside for header in headers)
+        header_matches = sum(
+            _table_text(header) in normalized_inside for header in headers
+        )
         header_elements = [
-            item for item in inside if _table_text(item.get("text")) in {
-                _table_text(header) for header in headers
-            }
+            item
+            for item in inside
+            if _table_text(item.get("text"))
+            in {_table_text(header) for header in headers}
         ]
         if header_elements:
             header_boxes = [
-                _element_bbox(item) or [0, 0, 0, 0]
-                for item in header_elements
+                _element_bbox(item) or [0, 0, 0, 0] for item in header_elements
             ]
             header_top = min(box[1] for box in header_boxes)
             heights = sorted(box[3] for box in header_boxes if box[3] > 0)
@@ -393,9 +385,7 @@ def _table_metrics(
         matched_rows = 0
         for expected_row in table.get("rows") or []:
             tokens = [
-                _normalize(cell)
-                for cell in expected_row or []
-                if _normalize(cell)
+                _normalize(cell) for cell in expected_row or [] if _normalize(cell)
             ]
             required = min(2, len(tokens))
             matched = sum(
@@ -404,11 +394,7 @@ def _table_metrics(
             )
             if required and matched >= required:
                 matched_rows += 1
-        row_recall = (
-            matched_rows / expected_rows
-            if expected_rows
-            else 1.0
-        )
+        row_recall = matched_rows / expected_rows if expected_rows else 1.0
         rows.append(
             {
                 "name": str(table.get("name") or ""),
@@ -422,20 +408,15 @@ def _table_metrics(
         "status": (
             "pass"
             if all(
-                row["header_recall"] == 1.0 and row["row_recall"] == 1.0
-                for row in rows
+                row["header_recall"] == 1.0 and row["row_recall"] == 1.0 for row in rows
             )
             else "fail"
         ),
         "header_recall": (
-            sum(row["header_recall"] for row in rows) / len(rows)
-            if rows
-            else 1.0
+            sum(row["header_recall"] for row in rows) / len(rows) if rows else 1.0
         ),
         "row_recall": (
-            sum(row["row_recall"] for row in rows) / len(rows)
-            if rows
-            else 1.0
+            sum(row["row_recall"] for row in rows) / len(rows) if rows else 1.0
         ),
         "rows": rows,
     }
@@ -446,11 +427,7 @@ def _asset_kind(element: Mapping[str, Any]) -> str:
     return str(
         element.get("assetKind")
         or element.get("kind")
-        or (
-            image_meta.get("assetKind")
-            if isinstance(image_meta, Mapping)
-            else ""
-        )
+        or (image_meta.get("assetKind") if isinstance(image_meta, Mapping) else "")
         or "image"
     ).lower()
 
@@ -460,18 +437,18 @@ def _generated_flags(element: Mapping[str, Any]) -> tuple[bool, bool]:
     generated_meta = element.get("generatedApproximation")
     resolution = element.get("sourceResolution")
     display = (
-        resolution.get("display")
-        if isinstance(resolution, Mapping)
-        else {}
+        resolution.get("display") if isinstance(resolution, Mapping) else {}
     ) or {}
     identity = (
-        resolution.get("identity")
-        if isinstance(resolution, Mapping)
-        else {}
+        resolution.get("identity") if isinstance(resolution, Mapping) else {}
     ) or {}
     generated = bool(
         (image_meta.get("generated") if isinstance(image_meta, Mapping) else False)
-        or (generated_meta.get("generated") if isinstance(generated_meta, Mapping) else False)
+        or (
+            generated_meta.get("generated")
+            if isinstance(generated_meta, Mapping)
+            else False
+        )
         or (display.get("generated") if isinstance(display, Mapping) else False)
     )
     original = bool(
@@ -518,7 +495,14 @@ def _asset_metrics(
         best_iou = 0.0
         matched = False
         for candidate in candidates:
-            iou = _iou(target_bbox, _element_bbox(candidate))
+            identity = candidate.get("assetIdentity")
+            identity_bbox = (
+                _bbox(identity.get("bbox")) if isinstance(identity, Mapping) else None
+            )
+            iou = _iou(
+                target_bbox,
+                identity_bbox or _element_bbox(candidate),
+            )
             kind_ok = not target_kind or _asset_kind(candidate) == target_kind
             if kind_ok and iou >= minimum_iou:
                 best_iou = max(best_iou, iou)
@@ -610,7 +594,9 @@ def _readback_native_counts(
         actual_images = int(readback.get("image_fill_count") or 0)
     else:
         nodes = _flatten_nodes(readback)
-        actual_text = sum(str(node.get("type") or "").upper() == "TEXT" for node in nodes)
+        actual_text = sum(
+            str(node.get("type") or "").upper() == "TEXT" for node in nodes
+        )
         actual_images = 0
         for node in nodes:
             fills = node.get("fills")
@@ -780,13 +766,9 @@ def _visual_metrics(
     gray_reference = cv2.cvtColor(reference, cv2.COLOR_BGR2GRAY)
     gray_rendered = cv2.cvtColor(scored, cv2.COLOR_BGR2GRAY)
     grayscale_mae = float(
-        np.abs(
-            gray_rendered.astype(np.int16) - gray_reference.astype(np.int16)
-        ).mean()
+        np.abs(gray_rendered.astype(np.int16) - gray_reference.astype(np.int16)).mean()
     )
-    max_diff = np.abs(
-        scored.astype(np.int16) - reference.astype(np.int16)
-    ).max(axis=2)
+    max_diff = np.abs(scored.astype(np.int16) - reference.astype(np.int16)).max(axis=2)
     threshold = int((truth.get("visual_policy") or {}).get("bad_pixel_threshold") or 30)
     bad_ratio = float((max_diff > threshold).mean())
     background = _background_color(reference)
@@ -868,9 +850,7 @@ def evaluate_image_enrichment(
             blockers.append("content-coverage")
         if visual["grayscale_mae"] > float(policy.get("mae_max") or float("inf")):
             blockers.append("visual-mae")
-        if visual["bad_pixel_ratio"] > float(
-            policy.get("bad_pixel_ratio_max") or 1.0
-        ):
+        if visual["bad_pixel_ratio"] > float(policy.get("bad_pixel_ratio_max") or 1.0):
             blockers.append("bad-pixel-ratio")
         if not visual["size_match"]:
             blockers.append("fixed-canvas-size")
@@ -938,7 +918,9 @@ def write_image_enrichment_report(
     ]
     passed = sum(str(run.get("status") or "") == "pass" for run in normalized)
     failed = len(normalized) - passed
-    status = "pass" if normalized and failed == 0 else "mixed" if passed else "blocked-fail"
+    status = (
+        "pass" if normalized and failed == 0 else "mixed" if passed else "blocked-fail"
+    )
     report = {
         "schema_version": REPORT_SCHEMA_VERSION,
         "status": status,

@@ -165,6 +165,50 @@ class ImageContractTests(unittest.TestCase):
         self.assertFalse(image["sourceResolution"]["display"]["generated"])
         self.assertFalse(image["sourceResolution"]["identity"]["original"])
 
+    def test_logo_display_includes_full_white_brand_container(self) -> None:
+        image_path = Path(
+            "tests/fixtures/image_to_slice_benchmark_2026-11-02/"
+            "IMG-FLEXWEAVER-ADMIN.png"
+        )
+        graph = {
+            "image": str(image_path),
+            "image_w": 1920,
+            "image_h": 826,
+            "route": "grounding",
+            "containers": [],
+            "elements": [
+                {
+                    "id": 1,
+                    "bbox": [15, 16, 215, 48],
+                    "type": "image",
+                    "text": "",
+                    "assetName": "tetuo_auto_logo",
+                    "assetKind": "logo",
+                    "visibleCrop": {
+                        "status": "available",
+                        "display_box": [17, 18, 194, 30],
+                        "source_rect": [17, 18, 194, 30],
+                        "requested_bbox": [15, 16, 215, 48],
+                    },
+                }
+            ],
+            "imageEnrichment": {"mode": "apply"},
+            "provenance": {"route": "grounding"},
+        }
+
+        design = build_image_design(graph, inspect_image_reference(image_path))
+
+        logo = next(
+            element
+            for element in design["elements"]
+            if element.get("assetName") == "tetuo_auto_logo"
+        )
+        self.assertEqual(
+            [logo["x"], logo["y"], logo["width"], logo["height"]],
+            [12, 11, 206, 50],
+        )
+        self.assertEqual(logo["assetIdentity"]["bbox"], [17, 18, 194, 30])
+
     def test_image_ir_keeps_candidate_fields_and_fixed_flow(self) -> None:
         with tempfile.TemporaryDirectory() as raw_dir:
             path, graph, strategy = _fixture(Path(raw_dir))
@@ -883,6 +927,497 @@ class ImageContractTests(unittest.TestCase):
             design["_meta"]["imageMVP"]["referenceUnderlays"][0]["name"],
             "full_page_underlay",
         )
+
+    def test_enriched_text_uses_script_specific_fonts_and_line_height(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_dir:
+            path = Path(raw_dir) / "fonts.png"
+            Image.new("RGB", (400, 200), "#ffffff").save(path)
+            graph = {
+                "image": str(path),
+                "image_w": 400,
+                "image_h": 200,
+                "route": "grounding",
+                "containers": [],
+                "elements": [
+                    {
+                        "id": 1,
+                        "bbox": [20, 20, 120, 24],
+                        "type": "text",
+                        "text": "自动备份",
+                    },
+                    {
+                        "id": 2,
+                        "bbox": [20, 60, 120, 24],
+                        "type": "text",
+                        "text": "auto_backup",
+                    },
+                ],
+                "imageEnrichment": {"mode": "apply"},
+                "provenance": {"route": "grounding"},
+            }
+
+            design = build_image_design(graph, inspect_image_reference(path))
+
+        by_text = {
+            element["text"]: element
+            for element in design["elements"]
+            if element["type"] == "text"
+        }
+        self.assertIn("Noto Sans SC", by_text["自动备份"]["style"]["fontFamily"])
+        self.assertIn("Arimo", by_text["auto_backup"]["style"]["fontFamily"])
+        self.assertGreaterEqual(by_text["自动备份"]["style"]["lineHeight"], 24)
+
+    def test_enriched_text_uses_visible_ink_origin(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_dir:
+            path = Path(raw_dir) / "ink.png"
+            image = Image.new("RGB", (320, 120), "#ffffff")
+            draw = ImageDraw.Draw(image)
+            draw.text((42, 30), "Backup", fill="#333333")
+            image.save(path)
+            graph = {
+                "image": str(path),
+                "image_w": 320,
+                "image_h": 120,
+                "route": "grounding",
+                "containers": [],
+                "elements": [
+                    {
+                        "id": 1,
+                        "bbox": [34, 20, 160, 24],
+                        "type": "text",
+                        "text": "Backup",
+                    }
+                ],
+                "imageEnrichment": {"mode": "apply"},
+                "provenance": {"route": "grounding"},
+            }
+
+            design = build_image_design(graph, inspect_image_reference(path))
+
+        text = next(
+            element for element in design["elements"] if element.get("text") == "Backup"
+        )
+        self.assertGreaterEqual(text["x"], 42)
+
+    def test_enriched_status_text_recovers_green_ink_position(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_dir:
+            path = Path(raw_dir) / "status.png"
+            image = Image.new("RGB", (400, 260), "#ffffff")
+            draw = ImageDraw.Draw(image)
+            draw.text((120, 60), "SUCCESS", fill="#008000")
+            image.save(path)
+            graph = {
+                "image": str(path),
+                "image_w": 400,
+                "image_h": 260,
+                "route": "grounding",
+                "containers": [],
+                "elements": [
+                    {
+                        "id": 1,
+                        "bbox": [80, 120, 120, 24],
+                        "type": "text",
+                        "text": "SUCCESS",
+                    }
+                ],
+                "imageEnrichment": {"mode": "apply"},
+                "provenance": {"route": "grounding"},
+            }
+
+            design = build_image_design(graph, inspect_image_reference(path))
+
+        text = next(
+            element
+            for element in design["elements"]
+            if element.get("text") == "SUCCESS"
+        )
+        self.assertLess(text["y"], 80)
+        self.assertLessEqual(text["style"]["fontSize"], 16)
+        red, green, blue = _rgb(text["style"]["textColor"])
+        self.assertGreater(green, red)
+        self.assertGreater(green, blue)
+
+    def test_enriched_design_preserves_container_child_hierarchy(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_dir:
+            path = Path(raw_dir) / "hierarchy.png"
+            Image.new("RGB", (400, 300), "#ffffff").save(path)
+            graph = {
+                "image": str(path),
+                "image_w": 400,
+                "image_h": 300,
+                "route": "grounding",
+                "containers": [
+                    {
+                        "id": "C1",
+                        "bbox": [0, 0, 400, 300],
+                        "role": "page",
+                    },
+                    {
+                        "id": "C2",
+                        "bbox": [20, 20, 180, 100],
+                        "role": "panel",
+                        "parent": "C1",
+                    },
+                ],
+                "elements": [
+                    {
+                        "id": 1,
+                        "bbox": [30, 30, 100, 24],
+                        "type": "text",
+                        "text": "Inside",
+                        "container": "C2",
+                    },
+                    {
+                        "id": 2,
+                        "bbox": [30, 200, 100, 24],
+                        "type": "text",
+                        "text": "Sibling",
+                        "container": "C1",
+                    },
+                ],
+                "imageEnrichment": {"mode": "apply"},
+                "provenance": {"route": "grounding"},
+            }
+
+            design = build_image_design(graph, inspect_image_reference(path))
+
+        by_id = {element["id"]: element for element in design["elements"]}
+        self.assertIn("C2", {item["id"] for item in by_id["C1"]["layoutChildren"]})
+        self.assertIn("2", {item["id"] for item in by_id["C1"]["layoutChildren"]})
+        self.assertEqual(
+            [item["id"] for item in by_id["C2"]["layoutChildren"]],
+            ["1"],
+        )
+
+    def test_enriched_breadcrumb_uses_main_content_header_line(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_dir:
+            path = Path(raw_dir) / "breadcrumb.png"
+            Image.new("RGB", (320, 140), "#ffffff").save(path)
+            graph = {
+                "image": str(path),
+                "image_w": 320,
+                "image_h": 140,
+                "route": "grounding",
+                "containers": [
+                    {
+                        "id": "C1",
+                        "bbox": [0, 0, 320, 80],
+                        "role": "main-content",
+                    }
+                ],
+                "elements": [
+                    {
+                        "id": 1,
+                        "bbox": [30, 50, 120, 24],
+                        "type": "text",
+                        "text": "自动备份",
+                    }
+                ],
+                "imageEnrichment": {"mode": "apply"},
+                "provenance": {"route": "grounding"},
+            }
+
+            design = build_image_design(graph, inspect_image_reference(path))
+
+        text = next(
+            element
+            for element in design["elements"]
+            if element.get("text") == "自动备份"
+        )
+        self.assertEqual(text["x"], 46)
+        self.assertEqual(text["y"], 17)
+        self.assertEqual(text["width"], 80)
+
+    def test_enriched_design_recovers_horizontal_surface_band(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_dir:
+            path = Path(raw_dir) / "band.png"
+            image = Image.new("RGB", (400, 200), "#ffffff")
+            draw = ImageDraw.Draw(image)
+            draw.rectangle((0, 40, 399, 89), fill="#eeeeee")
+            draw.text((20, 55), "Section", fill="#333333")
+            image.save(path)
+            graph = {
+                "image": str(path),
+                "image_w": 400,
+                "image_h": 200,
+                "route": "grounding",
+                "containers": [
+                    {
+                        "id": "C1",
+                        "bbox": [0, 0, 400, 200],
+                        "role": "main-content",
+                    }
+                ],
+                "elements": [
+                    {
+                        "id": 1,
+                        "bbox": [20, 55, 80, 20],
+                        "type": "text",
+                        "text": "Section",
+                    }
+                ],
+                "imageEnrichment": {"mode": "apply"},
+                "provenance": {"route": "grounding"},
+            }
+
+            design = build_image_design(graph, inspect_image_reference(path))
+
+        bands = [
+            element
+            for element in design["elements"]
+            if element.get("role") == "surface-band"
+        ]
+        self.assertEqual(len(bands), 1)
+        self.assertEqual(bands[0]["y"], 40)
+        self.assertEqual(bands[0]["height"], 50)
+        self.assertEqual(bands[0]["style"]["fillColor"].lower(), "#eeeeee")
+
+    def test_enriched_design_recovers_table_search_field(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_dir:
+            path = Path(raw_dir) / "search.png"
+            image = Image.new("RGB", (420, 180), "#ffffff")
+            draw = ImageDraw.Draw(image)
+            draw.rectangle((171, 51, 337, 86), outline="#c2cad8")
+            draw.text((187, 61), "表内搜索", fill="#999999")
+            image.save(path)
+            graph = {
+                "image": str(path),
+                "image_w": 420,
+                "image_h": 180,
+                "route": "grounding",
+                "containers": [
+                    {
+                        "id": "C1",
+                        "bbox": [0, 0, 420, 180],
+                        "role": "main-content",
+                    }
+                ],
+                "elements": [
+                    {
+                        "id": 1,
+                        "bbox": [187, 61, 62, 20],
+                        "type": "text",
+                        "text": "表内搜索",
+                    }
+                ],
+                "imageEnrichment": {"mode": "apply"},
+                "provenance": {"route": "grounding"},
+            }
+
+            design = build_image_design(graph, inspect_image_reference(path))
+
+        search = next(
+            element
+            for element in design["elements"]
+            if element.get("id") == "recovered-table-search"
+        )
+        self.assertEqual(search["type"], "input")
+        self.assertEqual(
+            [search["x"], search["y"], search["width"], search["height"]],
+            [171, 51, 168, 36],
+        )
+        self.assertEqual(search["controlValue"], "")
+
+    def test_enriched_design_keeps_one_owner_for_overlapping_same_text(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_dir:
+            path = Path(raw_dir) / "owners.png"
+            Image.new("RGB", (400, 200), "#ffffff").save(path)
+            graph = {
+                "image": str(path),
+                "image_w": 400,
+                "image_h": 200,
+                "route": "grounding",
+                "containers": [],
+                "elements": [
+                    {
+                        "id": 1,
+                        "bbox": [20, 20, 240, 40],
+                        "type": "button",
+                        "text": "0 30 3 * * ?",
+                    },
+                    {
+                        "id": 2,
+                        "bbox": [20, 20, 240, 40],
+                        "type": "input",
+                        "text": "0 30 3 * * ?",
+                        "controlType": "input",
+                        "controlValue": "0 30 3 * * ?",
+                    },
+                    {
+                        "id": 3,
+                        "bbox": [20, 80, 80, 24],
+                        "type": "text",
+                        "text": "auto",
+                    },
+                    {
+                        "id": 4,
+                        "bbox": [20, 120, 80, 24],
+                        "type": "text",
+                        "text": "auto",
+                    },
+                ],
+                "imageEnrichment": {"mode": "apply"},
+                "provenance": {"route": "grounding"},
+            }
+
+            design = build_image_design(graph, inspect_image_reference(path))
+
+        auto = [
+            element
+            for element in design["elements"]
+            if (element.get("controlValue") or element.get("text")) == "auto"
+        ]
+        schedule = [
+            element
+            for element in design["elements"]
+            if (element.get("controlValue") or element.get("text")) == "0 30 3 * * ?"
+        ]
+        self.assertEqual([element["type"] for element in schedule], ["input"])
+        self.assertEqual(len(auto), 2)
+
+    def test_enriched_input_places_value_from_text_box_origin(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_dir:
+            path = Path(raw_dir) / "input.png"
+            Image.new("RGB", (320, 120), "#ffffff").save(path)
+            graph = {
+                "image": str(path),
+                "image_w": 320,
+                "image_h": 120,
+                "route": "grounding",
+                "containers": [],
+                "elements": [
+                    {
+                        "id": 1,
+                        "bbox": [20, 20, 200, 40],
+                        "type": "input",
+                        "text": "",
+                        "controlType": "input",
+                        "controlValue": "auto_backup",
+                    },
+                    {
+                        "id": 2,
+                        "bbox": [32, 30, 98, 20],
+                        "type": "text",
+                        "text": "auto_backup",
+                    },
+                ],
+                "imageEnrichment": {"mode": "apply"},
+                "provenance": {"route": "grounding"},
+            }
+
+            design = build_image_design(graph, inspect_image_reference(path))
+
+        inputs = [
+            element for element in design["elements"] if element.get("type") == "input"
+        ]
+        self.assertEqual(len(inputs), 1)
+        self.assertEqual(inputs[0]["textBox"], [33, 31, 176, 20])
+
+    def test_enriched_input_samples_visible_border_color(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_dir:
+            path = Path(raw_dir) / "border.png"
+            image = Image.new("RGB", (320, 120), "#ffffff")
+            draw = ImageDraw.Draw(image)
+            draw.rectangle((20, 20, 219, 59), fill="#ffffff", outline="#c2cad8")
+            image.save(path)
+            graph = {
+                "image": str(path),
+                "image_w": 320,
+                "image_h": 120,
+                "route": "grounding",
+                "containers": [],
+                "elements": [
+                    {
+                        "id": 1,
+                        "bbox": [20, 20, 200, 40],
+                        "type": "input",
+                        "text": "",
+                        "controlType": "input",
+                        "controlValue": "Value",
+                    }
+                ],
+                "imageEnrichment": {"mode": "apply"},
+                "provenance": {"route": "grounding"},
+            }
+
+            design = build_image_design(graph, inspect_image_reference(path))
+
+        text_input = next(
+            element for element in design["elements"] if element.get("type") == "input"
+        )
+        self.assertEqual(text_input["style"]["borderColor"], "#c2cad8")
+
+    def test_enriched_input_uses_visible_value_ink_box(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_dir:
+            path = Path(raw_dir) / "value.png"
+            image = Image.new("RGB", (320, 120), "#ffffff")
+            draw = ImageDraw.Draw(image)
+            draw.rectangle((20, 20, 219, 59), fill="#ffffff", outline="#c2cad8")
+            draw.text((42, 30), "Value", fill="#333333")
+            image.save(path)
+            graph = {
+                "image": str(path),
+                "image_w": 320,
+                "image_h": 120,
+                "route": "grounding",
+                "containers": [],
+                "elements": [
+                    {
+                        "id": 1,
+                        "bbox": [20, 20, 200, 40],
+                        "type": "input",
+                        "text": "",
+                        "controlType": "input",
+                        "controlValue": "Value",
+                    }
+                ],
+                "imageEnrichment": {"mode": "apply"},
+                "provenance": {"route": "grounding"},
+            }
+
+            design = build_image_design(graph, inspect_image_reference(path))
+
+        text_input = next(
+            element for element in design["elements"] if element.get("type") == "input"
+        )
+        self.assertTrue(40 <= text_input["textBox"][0] <= 43)
+        self.assertTrue(27 <= text_input["textBox"][1] <= 30)
+
+    def test_enriched_input_owns_near_duplicate_ocr_text(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_dir:
+            path = Path(raw_dir) / "textarea.png"
+            Image.new("RGB", (480, 160), "#ffffff").save(path)
+            graph = {
+                "image": str(path),
+                "image_w": 480,
+                "image_h": 160,
+                "route": "grounding",
+                "containers": [],
+                "elements": [
+                    {
+                        "id": 1,
+                        "bbox": [20, 20, 400, 80],
+                        "type": "input",
+                        "text": "",
+                        "controlType": "textarea",
+                        "controlValue": "2023年12月16日：修改成凌晨3：30执行备份",
+                    },
+                    {
+                        "id": 2,
+                        "bbox": [32, 29, 340, 24],
+                        "type": "text",
+                        "text": "2023年12月16日: 修改成麦晨3: 30执行备份",
+                    },
+                ],
+                "imageEnrichment": {"mode": "apply"},
+                "provenance": {"route": "grounding"},
+            }
+
+            design = build_image_design(graph, inspect_image_reference(path))
+
+        texts = [element for element in design["elements"] if element.get("text")]
+        self.assertEqual([element["type"] for element in texts], ["input"])
+        self.assertEqual(texts[0]["textBox"], [33, 30, 376, 24])
 
 
 if __name__ == "__main__":

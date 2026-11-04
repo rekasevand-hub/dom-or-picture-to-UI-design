@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import itertools
 import math
+from collections.abc import Mapping
 
 from abc import ABC, abstractmethod
 from typing import Any
@@ -92,11 +93,7 @@ def _control_text_anchor(
     has_run_box: bool,
     has_measured_box: bool,
 ) -> str:
-    return (
-        "start"
-        if has_text_box or has_run_box or has_measured_box
-        else "middle"
-    )
+    return "start" if has_text_box or has_run_box or has_measured_box else "middle"
 
 
 def _single_line_text(spec: dict[str, Any]) -> bool:
@@ -139,6 +136,7 @@ class PrototypeAdapter(ABC):
     # <g clip-path> 自己处理、保持扁平（False）；Figma 只有 frame 能裁子元素，
     # 必须真嵌套（True）。False 时 clip 被忽略，产物与老版本逐字节一致。
     supports_clip_frames = False
+    supports_vectors = False
     # 是否吃 `design["pages"]`（多页；Axure = 多页面，Figma / SVG 各自实现）。
     supports_pages = False
 
@@ -184,6 +182,12 @@ class PrototypeAdapter(ABC):
     ) -> str | None:
         """创建图片元素（用真实图像填充）。"""
         ...
+
+    def create_vector(
+        self, spec: dict[str, Any], parent_id: str | None = None
+    ) -> str | None:
+        """Create a native vector node when the output adapter supports it."""
+        raise NotImplementedError
 
     @abstractmethod
     def flush(self) -> None:
@@ -337,7 +341,9 @@ class PrototypeAdapter(ABC):
                         child_owner[member] = idx
                     continue
 
-            if spec.get("imageBase64"):
+            if spec.get("vectorSvg") and self.supports_vectors:
+                self.create_vector(spec_out, parent_id=parent_id)
+            elif spec.get("imageBase64"):
                 # 透明浮层容器按原截图像素回填（如 fixed wrapper 的整列底），
                 # 以图片形式画，保证它盖在底下内容之上时观感与截图一致。
                 self.create_image(spec_out, parent_id=parent_id)
@@ -350,7 +356,9 @@ class PrototypeAdapter(ABC):
                     self._note_backing(r, spec.get("fillColor"), chrome, page_rect)
                     self.create_rectangle(spec_out, parent_id=parent_id)
             elif el_type in ("image", "avatar"):
-                if spec.get("imageBase64"):
+                if spec.get("vectorSvg") and self.supports_vectors:
+                    self.create_vector(spec_out, parent_id=parent_id)
+                elif spec.get("imageBase64"):
                     self.create_image(spec_out, parent_id=parent_id)
                 else:
                     # Missing display payloads stay editable/honest placeholders;
@@ -431,18 +439,12 @@ class PrototypeAdapter(ABC):
                 measured_box = None
                 if tbox is not None:
                     text_x, text_y, text_h = tbox[0], tbox[1], tbox[3]
-                elif (
-                    measured_box := _measured_control_text_box(spec)
-                ) is not None:
+                elif (measured_box := _measured_control_text_box(spec)) is not None:
                     text_x = (
-                        spec_out.get("x", 0)
-                        + measured_box[0]
-                        - int(spec.get("x", 0))
+                        spec_out.get("x", 0) + measured_box[0] - int(spec.get("x", 0))
                     )
                     text_y = (
-                        spec_out.get("y", 0)
-                        + measured_box[1]
-                        - int(spec.get("y", 0))
+                        spec_out.get("y", 0) + measured_box[1] - int(spec.get("y", 0))
                     )
                     text_h = measured_box[2]
                 elif run_box:
@@ -487,7 +489,9 @@ class PrototypeAdapter(ABC):
                 single_line = _single_line_text({**spec, **style})
                 if single_line:
                     text_spec["singleLine"] = True
-                elif text_spec.get("richRuns") or text_spec.get("whiteSpace") == "nowrap":
+                elif (
+                    text_spec.get("richRuns") or text_spec.get("whiteSpace") == "nowrap"
+                ):
                     text_spec["boundedText"] = True
                 lines = None if (tbox is not None or run_box) else wrap_for_spec(spec)
                 if single_line:
@@ -517,6 +521,8 @@ class PrototypeAdapter(ABC):
                 done_rect = self._element_rect(elements[done]) or (0, 0, 0, 0)
                 if done_plan.get("layout") is None:
                     continue
+                if str(done_plan["layout"].get("mode") or "").upper() == "NONE":
+                    continue
                 # 子项坐标不再下发：插件在打开 layoutMode 前先快照**每个**子节点当前的
                 # x/y，打开后原样写回（全量复位）。快照永远等于扁平渲染时的落点 ——
                 # 交给 Figma 的 Auto Layout 流式摆放会叠加成员自己的 x/y，整组漂一个
@@ -540,11 +546,7 @@ class PrototypeAdapter(ABC):
         免得两边字体度量不同、折出来的行数对不上。
         """
         measured_lines = spec.get("measuredLines")
-        if (
-            spec.get("richRuns")
-            and _single_line_text(spec)
-            and not measured_lines
-        ):
+        if spec.get("richRuns") and _single_line_text(spec) and not measured_lines:
             return spec
         if isinstance(measured_lines, (list, tuple)) and measured_lines:
             layout = layout_text(spec, measured_lines=measured_lines)
@@ -557,7 +559,7 @@ class PrototypeAdapter(ABC):
                 "lines": fitted_lines,
                 "lineBoxes": [
                     list(box)
-                    for box in layout.get("lineBoxes", [])[:len(fitted_lines)]
+                    for box in layout.get("lineBoxes", [])[: len(fitted_lines)]
                 ],
                 "lineHeight": int(layout["lineHeight"]),
                 "textAlign": str(layout["textAlign"]),
@@ -983,10 +985,16 @@ def resolve_frames(
     for i, el in enumerate(elements):
         layout = el.get("layout")
         children = el.get("layoutChildren")
+        minimum_children = (
+            1
+            if isinstance(layout, dict)
+            and str(layout.get("mode") or "").upper() == "NONE"
+            else 2
+        )
         if (
             (layout is not None and not isinstance(layout, dict))
             or not isinstance(children, list)
-            or len(children) < 2
+            or len(children) < minimum_children
         ):
             continue
         if not _single_node(el):

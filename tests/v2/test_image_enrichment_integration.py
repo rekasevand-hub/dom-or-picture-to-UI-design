@@ -156,6 +156,52 @@ def test_apply_mode_adds_visible_asset_and_background_candidate():
     assert background["cleanCandidate"]["generated"] is False
 
 
+def test_sparse_structured_table_call_gets_structure_supplement():
+    structured = _raw()
+    structured["containers"] = []
+    structured["elements"] = [
+        {"bbox": [10, 5, 80, 12], "type": "text", "text": "Title"}
+    ]
+    structured["tables"] = [
+        {
+            "name": "results",
+            "bbox": [0, 0, 200, 100],
+            "header_texts": ["Name"],
+            "rows": [["Ada"]],
+        }
+    ]
+    with tempfile.TemporaryDirectory() as raw_dir:
+        root = Path(raw_dir)
+        image = Image.new("RGB", (200, 100), "white")
+        path = root / "page.png"
+        image.save(path)
+        backend = _Backend(structured)
+        backend.ground = lambda _path, _w, _h: {
+            "containers": [{"bbox": [0, 0, 200, 30], "role": "banner"}],
+            "elements": [
+                {"bbox": [10, 5, 80, 12], "type": "text", "text": "Title"},
+                {"bbox": [10, 40, 80, 12], "type": "text", "text": "Value"},
+            ],
+        }
+        with patch(
+            "src.app.services.structure.providers.grounding._default_backend",
+            return_value=backend,
+        ):
+            graph = GroundingProvider(_config("analyze")).run(
+                ProviderContext(
+                    image_path=str(path),
+                    image_w=200,
+                    image_h=100,
+                    route="grounding",
+                    output_dir=str(root / "out"),
+                )
+            )
+
+    assert [item["text"] for item in graph["elements"]] == ["Title", "Value"]
+    assert graph["containers"][0]["role"] == "banner"
+    assert graph["tables"][0]["rows"] == [["Ada"]]
+
+
 def test_apply_mode_fails_closed_and_marks_full_screenshot_underlay():
     raw = _raw()
     raw["assets"] = [

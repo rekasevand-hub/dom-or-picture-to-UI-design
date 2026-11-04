@@ -19,6 +19,9 @@ from src.app.services.evidence.image_enrichment_quality import (  # noqa: E402
     evaluate_image_enrichment,
     write_image_enrichment_report,
 )
+from src.app.services.evidence.visual_scene_quality import (  # noqa: E402
+    evaluate_visual_scene,
+)
 from src.app.services.structure.image_enrichment.contracts import (  # noqa: E402
     validate_image_truth,
 )
@@ -105,9 +108,7 @@ def _run_one(
         reason = "reuse-existing: missing PageGraph/DesignSpec artifacts"
         if error_path.is_file():
             try:
-                reason = str(
-                    _json(error_path).get("error") or reason
-                )
+                reason = str(_json(error_path).get("error") or reason)
             except (OSError, ValueError):
                 pass
         return _blocked_run(
@@ -117,11 +118,7 @@ def _run_one(
             run_dir=run_dir,
         )
     try:
-        if not (
-            reuse_existing
-            and design_path.is_file()
-            and graph_path.is_file()
-        ):
+        if not (reuse_existing and design_path.is_file() and graph_path.is_file()):
             base = load_config()
             if not base.vision_api_key:
                 return _blocked_run(
@@ -158,21 +155,35 @@ def _run_one(
                 device_scale_factor=1,
             )
         readback_path = run_dir / "readback.json"
-        readback = _json(readback_path) if readback_path.is_file() else {
-            "status": "unavailable",
-            "reason": "No Figma readback was supplied for this acceptance run.",
-        }
+        readback = (
+            _json(readback_path)
+            if readback_path.is_file()
+            else {
+                "status": "unavailable",
+                "reason": "No Figma readback was supplied for this acceptance run.",
+            }
+        )
         evaluation = evaluate_image_enrichment(
             truth,
             design,
             readback,
             render_path,
         )
+        visual_scene = evaluate_visual_scene(
+            design,
+            render_path,
+            image_path,
+        )
+        if visual_scene["status"] != "pass":
+            evaluation["status"] = "blocked-fail"
+            evaluation["blockers"] = [
+                *evaluation["blockers"],
+                *[f"visual:{blocker}" for blocker in visual_scene["blockers"]],
+            ]
+        evaluation["visual_scene"] = visual_scene
         tiling = (graph.get("provenance") or {}).get("tiling") or {}
         calls = len(tiling.get("tiles") or []) or 1
-        generated_count = int(
-            evaluation["metrics"].get("generated_asset_count") or 0
-        )
+        generated_count = int(evaluation["metrics"].get("generated_asset_count") or 0)
         latency_ms = (time.perf_counter() - started) * 1000
         result = {
             **evaluation,
@@ -225,9 +236,7 @@ def run_acceptance(
     output = Path(output)
     manifest = _json(manifest_path)
     fixtures_root = manifest_path.parent
-    samples = [
-        item for item in manifest.get("samples") or [] if isinstance(item, dict)
-    ]
+    samples = [item for item in manifest.get("samples") or [] if isinstance(item, dict)]
     runs = []
     for sample in samples:
         sample_id = str(sample.get("id") or "")

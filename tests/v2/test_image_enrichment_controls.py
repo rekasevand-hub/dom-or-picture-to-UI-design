@@ -130,6 +130,38 @@ def test_control_fields_survive_design_mapping(tmp_path):
     assert mapped["auto"]["controlState"] == "disabled"
 
 
+def test_control_recovery_uses_raw_ocr_observation_geometry(tmp_path):
+    image_path = tmp_path / "ocr-control.png"
+    _control_image(image_path)
+    graph = _control_graph(image_path)
+    graph["elements"] = [
+        {
+            "id": 1,
+            "bbox": [104, 112, 205, 29],
+            "type": "input",
+            "controlType": "input",
+        }
+    ]
+
+    recovered, report = recover_visible_controls(
+        graph,
+        image_path,
+        add_from_assets=False,
+        text_observations=[
+            {
+                "text": "auto_backup",
+                "bbox": [112, 86, 120, 20],
+                "confidence": 0.99,
+            }
+        ],
+    )
+
+    field = recovered["elements"][0]
+    assert field["bbox"] == [99, 79, 202, 34]
+    assert field["controlValue"] == "auto_backup"
+    assert report["snapped_count"] == 1
+
+
 def test_design_maps_late_recovered_text_into_control_value(tmp_path):
     image_path = tmp_path / "late-text.png"
     Image.new("RGB", (400, 160), "#ffffff").save(image_path)

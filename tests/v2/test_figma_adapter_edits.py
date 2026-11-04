@@ -49,6 +49,35 @@ class _NativeRenderAdapter(_RecordingAdapter):
         pass
 
 
+class _LayoutRenderAdapter(_RecordingAdapter):
+    def __init__(self) -> None:
+        super().__init__()
+        self._next_id = 0
+
+    def _node_id(self) -> str:
+        self._next_id += 1
+        return f"node:{self._next_id}"
+
+    def create_frame(self, spec):
+        self.calls.append(("create_frame", dict(spec)))
+        return self._node_id()
+
+    def create_rectangle(self, spec, parent_id=None):
+        self.calls.append(("create_rectangle", dict(spec), parent_id))
+        return self._node_id()
+
+    def create_text(self, spec, parent_id=None):
+        self.calls.append(("create_text", dict(spec), parent_id))
+        return self._node_id()
+
+    def set_autolayout(self, node_id, payload):
+        self.calls.append(("set_autolayout", dict(payload)))
+        return {"applied": True}
+
+    def flush(self) -> None:
+        pass
+
+
 class FigmaAdapterEditTests(unittest.TestCase):
     def test_multiline_rich_text_falls_back_to_wrapped_plain_lines(self) -> None:
         adapter = _TextRenderAdapter()
@@ -88,12 +117,50 @@ class FigmaAdapterEditTests(unittest.TestCase):
         adapter.render_design(design)
 
         text_spec = next(
-            params for action, params, *_rest in adapter.calls if action == "create_text"
+            params
+            for action, params, *_rest in adapter.calls
+            if action == "create_text"
         )
         self.assertEqual(len(text_spec["lines"]), 2)
         self.assertTrue(text_spec["lines"][-1].endswith("…"))
         self.assertFalse(text_spec.get("richRuns"))
         self.assertTrue(text_spec["boundedText"])
+
+    def test_none_layout_frame_does_not_send_autolayout_command(self) -> None:
+        adapter = _LayoutRenderAdapter()
+        design = {
+            "canvas": {"width": 200, "height": 120, "background": "#ffffff"},
+            "elements": [
+                {
+                    "id": "parent",
+                    "type": "container",
+                    "x": 10,
+                    "y": 10,
+                    "width": 120,
+                    "height": 60,
+                    "text": "",
+                    "style": {"fillColor": "#ffffff"},
+                    "layout": {"mode": "NONE", "itemSpacing": 0},
+                    "layoutChildren": [{"id": "child"}],
+                },
+                {
+                    "id": "child",
+                    "type": "text",
+                    "x": 16,
+                    "y": 16,
+                    "width": 80,
+                    "height": 20,
+                    "text": "Child",
+                    "style": {"fontSize": 14, "textColor": "#333333"},
+                },
+            ],
+        }
+
+        adapter.render_design(design)
+
+        self.assertFalse(
+            any(action == "set_autolayout" for action, *_rest in adapter.calls)
+        )
 
     def test_multi_run_single_line_keeps_element_origin(self) -> None:
         adapter = _TextRenderAdapter()
@@ -136,7 +203,9 @@ class FigmaAdapterEditTests(unittest.TestCase):
         adapter.render_design(design)
 
         text_spec = next(
-            params for action, params, *_rest in adapter.calls if action == "create_text"
+            params
+            for action, params, *_rest in adapter.calls
+            if action == "create_text"
         )
         self.assertEqual(text_spec["x"], 1361)
         self.assertEqual(text_spec["y"], 15)
@@ -183,7 +252,9 @@ class FigmaAdapterEditTests(unittest.TestCase):
         adapter.render_design(design)
 
         text_spec = next(
-            params for action, params, *_rest in adapter.calls if action == "create_text"
+            params
+            for action, params, *_rest in adapter.calls
+            if action == "create_text"
         )
         self.assertEqual(text_spec["x"], 96)
         self.assertEqual(text_spec["y"], 156)
@@ -502,8 +573,12 @@ class FigmaAdapterEditTests(unittest.TestCase):
 
         adapter.render_design(design)
 
-        text_calls = [params for action, params in adapter.calls if action == "create_text"]
-        image_calls = [params for action, params in adapter.calls if action == "create_image"]
+        text_calls = [
+            params for action, params in adapter.calls if action == "create_text"
+        ]
+        image_calls = [
+            params for action, params in adapter.calls if action == "create_image"
+        ]
         self.assertEqual(text_calls[0]["text"], "Native title")
         self.assertEqual(image_calls[0]["imageBase64"], "aW1hZ2UtYnl0ZXM=")
         report = adapter.native_render_report()
@@ -729,7 +804,7 @@ class FigmaAdapterEditTests(unittest.TestCase):
                     {
                         "type": "response",
                         "requestId": self.request["requestId"],
-                        "error": ("BRIDGE_WRITE_BACKPRESSURE: " "write queue is full"),
+                        "error": ("BRIDGE_WRITE_BACKPRESSURE: write queue is full"),
                         "code": "BRIDGE_WRITE_BACKPRESSURE",
                         "outcome": "not-applied",
                         "retryAfterMs": 37,
