@@ -456,7 +456,7 @@ git commit -m "feat: add crop based grounding repair"
 - Consumes: Tasks 1-6.
 - Produces artifacts: `09_evidence_bundle.json`, `10_content_inventory.json`, `10_geometry_manifest.json`, `11_scene_plan.json`, `13_fidelity_report.json`, and `14_repair_history.json`.
 
-- [ ] **Step 1: Write failing integration tests**
+- [x] **Step 1: Write failing integration tests**
 
 ```python
 def test_high_fidelity_mode_writes_plan_and_reports(tmp_path, monkeypatch):
@@ -485,23 +485,23 @@ def test_high_fidelity_off_preserves_legacy_artifacts(tmp_path):
     assert "11_scene_plan.json" not in names
 ```
 
-- [ ] **Step 2: Run integration tests and verify failure**
+- [x] **Step 2: Run integration tests and verify failure**
 
 Run: `C:\Users\lzq\.conda\envs\omni\python.exe -m pytest tests/v2/test_grounding_fidelity_integration.py -q`
 
 Expected: FAIL because high-fidelity orchestration is not wired.
 
-- [ ] **Step 3: Wire the bounded controller into image Grounding**
+- [x] **Step 3: Wire the bounded controller into image Grounding**
 
 Build the plan before DesignSpec when mode is `high`. Keep the existing PageGraph path when mode is `off`. Persist every retry, accepted patch, rejected patch, and rollback.
 
-- [ ] **Step 4: Run integration tests**
+- [x] **Step 4: Run integration tests**
 
 Run: `C:\Users\lzq\.conda\envs\omni\python.exe -m pytest tests/v2/test_grounding_fidelity_integration.py -q`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/app/agents/precise_agent.py tests/v2/test_grounding_fidelity_integration.py

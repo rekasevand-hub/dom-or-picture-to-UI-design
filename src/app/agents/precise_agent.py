@@ -20,6 +20,14 @@ from src.app.services.structure.image_contract import (
     recover_image_region_candidates,
     recover_image_text_candidates,
 )
+from src.app.services.structure.fidelity import (
+    apply_scene_plan,
+    build_content_inventory,
+    build_evidence_bundle,
+    build_geometry_manifest,
+    build_scene_plan,
+)
+from src.app.services.structure.fidelity.contracts import FIDELITY_SCHEMA_VERSION
 from src.app.services.structure.router import (
     grounding_fallback_reason,
     route_order,
@@ -111,6 +119,156 @@ def _has_text_elements(design: dict) -> bool:
             if el.get("type") == "text" and str(el.get("text") or "").strip():
                 return True
     return False
+
+
+def _write_json(path: Path, value: object) -> None:
+    path.write_text(
+        json.dumps(value, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _fidelity_plan_health(
+    inventory: dict,
+    geometry: dict,
+    plan: dict,
+) -> dict:
+    """Check complete ownership and native-structure preconditions."""
+    planned_refs = {
+        str(node.get("content_ref"))
+        for node in plan.get("nodes") or []
+        if isinstance(node, dict) and node.get("content_ref")
+    }
+    replacement_refs = {
+        str(item.get("replacement_ref"))
+        for item in plan.get("suppressed") or []
+        if isinstance(item, dict) and item.get("replacement_ref")
+    }
+    covered_refs = planned_refs | replacement_refs
+    covered_refs.update(
+        str(item.get("content_ref"))
+        for item in plan.get("suppressed") or []
+        if isinstance(item, dict)
+        and item.get("content_ref")
+        and item.get("replacement_ref")
+    )
+    inventory_items = [
+        item for item in inventory.get("items") or [] if isinstance(item, dict)
+    ]
+    missing = [
+        str(item.get("id"))
+        for item in inventory_items
+        if item.get("id") and str(item.get("id")) not in covered_refs
+    ]
+    unknown_count = len(inventory.get("unknowns") or [])
+    blockers = [f"content-unowned:{content_ref}" for content_ref in missing]
+    if unknown_count:
+        blockers.append(f"content-unknown:{unknown_count}")
+    for node in plan.get("nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        if (
+            str(node.get("content_ref") or "").startswith("asset:")
+            and node.get("type") == "container"
+        ):
+            blockers.append(f"asset-container:{node.get('id')}")
+    return {
+        "status": "pass" if not blockers else "blocked",
+        "blockers": blockers,
+        "counts": {
+            "inventory_items": len(inventory_items),
+            "owned_items": len(inventory_items) - len(missing),
+            "suppressed_items": len(plan.get("suppressed") or []),
+            "unknown_items": unknown_count,
+            "scene_nodes": len(plan.get("nodes") or []),
+            "geometry_items": len(geometry.get("items") or []),
+            "table_rows": sum(
+                int(table.get("row_count") or 0)
+                for table in inventory.get("tables") or []
+                if isinstance(table, dict)
+            ),
+        },
+        "missing_content_refs": missing,
+    }
+
+
+def _visible_underlay_elements(design: dict) -> list[str]:
+    canvas = design.get("canvas") or {}
+    width = int(canvas.get("width") or 0)
+    height = int(canvas.get("height") or 0)
+    canvas_area = width * height
+    if canvas_area <= 0:
+        return []
+    underlays: list[str] = []
+    for element in design.get("elements") or []:
+        if not isinstance(element, dict) or element.get("type") != "image":
+            continue
+        area = int(element.get("width") or 0) * int(element.get("height") or 0)
+        if area / canvas_area >= 0.9:
+            underlays.append(str(element.get("id") or ""))
+    return underlays
+
+
+def _build_grounding_fidelity_report(
+    *,
+    inventory: dict,
+    geometry: dict,
+    plan: dict,
+    design: dict,
+    preflight: dict,
+) -> dict:
+    underlays = _visible_underlay_elements(design)
+    blockers = list(preflight.get("blockers") or [])
+    blockers.extend(f"full-screenshot-underlay:{value}" for value in underlays)
+    text_elements = [
+        element
+        for element in design.get("elements") or []
+        if isinstance(element, dict) and element.get("type") == "text"
+    ]
+    control_elements = [
+        element
+        for element in design.get("elements") or []
+        if isinstance(element, dict) and element.get("type") in {"input", "button"}
+    ]
+    image_elements = [
+        element
+        for element in design.get("elements") or []
+        if isinstance(element, dict) and element.get("type") == "image"
+    ]
+    return {
+        "schema_version": FIDELITY_SCHEMA_VERSION,
+        "mode": "high",
+        "status": "pass" if not blockers else "blocked-fail",
+        "blockers": list(dict.fromkeys(blockers)),
+        "counts": {
+            **dict(preflight.get("counts") or {}),
+            "design_text_nodes": len(text_elements),
+            "design_control_nodes": len(control_elements),
+            "design_image_nodes": len(image_elements),
+            "visible_underlay_count": len(underlays),
+        },
+        "content": {
+            "missing_content_refs": list(preflight.get("missing_content_refs") or []),
+            "unknown_count": len(inventory.get("unknowns") or []),
+        },
+        "geometry": {
+            "coordinate_basis": geometry.get("coordinate_basis"),
+            "image_size": list(geometry.get("image_size") or []),
+        },
+        "structure": {
+            "scene_plan_schema": plan.get("schema_version"),
+            "visible_underlay_elements": underlays,
+            "native_text_expected": len(
+                [
+                    node
+                    for node in plan.get("nodes") or []
+                    if isinstance(node, dict) and node.get("type") == "text"
+                ]
+            ),
+            "native_text_actual": len(text_elements),
+        },
+        "preflight": preflight,
+    }
 
 
 class PreciseAgent:
@@ -272,10 +430,7 @@ class PreciseAgent:
                 strategy_attempts.append({"strategy": r, "status": "selected"})
                 break
             except Exception as exc:
-                if (
-                    getattr(exc, "code", "")
-                    == "blocked-full-screenshot-underlay"
-                ):
+                if getattr(exc, "code", "") == "blocked-full-screenshot-underlay":
                     blocked_graph = getattr(exc, "graph", None)
                     if isinstance(blocked_graph, dict):
                         save_graph(
@@ -292,12 +447,13 @@ class PreciseAgent:
                             encoding="utf-8",
                         )
                     raise
-                if grounding_report is None and getattr(exc, "report", None) is not None:
+                if (
+                    grounding_report is None
+                    and getattr(exc, "report", None) is not None
+                ):
                     report = exc.report
                     grounding_report = (
-                        report.to_dict()
-                        if hasattr(report, "to_dict")
-                        else dict(report)
+                        report.to_dict() if hasattr(report, "to_dict") else dict(report)
                     )
                 if requested:
                     raise
@@ -326,6 +482,13 @@ class PreciseAgent:
             raise RuntimeError(
                 "auto 全部路线失败: " + json.dumps(fallbacks, ensure_ascii=False)
             )
+        if (
+            getattr(cfg, "grounding_fidelity_mode", "off") == "high"
+            and str(graph.get("route") or "") != "grounding"
+        ):
+            raise ValueError(
+                "GROUNDING_FIDELITY_MODE=high requires the grounding route"
+            )
 
         if image_reference is not None:
             from src.app.services.observability.fallback_metrics import (
@@ -333,9 +496,7 @@ class PreciseAgent:
             )
 
             if grounding_report is None:
-                reliability = (
-                    graph.get("provenance", {}).get("grounding_reliability")
-                )
+                reliability = graph.get("provenance", {}).get("grounding_reliability")
                 if isinstance(reliability, dict):
                     grounding_report = reliability
             fallback_observation = build_fallback_observation(
@@ -423,6 +584,33 @@ class PreciseAgent:
                     "source": image_region_recovery.get("source"),
                     "added_count": image_region_recovery.get("added_count"),
                 }
+        fidelity_state = None
+        if getattr(cfg, "grounding_fidelity_mode", "off") == "high":
+            if image_reference is None:
+                raise ValueError("GROUNDING_FIDELITY_MODE=high requires image input")
+            bundle = build_evidence_bundle(graph, image_reference)
+            inventory = build_content_inventory(bundle)
+            geometry = build_geometry_manifest(bundle)
+            plan = build_scene_plan(graph, inventory, geometry)
+            preflight = _fidelity_plan_health(inventory, geometry, plan)
+            _write_json(out / "09_evidence_bundle.json", bundle)
+            _write_json(out / "10_content_inventory.json", inventory)
+            _write_json(out / "10_geometry_manifest.json", geometry)
+            _write_json(out / "11_scene_plan.json", plan)
+            graph = apply_scene_plan(graph, plan)
+            graph["provenance"]["grounding_fidelity"] = {
+                "mode": "high",
+                "status": preflight["status"],
+                "scene_nodes": len(plan.get("nodes") or []),
+                "inventory_items": len(inventory.get("items") or []),
+            }
+            fidelity_state = {
+                "bundle": bundle,
+                "inventory": inventory,
+                "geometry": geometry,
+                "plan": plan,
+                "preflight": preflight,
+            }
         save_graph(graph, str(out / "10_pagegraph.json"))
         if graph.get("imageEnrichment"):
             (out / "image_enrichment.json").write_text(
@@ -443,10 +631,13 @@ class PreciseAgent:
             som_json["sliceAnalysis"] = graph["sliceAnalysis"]
         if graph.get("tables"):
             som_json["tables"] = graph["tables"]
+        if graph.get("scenePlan"):
+            som_json["scenePlan"] = graph["scenePlan"]
         if (
             graph.get("imageEnrichment")
             or graph.get("sliceAnalysis")
             or graph.get("tables")
+            or graph.get("scenePlan")
         ):
             (out / "11_som.json").write_text(
                 json.dumps(som_json, ensure_ascii=False, indent=1),
@@ -464,7 +655,7 @@ class PreciseAgent:
                 som_json["_profile_hints"] = prof.hint_text()
         effective_route = "screenshot" if screenshot_only else graph["route"]
         screenshot_backend = graph["route"] if screenshot_only else None
-        self._design_and_render(
+        design = self._design_and_render(
             som_json,
             image=image,
             url=url,
@@ -529,6 +720,44 @@ class PreciseAgent:
                 else None
             ),
         )
+        if fidelity_state is not None:
+            report = _build_grounding_fidelity_report(
+                inventory=fidelity_state["inventory"],
+                geometry=fidelity_state["geometry"],
+                plan=fidelity_state["plan"],
+                design=design,
+                preflight=fidelity_state["preflight"],
+            )
+            report["repair"] = {
+                "status": (
+                    "not-needed"
+                    if fidelity_state["preflight"]["status"] == "pass"
+                    else "blocked-preflight"
+                ),
+                "rounds": 0,
+                "extra_calls": 0,
+            }
+            history = {
+                "schema_version": "grounding-repair-history/1.0",
+                "mode": "high",
+                "status": report["repair"]["status"],
+                "rounds": 0,
+                "extra_calls": 0,
+                "history": [],
+                "initial_report": fidelity_state["preflight"],
+                "artifacts": {
+                    "evidence_bundle": "09_evidence_bundle.json",
+                    "content_inventory": "10_content_inventory.json",
+                    "geometry_manifest": "10_geometry_manifest.json",
+                    "scene_plan": "11_scene_plan.json",
+                },
+            }
+            graph["provenance"]["grounding_fidelity"]["report_status"] = report[
+                "status"
+            ]
+            _write_json(out / "13_fidelity_report.json", report)
+            _write_json(out / "14_repair_history.json", history)
+            save_graph(graph, str(out / "10_pagegraph.json"))
         return graph
 
     def rerender(
