@@ -328,7 +328,7 @@ git commit -m "feat: evaluate regional reconstruction quality"
 - `verify(plan)` returns a fidelity report with `status` and `blockers`.
 - `repair(request, plan)` returns a patch or `None`.
 
-- [ ] **Step 1: Write failing repair tests**
+- [x] **Step 1: Write failing repair tests**
 
 ```python
 def test_missing_table_emits_one_local_repair_request():
@@ -360,23 +360,23 @@ def test_repair_loop_stops_at_call_budget():
     assert result["status"] == "budget-exhausted"
 ```
 
-- [ ] **Step 2: Run tests and verify failure**
+- [x] **Step 2: Run tests and verify failure**
 
 Run: `C:\Users\lzq\.conda\envs\omni\python.exe -m pytest tests/v2/test_grounding_fidelity_repair.py -q`
 
 Expected: FAIL because `repair` does not exist.
 
-- [ ] **Step 3: Implement repair requests, transactional patches, and budgets**
+- [x] **Step 3: Implement repair requests, transactional patches, and budgets**
 
 Each request carries `id`, `kind`, `bbox`, `target_ids`, `reason`, and `acceptance`. Reject patches that remove covered inventory, worsen protected regions, introduce underlay, or fail schema validation.
 
-- [ ] **Step 4: Run repair tests**
+- [x] **Step 4: Run repair tests**
 
 Run: `C:\Users\lzq\.conda\envs\omni\python.exe -m pytest tests/v2/test_grounding_fidelity_repair.py -q`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/app/services/structure/fidelity/repair.py tests/v2/test_grounding_fidelity_repair.py

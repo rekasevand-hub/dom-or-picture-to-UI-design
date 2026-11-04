@@ -9,11 +9,19 @@ from src.app.services.structure.fidelity.scene_plan import (
     apply_scene_plan,
     build_scene_plan,
 )
+from src.app.services.structure.fidelity.repair import (
+    apply_repair_patch,
+    plan_repair_requests,
+    run_bounded_repair_loop,
+)
 
 __all__ = [
+    "apply_repair_patch",
     "apply_scene_plan",
     "build_content_inventory",
     "build_evidence_bundle",
     "build_geometry_manifest",
     "build_scene_plan",
+    "plan_repair_requests",
+    "run_bounded_repair_loop",
 ]
