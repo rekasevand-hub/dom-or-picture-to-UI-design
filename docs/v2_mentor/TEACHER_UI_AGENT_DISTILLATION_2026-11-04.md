@@ -9,7 +9,7 @@ planning text incorrectly claimed that no image or node had been placed.
 
 | Metric | Mentor output | Task 11 local SVG replay |
 | --- | ---: | ---: |
-| Figma node | `4:959` | `16:1667` |
+| Figma node | `4:959` | `19:1881` |
 | Canvas | 1920x826 | 1920x826 |
 | Layer count | 228 | 214 |
 | Frames | 109 | 64 |
@@ -31,6 +31,11 @@ The live Figma E2E also passes the frozen product policy. Its exported frame has
 `MAE 5.672`, `bad-pixel 4.814%`, and `95.186%` of pixels within the product's
 30-level visual threshold. Text, structure, editability, reference-only asset
 display, and visual dimensions all pass.
+
+An independent fidelity audit now runs with the E2E gate:
+critical text `1.000`, controls `1.000`, table headers and rows `1.000`,
+container recall `1.000`, native text `75/75`, image fills `6/6`, and visible
+full-screenshot underlay ratio `0.0`. Visual similarity alone is not accepted.
 
 ## Transferable Rules
 

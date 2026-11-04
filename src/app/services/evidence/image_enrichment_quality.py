@@ -575,7 +575,13 @@ def _readback_native_counts(
 ) -> dict[str, Any]:
     elements = _design_elements(design)
     expected_text = sum(
-        bool(_display_text(element.get("text") or element.get("controlValue")))
+        bool(
+            _display_text(
+                element.get("text")
+                if str(element.get("type") or "") == "input"
+                else element.get("text") or element.get("controlValue")
+            )
+        )
         and not element.get("imageBase64")
         for element in elements
     )

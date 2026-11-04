@@ -14,6 +14,9 @@ from src.app.services.evidence.dom_figma_acceptance import (
     run_asset_fill_probe,
     run_text_edit_probe,
 )
+from src.app.services.evidence.image_enrichment_quality import (
+    evaluate_image_enrichment,
+)
 
 
 DEFAULT_POLICY = {
@@ -83,6 +86,7 @@ def evaluate_image_mvp(
     asset_probe: Mapping[str, Any],
     image_ir: Mapping[str, Any],
     policy: Mapping[str, Any] | None = None,
+    fidelity: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Evaluate content, structure, editability, assets and visual usability."""
     resolved_policy = {**DEFAULT_POLICY, **(policy or truth.get("policy") or {})}
@@ -167,6 +171,14 @@ def evaluate_image_mvp(
         "structure": {"status": structure_status, "source": "text-and-asset-nodes"},
         "edit": {"status": edit_status, "source": "native-text-probe"},
         "asset": {"status": asset_status, "source": "reference-only-display-probe"},
+        "fidelity": {
+            "status": (
+                str(fidelity.get("status") or "not-evaluated")
+                if isinstance(fidelity, Mapping)
+                else "not-evaluated"
+            ),
+            "source": "content-geometry-native-audit",
+        },
         "visual": {
             "status": visual_status,
             "source": "within30-product-metric",
@@ -182,6 +194,10 @@ def evaluate_image_mvp(
         blockers.append("edit")
     if asset_status not in {"pass", "not-required"}:
         blockers.append("asset")
+    if isinstance(fidelity, Mapping) and fidelity.get("status") != "pass":
+        blockers.extend(
+            f"fidelity:{blocker}" for blocker in fidelity.get("blockers") or ["blocked"]
+        )
     if visual_status != "pass":
         blockers.append("visual")
     status = "pass" if not blockers else "blocked-fail"
@@ -208,6 +224,7 @@ def evaluate_image_mvp(
         },
         "visual": dict(visual_metrics),
         "asset_claims": asset_claims,
+        "fidelity": dict(fidelity) if isinstance(fidelity, Mapping) else None,
         "blockers": blockers,
         "limitations": list(dict.fromkeys(limitations)),
         "non_claims": [
@@ -241,6 +258,16 @@ def build_image_acceptance_report(
     reference = Path(reference_path)
     export = Path(export_path)
     metrics = visual_similarity_metrics(reference, export)
+    fidelity_truth = {
+        **dict(truth),
+        "reference_image_path": str(reference),
+    }
+    fidelity = evaluate_image_enrichment(
+        fidelity_truth,
+        dict(design),
+        dict(readback_tree),
+        export,
+    )
     evaluation = evaluate_image_mvp(
         design=design,
         truth=truth,
@@ -250,6 +277,7 @@ def build_image_acceptance_report(
         asset_probe=asset_probe,
         image_ir=image_ir,
         policy=policy,
+        fidelity=fidelity,
     )
     export_summary = {
         "exists": export.is_file(),

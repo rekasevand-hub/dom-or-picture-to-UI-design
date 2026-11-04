@@ -372,7 +372,12 @@ def test_equal_control_candidates_do_not_compare_dicts():
 
 def test_report_writer_preserves_failures_and_writes_json_markdown():
     runs = [
-        {"sample_id": "sample", "mode": "off", "status": "blocked-fail", "blockers": ["critical-text"]},
+        {
+            "sample_id": "sample",
+            "mode": "off",
+            "status": "blocked-fail",
+            "blockers": ["critical-text"],
+        },
         {"sample_id": "sample", "mode": "apply", "status": "pass", "blockers": []},
     ]
     with tempfile.TemporaryDirectory() as raw_dir:
