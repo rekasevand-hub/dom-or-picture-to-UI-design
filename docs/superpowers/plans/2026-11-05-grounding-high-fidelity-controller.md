@@ -214,7 +214,7 @@ git commit -m "feat: build canonical grounding scene plan"
 - Produces config fields: `grounding_fidelity_mode`, `grounding_repair_max_rounds`, `grounding_repair_max_extra_calls`, `grounding_repair_min_region_gain`, and `grounding_region_regression_tolerance`.
 - Produces artifacts: `09_evidence_bundle.json`, `10_content_inventory.json`, `10_geometry_manifest.json`, and `11_scene_plan.json`.
 
-- [ ] **Step 1: Write failing config tests**
+- [x] **Step 1: Write failing config tests**
 
 ```python
 def test_high_fidelity_defaults(monkeypatch):
@@ -232,23 +232,23 @@ def test_high_fidelity_requires_image_enrichment_apply():
         )
 ```
 
-- [ ] **Step 2: Run config tests and verify failure**
+- [x] **Step 2: Run config tests and verify failure**
 
 Run: `C:\Users\lzq\.conda\envs\omni\python.exe -m pytest tests/v2/test_grounding_fidelity_config.py -q`
 
 Expected: FAIL on missing fields or validation.
 
-- [ ] **Step 3: Implement settings and validation**
+- [x] **Step 3: Implement settings and validation**
 
 Use environment validation matching existing settings style. Reject non-positive round/call budgets and incompatible enrichment mode.
 
-- [ ] **Step 4: Run config tests**
+- [x] **Step 4: Run config tests**
 
 Run: `C:\Users\lzq\.conda\envs\omni\python.exe -m pytest tests/v2/test_grounding_fidelity_config.py -q`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/config/settings.py tests/v2/test_grounding_fidelity_config.py
