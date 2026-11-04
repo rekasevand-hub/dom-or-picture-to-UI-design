@@ -209,6 +209,68 @@ class ImageContractTests(unittest.TestCase):
         )
         self.assertEqual(logo["assetIdentity"]["bbox"], [17, 18, 194, 30])
 
+    def test_header_avatar_and_badge_use_visible_bounds(self) -> None:
+        image_path = Path(
+            "tests/fixtures/image_to_slice_benchmark_2026-11-02/"
+            "IMG-FLEXWEAVER-ADMIN.png"
+        )
+        graph = {
+            "image": str(image_path),
+            "image_w": 1920,
+            "image_h": 826,
+            "route": "grounding",
+            "containers": [],
+            "elements": [
+                {
+                    "id": 1,
+                    "bbox": [1713, 24, 61, 32],
+                    "type": "avatar",
+                    "text": "",
+                    "assetName": "user_avatar_li_zhiqiang",
+                    "assetKind": "avatar",
+                    "visibleCrop": {
+                        "display_box": [1713, 24, 61, 32],
+                        "requested_bbox": [1713, 24, 61, 32],
+                        "source_rect": [1713, 24, 61, 32],
+                    },
+                },
+                {
+                    "id": 2,
+                    "bbox": [1597, 20, 47, 24],
+                    "type": "image",
+                    "text": "",
+                    "assetName": "notification_badge_30",
+                    "assetKind": "icon",
+                    "visibleCrop": {
+                        "display_box": [1599, 22, 20, 20],
+                        "requested_bbox": [1597, 20, 47, 24],
+                        "source_rect": [1599, 22, 20, 20],
+                    },
+                },
+            ],
+            "imageEnrichment": {"mode": "apply"},
+            "provenance": {"route": "grounding"},
+        }
+
+        design = build_image_design(graph, inspect_image_reference(image_path))
+
+        by_name = {
+            element["assetName"]: element
+            for element in design["elements"]
+            if element.get("assetName")
+        }
+        avatar = by_name["user_avatar_li_zhiqiang"]
+        self.assertEqual(
+            [avatar["x"], avatar["y"], avatar["width"], avatar["height"]],
+            [1710, 10, 39, 39],
+        )
+        self.assertEqual(avatar["assetIdentity"]["bbox"], [1713, 24, 61, 32])
+        badge = by_name["notification_badge_30"]
+        self.assertEqual(
+            [badge["x"], badge["y"], badge["width"], badge["height"]],
+            [1577, 9, 49, 42],
+        )
+
     def test_image_ir_keeps_candidate_fields_and_fixed_flow(self) -> None:
         with tempfile.TemporaryDirectory() as raw_dir:
             path, graph, strategy = _fixture(Path(raw_dir))
@@ -1127,6 +1189,7 @@ class ImageContractTests(unittest.TestCase):
         self.assertEqual(text["x"], 46)
         self.assertEqual(text["y"], 17)
         self.assertEqual(text["width"], 80)
+        self.assertEqual(text["style"]["fontSize"], 18)
 
     def test_enriched_design_recovers_horizontal_surface_band(self) -> None:
         with tempfile.TemporaryDirectory() as raw_dir:
@@ -1418,6 +1481,99 @@ class ImageContractTests(unittest.TestCase):
         texts = [element for element in design["elements"] if element.get("text")]
         self.assertEqual([element["type"] for element in texts], ["input"])
         self.assertEqual(texts[0]["textBox"], [33, 30, 376, 24])
+
+    def test_enriched_checkbox_prefers_adjacent_label_text(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_dir:
+            path = Path(raw_dir) / "checkbox.png"
+            Image.new("RGB", (240, 100), "#ffffff").save(path)
+            graph = {
+                "image": str(path),
+                "image_w": 240,
+                "image_h": 100,
+                "route": "grounding",
+                "containers": [],
+                "elements": [
+                    {
+                        "id": 1,
+                        "bbox": [120, 30, 20, 20],
+                        "type": "checkbox",
+                        "text": "",
+                        "controlType": "checkbox",
+                        "controlValue": "以auto用户身份执行",
+                        "controlState": "checked",
+                    },
+                    {
+                        "id": 2,
+                        "bbox": [20, 30, 92, 20],
+                        "type": "text",
+                        "text": "Wauto用户身份执行",
+                    },
+                ],
+                "imageEnrichment": {"mode": "apply"},
+                "provenance": {"route": "grounding"},
+            }
+
+            design = build_image_design(graph, inspect_image_reference(path))
+
+        checkbox = next(
+            element
+            for element in design["elements"]
+            if element.get("controlType") == "checkbox"
+        )
+        label = next(
+            element
+            for element in design["elements"]
+            if element.get("text") == "以auto用户身份执行"
+        )
+        self.assertEqual(checkbox["text"], "")
+        self.assertEqual(label["type"], "text")
+
+    def test_checked_checkbox_creates_vector_and_standalone_label(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_dir:
+            path = Path(raw_dir) / "checked.png"
+            Image.new("RGB", (240, 100), "#ffffff").save(path)
+            graph = {
+                "image": str(path),
+                "image_w": 240,
+                "image_h": 100,
+                "route": "grounding",
+                "containers": [],
+                "elements": [
+                    {
+                        "id": 1,
+                        "bbox": [20, 30, 24, 21],
+                        "type": "checkbox",
+                        "text": "",
+                        "controlType": "checkbox",
+                        "controlValue": "执行成功",
+                        "controlState": "checked",
+                    }
+                ],
+                "imageEnrichment": {"mode": "apply"},
+                "provenance": {"route": "grounding"},
+            }
+
+            design = build_image_design(graph, inspect_image_reference(path))
+
+        checkbox = next(
+            element
+            for element in design["elements"]
+            if element.get("controlType") == "checkbox"
+        )
+        label = next(
+            element
+            for element in design["elements"]
+            if element.get("text") == "执行成功"
+        )
+        check = next(
+            element
+            for element in design["elements"]
+            if element.get("assetName") == "check"
+        )
+        self.assertEqual(checkbox["text"], "")
+        self.assertEqual(checkbox["style"]["borderWidth"], 0)
+        self.assertEqual(label["x"], 49)
+        self.assertTrue(check["vectorSvg"].startswith("<svg"))
 
 
 if __name__ == "__main__":

@@ -134,3 +134,15 @@ def test_structural_chrome_recovers_native_navigation_icons(tmp_path):
     assert any(
         icon.get("geometrySource") == "raster-vector-trace" for icon in icon_elements
     )
+    sidebar_search = next(
+        element
+        for element in design["elements"]
+        if element.get("id") == "recovered-sidebar-search"
+    )
+    sidebar_placeholder = next(
+        element
+        for element in design["elements"]
+        if element.get("id") == "recovered-sidebar-search-text"
+    )
+    assert sidebar_search["type"] == "input"
+    assert sidebar_placeholder["text"] == "输入关键字过滤菜单"

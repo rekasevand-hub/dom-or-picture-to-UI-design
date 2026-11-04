@@ -12,6 +12,8 @@ def _icon_key(name: str) -> str | None:
         return "search"
     if "home" in normalized:
         return "home"
+    if "check" in normalized:
+        return "check"
     if "monitor" in normalized or "desktop" in normalized:
         return "monitor"
     if "smartphone" in normalized or "mobile" in normalized:
@@ -59,6 +61,7 @@ _ICONS = {
         '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/>'
     ),
     "home": ('<path d="m3 11 9-8 9 8v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1Z"/>'),
+    "check": '<path d="m5 12 4 4L19 6"/>',
     "monitor": (
         '<rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/>'
     ),

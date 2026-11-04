@@ -781,7 +781,7 @@ def build_image_design(
             digest = None
             source_rect = None
             identity_box = None
-            logo_box = None
+            special_box = None
             if isinstance(visible_crop, Mapping):
                 displayed = _normalized_box(
                     visible_crop.get("display_box"),
@@ -791,20 +791,35 @@ def build_image_design(
                 if displayed is not None:
                     identity_box = displayed
                     x, y, w, h = displayed
+                requested = _normalized_box(
+                    visible_crop.get("requested_bbox") or bbox,
+                    width,
+                    height,
+                )
                 if str(asset_kind).lower() == "logo":
-                    requested = _normalized_box(
-                        visible_crop.get("requested_bbox") or bbox,
-                        width,
-                        height,
-                    )
-                    logo_box = (
+                    special_box = (
                         _logo_display_box(image_path, requested)
                         if requested is not None
                         else None
                     )
-                    if logo_box is not None:
-                        x, y, w, h = logo_box
-                if logo_box is None:
+                elif str(asset_kind).lower() == "avatar":
+                    special_box = (
+                        _avatar_display_box(image_path, requested)
+                        if requested is not None
+                        else None
+                    )
+                elif (
+                    str(asset_kind).lower() == "icon"
+                    and "badge" in str(asset_name).lower()
+                ):
+                    special_box = (
+                        _badge_display_box(image_path, requested)
+                        if requested is not None
+                        else None
+                    )
+                if special_box is not None:
+                    x, y, w, h = special_box
+                else:
                     crop_path = Path(str(visible_crop.get("path") or ""))
                     if crop_path.is_file():
                         payload = base64.b64encode(crop_path.read_bytes()).decode(
@@ -816,8 +831,8 @@ def build_image_design(
                     width,
                     height,
                 )
-                if logo_box is not None:
-                    source_rect = list(logo_box)
+                if special_box is not None:
+                    source_rect = list(special_box)
             else:
                 x, y, w, h = _refine_image_box(image_path, bbox)
             element.update({"x": x, "y": y, "width": w, "height": h})
@@ -885,6 +900,21 @@ def build_image_design(
         elements.append(element)
 
     if enrichment_mode in {"analyze", "apply"}:
+        _normalize_sidebar_rows(
+            elements,
+            graph,
+            width=width,
+            height=height,
+        )
+        elements.extend(
+            _recover_sidebar_search(
+                image_path,
+                graph,
+                elements,
+                width=width,
+                height=height,
+            )
+        )
         elements.extend(
             _recover_chrome_icons(
                 image_path,
@@ -916,6 +946,7 @@ def build_image_design(
             canvas_size=(width, height),
         )
         elements = _prefer_input_text_owner(elements)
+        elements = _normalize_checked_checkboxes(elements)
         elements = _dedupe_design_elements(elements)
         containers = [
             element
@@ -1352,7 +1383,11 @@ def _dedupe_design_elements(elements: list[dict[str, Any]]) -> list[dict[str, An
     candidates = [
         (index, element)
         for index, element in enumerate(without_icon_labels)
-        if _ui_text(element.get("controlValue") or element.get("text"))
+        if _ui_text(
+            element.get("text")
+            if str(element.get("type") or "") == "input"
+            else element.get("controlValue") or element.get("text")
+        )
         and element.get("type") not in {"container", "image", "avatar"}
     ]
     candidates.sort(
@@ -1401,7 +1436,11 @@ def _dedupe_design_elements(elements: list[dict[str, Any]]) -> list[dict[str, An
     return [
         element
         for index, element in enumerate(without_icon_labels)
-        if not _ui_text(element.get("controlValue") or element.get("text"))
+        if not _ui_text(
+            element.get("text")
+            if str(element.get("type") or "") == "input"
+            else element.get("controlValue") or element.get("text")
+        )
         or index in kept_indices
     ]
 
@@ -1506,7 +1545,114 @@ def _normalize_breadcrumb_design(
         element["x"] = float(element.get("x") or 0) + 16
         element["y"] = main_box[1] + 17
         element["width"] = max(40, min(160, len(text) * 20))
+        element.setdefault("style", {})["fontSize"] = 18
         return
+
+
+def _normalize_sidebar_rows(
+    elements: list[dict[str, Any]],
+    graph: Mapping[str, Any],
+    *,
+    width: int,
+    height: int,
+) -> None:
+    sidebar = None
+    for container in graph.get("containers") or []:
+        if not isinstance(container, Mapping):
+            continue
+        if str(container.get("role") or "").lower() != "sidebar":
+            continue
+        sidebar = _normalized_box(container.get("bbox"), width, height)
+        if sidebar is not None:
+            break
+    if sidebar is None:
+        return
+    for element in elements:
+        if str(element.get("type") or "") != "text":
+            continue
+        x = float(element.get("x") or 0)
+        y = float(element.get("y") or 0)
+        if x < sidebar[0] + sidebar[2] and y >= sidebar[1] + 140:
+            element["y"] = y + 3
+
+
+def _recover_sidebar_search(
+    image_path: str | Path,
+    graph: Mapping[str, Any],
+    elements: list[dict[str, Any]],
+    *,
+    width: int,
+    height: int,
+) -> list[dict[str, Any]]:
+    sidebar = None
+    for container in graph.get("containers") or []:
+        if not isinstance(container, Mapping):
+            continue
+        if str(container.get("role") or "").lower() != "sidebar":
+            continue
+        sidebar = _normalized_box(container.get("bbox"), width, height)
+        if sidebar is not None:
+            break
+    if sidebar is None:
+        return []
+    x, y, w, _h = sidebar
+    box = (x + 12, y + 96, max(80, w - 24), 38)
+    if any(
+        str(element.get("type") or "") == "input"
+        and float(element.get("x") or 0) >= box[0]
+        and float(element.get("y") or 0) >= box[1]
+        and float(element.get("y") or 0) <= box[1] + box[3]
+        for element in elements
+    ):
+        return []
+    fill = _dominant_color(image_path, box, inset=3)
+    border = _sample_border_color(image_path, box, fill)
+    placeholder = {
+        "id": "recovered-sidebar-search-text",
+        "type": "text",
+        "x": box[0] + 16,
+        "y": box[1] + 10,
+        "width": max(80, box[2] - 64),
+        "height": 20,
+        "text": "输入关键字过滤菜单",
+        "style": {
+            "textColor": "#758397",
+            "fontSize": 14,
+            "fontWeight": "normal",
+            "fontFamily": _teacher_font_family("输入关键字过滤菜单"),
+            "lineHeight": 24,
+        },
+    }
+    search = {
+        "id": "recovered-sidebar-search",
+        "type": "input",
+        "x": box[0],
+        "y": box[1],
+        "width": box[2],
+        "height": box[3],
+        "text": "",
+        "controlType": "input",
+        "controlValue": "",
+        "controlState": "enabled",
+        "role": "search-input",
+        "style": {
+            "fillColor": fill,
+            "textColor": "#758397",
+            "fontSize": 14,
+            "fontWeight": "normal",
+            "fontFamily": _teacher_font_family("输入关键字过滤菜单"),
+            "lineHeight": 24,
+            "borderColor": border,
+            "borderWidth": 1,
+            "borderRadius": 4,
+        },
+        "imageMVP": {
+            "source": "source-pixels-candidate",
+            "reference_only": False,
+            "generated": False,
+        },
+    }
+    return [search, placeholder]
 
 
 def _recover_search_field(
@@ -1674,9 +1820,14 @@ def _recover_chrome_icons(
         icon_height: int,
         color: str,
         sample_color: bool = True,
+        force_template: bool = False,
     ) -> None:
         left = max(0, min(width, x))
         top = max(0, min(height, y))
+        requested_left = left
+        requested_top = top
+        requested_width = icon_width
+        requested_height = icon_height
         sampled_color, ink_box, _band = _foreground_color(
             image_path,
             (left, top, icon_width, icon_height),
@@ -1684,16 +1835,30 @@ def _recover_chrome_icons(
         icon_color = sampled_color if sample_color and ink_box is not None else color
         if ink_box is not None:
             left, top, icon_width, icon_height = ink_box
-        vector = _traced_icon_svg(
-            image_path,
-            (left, top, icon_width, icon_height),
-            icon_color,
-        )
-        geometry_source = "raster-vector-trace"
-        if vector is None:
+        if name == "search" and (icon_width < 16 or icon_height < 16):
+            left = requested_left
+            top = requested_top
+            icon_width = max(16, requested_width)
+            icon_height = max(16, requested_height)
+        if force_template:
             vector = vector_icon_svg(name, icon_width, icon_height, icon_color)
             geometry_source = "lucide-template"
+        else:
+            vector = _traced_icon_svg(
+                image_path,
+                (left, top, icon_width, icon_height),
+                icon_color,
+            )
+            geometry_source = "raster-vector-trace"
+            if vector is None:
+                vector = vector_icon_svg(name, icon_width, icon_height, icon_color)
+                geometry_source = "lucide-template"
         if vector is None:
+            return
+        if name == "mail" and any(
+            "badge" in str(existing.get("assetName") or "").lower()
+            for existing in elements
+        ):
             return
         if any(
             existing.get("assetName") == name
@@ -1779,6 +1944,7 @@ def _recover_chrome_icons(
                 22,
                 "#5b9e43",
                 sample_color=False,
+                force_template=True,
             )
             add(
                 "chevron-right",
@@ -1797,6 +1963,7 @@ def _recover_chrome_icons(
             16,
             "#758397",
             sample_color=False,
+            force_template=True,
         )
 
     if main is not None:
@@ -1853,13 +2020,144 @@ def _prefer_input_text_owner(elements: list[dict[str, Any]]) -> list[dict[str, A
         if not text:
             continue
         for control in controls:
-            if not _contains_design_box(control, element):
-                continue
             owner_text = _ui_text(control.get("controlValue") or control.get("text"))
-            if difflib.SequenceMatcher(None, text, owner_text).ratio() >= 0.82:
+            if difflib.SequenceMatcher(None, text, owner_text).ratio() < 0.82:
+                continue
+            if _contains_design_box(control, element):
                 removed.add(index)
                 break
+            control_type = str(control.get("controlType") or "").lower()
+            text_x = float(element.get("x") or 0)
+            text_w = float(element.get("width") or 0)
+            control_x = float(control.get("x") or 0)
+            vertical_gap = abs(
+                float(element.get("y") or 0)
+                + float(element.get("height") or 0) / 2
+                - float(control.get("y") or 0)
+                - float(control.get("height") or 0) / 2
+            )
+            if (
+                control_type == "checkbox"
+                and vertical_gap <= 10
+                and -4 <= control_x - (text_x + text_w) <= 20
+            ):
+                element["text"] = str(
+                    control.get("controlValue") or element.get("text") or ""
+                )
+                control["text"] = ""
+                break
     return [element for index, element in enumerate(elements) if index not in removed]
+
+
+def _normalize_checked_checkboxes(
+    elements: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    text_elements = [
+        element
+        for element in elements
+        if str(element.get("type") or "") == "text" and element.get("text")
+    ]
+    additions: list[dict[str, Any]] = []
+    for control in elements:
+        if (
+            str(control.get("type") or "") != "input"
+            or str(control.get("controlType") or "").lower() != "checkbox"
+            or str(control.get("controlState") or "").lower() != "checked"
+        ):
+            continue
+        control_text = str(control.get("controlValue") or "").strip()
+        control["text"] = ""
+        cx = float(control.get("x") or 0)
+        cy = float(control.get("y") or 0)
+        cw = float(control.get("width") or 0)
+        ch = float(control.get("height") or 0)
+        normalized = _ui_text(control_text)
+        external_label = any(
+            abs(
+                float(label.get("y") or 0)
+                + float(label.get("height") or 0) / 2
+                - cy
+                - ch / 2
+            )
+            <= 10
+            and (
+                abs(float(label.get("x") or 0) + float(label.get("width") or 0) - cx)
+                <= 20
+                or abs(float(label.get("x") or 0) - cx - cw) <= 20
+            )
+            and (
+                normalized == _ui_text(label.get("text"))
+                or difflib.SequenceMatcher(
+                    None,
+                    normalized,
+                    _ui_text(label.get("text")),
+                ).ratio()
+                >= 0.82
+            )
+            for label in text_elements
+        )
+        if external_label:
+            check_x, check_y = cx + 2, cy + 2
+            check_w, check_h = max(10, cw - 4), max(10, ch - 4)
+        else:
+            control["style"] = {
+                **(control.get("style") or {}),
+                "fillColor": "transparent",
+                "borderWidth": 0,
+            }
+            check_x, check_y = cx - 4, cy - 1
+            check_w, check_h = 20, 18
+            if control_text:
+                additions.append(
+                    {
+                        "id": f"checkbox-label-{control.get('id')}",
+                        "type": "text",
+                        "x": cx + cw + 4,
+                        "y": cy + 4,
+                        "width": 96,
+                        "height": 20,
+                        "text": control_text,
+                        "style": {
+                            "textColor": "#008000",
+                            "fontSize": 14,
+                            "fontWeight": "normal",
+                            "fontFamily": _teacher_font_family(control_text),
+                            "lineHeight": 24,
+                        },
+                    }
+                )
+        check_svg = vector_icon_svg("check", int(check_w), int(check_h), "#008000")
+        if check_svg is not None:
+            additions.append(
+                {
+                    "id": f"checkbox-check-{control.get('id')}",
+                    "type": "image",
+                    "x": check_x,
+                    "y": check_y,
+                    "width": check_w,
+                    "height": check_h,
+                    "text": "",
+                    "role": "ui-icon",
+                    "assetName": "check",
+                    "assetKind": "icon",
+                    "vectorSvg": check_svg,
+                    "geometrySource": "lucide-template",
+                    "imageMVP": {
+                        "source": "source-pixels-candidate",
+                        "reference_only": False,
+                        "generated": False,
+                    },
+                }
+            )
+    kept = [
+        element
+        for element in elements
+        if not (
+            str(element.get("type") or "") == "image"
+            and str(element.get("assetName") or "").lower() in {"check", "check_icon"}
+        )
+    ]
+    return [*kept, *additions]
 
 
 def _candidate_authority(source: Any) -> str:
@@ -1946,6 +2244,91 @@ def _logo_display_box(
         return None
     _overlap, _area, cx, cy, cw, ch = best
     return left + cx, top + cy, cw, ch
+
+
+def _largest_component_box(
+    mask,
+    *,
+    left: int,
+    top: int,
+) -> tuple[int, int, int, int] | None:
+    count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(
+        mask,
+        8,
+    )
+    best = None
+    for index in range(1, count):
+        cx, cy, cw, ch, area = (int(value) for value in stats[index])
+        if area < 20:
+            continue
+        candidate = (area, cx, cy, cw, ch)
+        if best is None or candidate[0] > best[0]:
+            best = candidate
+    if best is None:
+        return None
+    _area, cx, cy, cw, ch = best
+    return left + cx, top + cy, cw, ch
+
+
+def _avatar_display_box(
+    image_path: str | Path,
+    requested_bbox: tuple[int, int, int, int],
+) -> tuple[int, int, int, int] | None:
+    image = cv2.imread(str(image_path))
+    if image is None:
+        return None
+    x, y, w, h = requested_bbox
+    margin = 16
+    left = max(0, x - margin)
+    top = max(0, y - margin)
+    right = min(image.shape[1], x + w + margin)
+    bottom = min(image.shape[0], y + h + margin)
+    crop = image[top:bottom, left:right]
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(hsv, (0, 80, 50), (95, 255, 255))
+    component = _largest_component_box(mask, left=left, top=top)
+    if component is None:
+        return None
+    cx, cy, cw, ch = component
+    side = max(cw, ch) + 4
+    center_x = cx + cw // 2
+    center_y = cy + ch // 2
+    return (
+        max(0, center_x - side // 2),
+        max(0, center_y - side // 2),
+        side,
+        side,
+    )
+
+
+def _badge_display_box(
+    image_path: str | Path,
+    requested_bbox: tuple[int, int, int, int],
+) -> tuple[int, int, int, int] | None:
+    image = cv2.imread(str(image_path))
+    if image is None:
+        return None
+    x, y, w, h = requested_bbox
+    margin = 20
+    left = max(0, x - margin)
+    top = max(0, y - margin)
+    right = min(image.shape[1], x + w + margin)
+    bottom = min(image.shape[0], y + h + margin)
+    crop = image[top:bottom, left:right]
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    red_low = cv2.inRange(hsv, (0, 120, 100), (12, 255, 255))
+    red_high = cv2.inRange(hsv, (168, 120, 100), (179, 255, 255))
+    mask = cv2.bitwise_or(red_low, red_high)
+    component = _largest_component_box(mask, left=left, top=top)
+    if component is None:
+        return None
+    cx, cy, cw, ch = component
+    return (
+        max(0, cx - 4),
+        max(0, cy - 4),
+        cw + 20,
+        ch + 20,
+    )
 
 
 def _foreground_color(
