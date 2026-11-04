@@ -267,7 +267,7 @@ git commit -m "feat: add high fidelity grounding controls"
 - Produces: `evaluate_region_quality(reference_path: str | Path, render_path: str | Path, regions: Sequence[Mapping[str, Any]]) -> dict[str, Any]`
 - Each region: `id`, `bbox`, optional `role`.
 
-- [ ] **Step 1: Write failing region tests**
+- [x] **Step 1: Write failing region tests**
 
 ```python
 def test_region_metrics_expose_local_regression(tmp_path):
@@ -290,23 +290,23 @@ def test_region_metrics_fail_on_size_mismatch(tmp_path):
     assert result["size_match"] is False
 ```
 
-- [ ] **Step 2: Run tests and verify failure**
+- [x] **Step 2: Run tests and verify failure**
 
 Run: `C:\Users\lzq\.conda\envs\omni\python.exe -m pytest tests/v2/test_region_quality.py -q`
 
 Expected: FAIL because `region_quality` does not exist.
 
-- [ ] **Step 3: Implement region metrics**
+- [x] **Step 3: Implement region metrics**
 
 Reuse the product metric's max-channel threshold. Clamp supplied regions to the canvas and reject empty/invalid boxes.
 
-- [ ] **Step 4: Run region tests**
+- [x] **Step 4: Run region tests**
 
 Run: `C:\Users\lzq\.conda\envs\omni\python.exe -m pytest tests/v2/test_region_quality.py -q`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/app/services/evidence/region_quality.py tests/v2/test_region_quality.py
