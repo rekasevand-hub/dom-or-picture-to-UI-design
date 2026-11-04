@@ -295,3 +295,110 @@ def test_invalid_reference_fails_closed() -> None:
 
     with pytest.raises(ValueError, match="reference.*size"):
         build_evidence_bundle(_base_graph(), reference)
+
+
+def test_geometry_manifest_uses_detected_table_grid() -> None:
+    graph = _base_graph()
+    graph["image"] = (
+        "tests/fixtures/image_to_slice_benchmark_2026-11-02/" "IMG-FLEXWEAVER-ADMIN.png"
+    )
+    graph["tables"] = [
+        {
+            "id": "table:0",
+            "bbox": [307, 648, 1613, 178],
+            "header_texts": [
+                "#",
+                "执行时间",
+                "持续时长",
+                "执行者",
+                "启动时间",
+                "状态",
+                "执行结果",
+            ],
+            "rows": [
+                [
+                    "1",
+                    "2026-11-01 03:30:00",
+                    "31649",
+                    "auto",
+                    "2026-10-31 11:16:00",
+                    "2",
+                    "SUCCESS",
+                ],
+                [
+                    "2",
+                    "2026-10-31 03:30:00",
+                    "31374",
+                    "auto",
+                    "2026-10-30 19:10:43",
+                    "2",
+                    "SUCCESS",
+                ],
+                [
+                    "3",
+                    "2026-10-30 03:30:00",
+                    "94608",
+                    "auto",
+                    "2026-10-26 11:22:28",
+                    "2",
+                    "SUCCESS",
+                ],
+                [
+                    "4",
+                    "2026-10-29 03:30:00",
+                    "30939",
+                    "auto",
+                    "2026-10-26 11:22:28",
+                    "2",
+                    "SUCCESS",
+                ],
+                [
+                    "5",
+                    "2026-10-28 03:30:00",
+                    "61508",
+                    "auto",
+                    "2026-10-26 11:22:28",
+                    "2",
+                    "SUCCESS",
+                ],
+            ],
+        }
+    ]
+
+    geometry = build_geometry_manifest(build_evidence_bundle(graph, _reference()))
+    table = next(item for item in geometry["items"] if item["content_ref"] == "table:0")
+
+    assert table["bbox"][1] < 600
+    assert len(table["grid"]["x_boundaries"]) == 8
+    assert len(table["grid"]["y_boundaries"]) == 7
+
+
+def test_button_uses_nearby_text_geometry_when_control_snap_is_wrong() -> None:
+    graph = _base_graph(width=600, height=400)
+    graph["containers"] = []
+    graph["elements"] = [
+        {
+            "id": 1,
+            "bbox": [320, 300, 130, 20],
+            "type": "text",
+            "text": "暂停自动刷新",
+            "source": "ocr-supplement:easyocr",
+            "container": None,
+        },
+        {
+            "id": 2,
+            "bbox": [320, 390, 130, 36],
+            "type": "button",
+            "controlType": "button",
+            "controlValue": "暂停自动刷新",
+            "source": "image-enrichment:control-recovery",
+            "container": None,
+        },
+    ]
+
+    inventory = build_content_inventory(
+        build_evidence_bundle(graph, _reference(600, 400))
+    )
+    control = next(item for item in inventory["items"] if item["kind"] == "control")
+
+    assert control["bbox"][1] < 320

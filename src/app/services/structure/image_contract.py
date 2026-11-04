@@ -436,6 +436,10 @@ def build_image_design(
                 "grouping_status": "candidate",
             },
         }
+        if container.get("contentRef"):
+            element["contentRef"] = str(container["contentRef"])
+        if container.get("sceneOwnerId"):
+            element["sceneOwnerId"] = str(container["sceneOwnerId"])
         elements.append(element)
 
     if enrichment_mode in {"analyze", "apply"}:
@@ -574,6 +578,10 @@ def build_image_design(
                 "generated": False,
             },
         }
+        if item.get("contentRef"):
+            element["contentRef"] = str(item["contentRef"])
+        if item.get("sceneOwnerId"):
+            element["sceneOwnerId"] = str(item["sceneOwnerId"])
         if enrichment_mode in {"analyze", "apply"} and is_control:
             element["controlType"] = control_type
             element["controlValue"] = (
@@ -1017,6 +1025,15 @@ def build_image_design(
             children.sort(key=lambda item_id: order.get(item_id, 0))
             element["layout"] = {"mode": "NONE", "itemSpacing": 0}
             element["layoutChildren"] = [{"id": item_id} for item_id in children]
+    scene_plan = graph.get("scenePlan")
+    if isinstance(scene_plan, Mapping):
+        elements = _materialize_scene_plan_text(
+            elements,
+            scene_plan,
+            image_path,
+            width=width,
+            height=height,
+        )
     image_count = sum(element["type"] in {"image", "avatar"} for element in elements)
     text_count = sum(element["type"] == "text" for element in elements)
     design = {
@@ -1057,6 +1074,233 @@ def build_image_design(
         },
     }
     return design
+
+
+def _materialize_scene_plan_text(
+    elements: list[dict[str, Any]],
+    scene_plan: Mapping[str, Any],
+    image_path: str,
+    *,
+    width: int,
+    height: int,
+) -> list[dict[str, Any]]:
+    """Compile planned text owners that no existing DesignSpec element covers."""
+    existing_refs = {
+        str(element.get("contentRef"))
+        for element in elements
+        if element.get("contentRef")
+    }
+    additions: list[dict[str, Any]] = []
+    for index, node in enumerate(scene_plan.get("nodes") or []):
+        if not isinstance(node, Mapping) or str(node.get("type") or "") not in {
+            "text",
+            "control",
+        }:
+            continue
+        text = str(node.get("text") or "").strip()
+        bbox = _normalized_box(node.get("bbox"), width, height)
+        content_ref = str(node.get("content_ref") or "")
+        if not text or bbox is None or not content_ref:
+            continue
+        if content_ref in existing_refs and str(node.get("type") or "") != "control":
+            continue
+        x, y, node_width, node_height = bbox
+        role = str(node.get("role") or "")
+        if role in {"table-cell", "table-header"}:
+            line_height = max(14, min(22, node_height - 4))
+            rendered = {
+                "x": x + min(8, max(2, node_width // 12)),
+                "y": y + max(2, (node_height - line_height) // 2),
+                "width": max(8, node_width - 16),
+                "height": line_height,
+            }
+        elif role == "control-label" and node_width <= 32:
+            label_width = min(
+                max(80, width - x - node_width - 4),
+                max(120, len(text) * 16),
+            )
+            rendered = {
+                "x": x + node_width + 4,
+                "y": y + max(0, (node_height - 20) // 2),
+                "width": label_width,
+                "height": max(18, min(24, node_height)),
+            }
+        else:
+            rendered = {
+                "x": x,
+                "y": y,
+                "width": node_width,
+                "height": node_height,
+            }
+        if str(node.get("type") or "") == "control":
+            owner = next(
+                (
+                    element
+                    for element in elements
+                    if str(element.get("type") or "") in {"button", "input"}
+                    and str(element.get("contentRef") or "") == content_ref
+                ),
+                None,
+            )
+            if owner is None:
+                owner = next(
+                    (
+                        element
+                        for element in elements
+                        if str(element.get("type") or "") in {"button", "input"}
+                        and _scene_text_overlaps(element, rendered)
+                    ),
+                    None,
+                )
+            if owner is not None:
+                owner["text"] = text
+                owner["controlValue"] = text
+                owner["contentRef"] = content_ref
+                owner["sceneOwnerId"] = str(node.get("id") or content_ref)
+                owner.setdefault("imageMVP", {})["source"] = "scene-plan"
+                existing_refs.add(content_ref)
+                continue
+            control_type = str(node.get("control_type") or "button").lower()
+            owner_type = (
+                "input"
+                if control_type
+                in {
+                    "checkbox",
+                    "input",
+                    "radio",
+                    "select",
+                    "textarea",
+                    "toggle",
+                }
+                else "button"
+            )
+            owner = {
+                "id": f"scene-control-{index}",
+                "type": owner_type,
+                "text": text,
+                "controlType": control_type,
+                "controlValue": text,
+                "controlState": str(node.get("state") or "enabled"),
+                "style": {
+                    "fillColor": _dominant_color(
+                        image_path,
+                        [x, y, node_width, node_height],
+                        inset=2,
+                    ),
+                    "textColor": _foreground_color(
+                        image_path,
+                        [x, y, node_width, node_height],
+                    )[0],
+                    "fontSize": max(
+                        12,
+                        min(16, int(round(node_height * 0.38))),
+                    ),
+                    "fontFamily": _teacher_font_family(text),
+                    "lineHeight": max(20, min(24, node_height)),
+                },
+                "imageMVP": {
+                    "source": "scene-plan",
+                    "role": role,
+                    "candidate_type": control_type,
+                    "grouping_status": "planned",
+                    "reference_only": False,
+                    "generated": False,
+                    "textStatus": "scene-plan-owner",
+                },
+                "contentRef": content_ref,
+                "sceneOwnerId": str(node.get("id") or content_ref),
+                **rendered,
+            }
+            elements.append(owner)
+            additions.append(owner)
+            existing_refs.add(content_ref)
+            continue
+        covered_by = next(
+            (
+                existing
+                for existing in elements
+                if _ui_text(existing.get("text") or existing.get("controlValue"))
+                == _ui_text(text)
+                and _scene_text_overlaps(existing, rendered)
+            ),
+            None,
+        )
+        if covered_by is not None:
+            covered_by["contentRef"] = content_ref
+            covered_by["sceneOwnerId"] = str(node.get("id") or content_ref)
+            covered_by.setdefault("imageMVP", {})["source"] = "scene-plan"
+            existing_refs.add(content_ref)
+            continue
+        text_color, ink_box, band_height = _foreground_color(
+            image_path,
+            [
+                rendered["x"],
+                rendered["y"],
+                rendered["width"],
+                rendered["height"],
+            ],
+        )
+        if role in {"table-cell", "table-header"}:
+            font_size = 13
+        elif role == "control-label":
+            font_size = 13
+        else:
+            font_size = _estimate_font_size(
+                text,
+                ink_box or list(rendered.values()),
+                band_height,
+            )
+        element = {
+            "id": f"scene-text-{index}",
+            "type": "text",
+            "text": text,
+            "style": {
+                "textColor": text_color,
+                "fontSize": font_size,
+                "fontWeight": "bold" if node.get("role") == "title" else "normal",
+                "fontFamily": _teacher_font_family(text),
+                "lineHeight": max(18, min(24, rendered["height"])),
+            },
+            "imageMVP": {
+                "source": "scene-plan",
+                "role": role,
+                "candidate_type": "text",
+                "grouping_status": "planned",
+                "reference_only": False,
+                "generated": False,
+                "textStatus": "scene-plan-owner",
+            },
+            "contentRef": content_ref,
+            "sceneOwnerId": str(node.get("id") or content_ref),
+            **rendered,
+        }
+        elements.append(element)
+        additions.append(element)
+        existing_refs.add(content_ref)
+    return elements
+
+
+def _scene_text_overlaps(
+    existing: Mapping[str, Any],
+    rendered: Mapping[str, Any],
+) -> bool:
+    left = max(float(existing.get("x") or 0), float(rendered["x"]))
+    top = max(float(existing.get("y") or 0), float(rendered["y"]))
+    right = min(
+        float(existing.get("x") or 0) + float(existing.get("width") or 0),
+        float(rendered["x"]) + float(rendered["width"]),
+    )
+    bottom = min(
+        float(existing.get("y") or 0) + float(existing.get("height") or 0),
+        float(rendered["y"]) + float(rendered["height"]),
+    )
+    if right <= left or bottom <= top:
+        return False
+    intersection = (right - left) * (bottom - top)
+    existing_area = float(existing.get("width") or 0) * float(
+        existing.get("height") or 0
+    )
+    return intersection / existing_area >= 0.5 if existing_area > 0 else False
 
 
 def audit_native_reconstruction(design: Mapping[str, Any]) -> dict[str, Any]:

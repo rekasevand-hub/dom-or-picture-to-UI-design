@@ -521,7 +521,7 @@ git commit -m "feat: run grounding high fidelity controller"
 - Consumes: fidelity artifacts from Task 7.
 - Produces acceptance dimensions: `fidelity`, `region_visual`, and `repair_budget`.
 
-- [ ] **Step 1: Write failing acceptance tests**
+- [x] **Step 1: Write failing acceptance tests**
 
 ```python
 def test_visual_pass_cannot_mask_region_regression():
@@ -539,13 +539,13 @@ def test_repair_budget_exhaustion_blocks_acceptance():
     assert "repair-budget" in report["blockers"]
 ```
 
-- [ ] **Step 2: Run acceptance tests and verify failure**
+- [x] **Step 2: Run acceptance tests and verify failure**
 
 Run: `C:\Users\lzq\.conda\envs\omni\python.exe -m pytest tests/v2/test_image_figma_acceptance.py -q`
 
 Expected: FAIL because new blockers are absent.
 
-- [ ] **Step 3: Add acceptance blockers and benchmark evidence**
+- [x] **Step 3: Add acceptance blockers and benchmark evidence**
 
 Acceptance must fail when content, geometry, native structure, region quality, or repair budgets fail. Document:
 
@@ -555,7 +555,7 @@ Acceptance must fail when content, geometry, native structure, region quality, o
 - frozen-sample metrics;
 - remaining differences.
 
-- [ ] **Step 4: Run the full verification suite**
+- [x] **Step 4: Run the full verification suite**
 
 Run:
 
@@ -566,7 +566,9 @@ python -m ruff format --check src tests
 node --check figma_bridge/code.js
 ```
 
-Expected: all pass.
+Result: `1143 passed`; touched-file Ruff and formatting pass; Node syntax
+passes. Full-repository Ruff remains blocked by 39 pre-existing unrelated
+findings.
 
 - [ ] **Step 5: Run the three-image E2E benchmark**
 
@@ -583,7 +585,13 @@ Expected:
 - No sample uses a full-screenshot underlay.
 - High-fidelity metrics are no worse than the single-pass baseline.
 
-- [ ] **Step 6: Commit**
+Executed on 2026-11-05. All three samples completed real Figma
+write/readback/export without a full-screenshot underlay. Product visual
+passed, but strict content and regional gates failed, so this step remains
+open. Evidence:
+`docs/v2_mentor/GROUNDING_HIGH_FIDELITY_ACCEPTANCE_2026-11-05.md`.
+
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/app/services/evidence/image_figma_acceptance.py tests/v2/test_image_figma_acceptance.py docs/v2_mentor/GROUNDING_HIGH_FIDELITY_ACCEPTANCE_2026-11-05.md

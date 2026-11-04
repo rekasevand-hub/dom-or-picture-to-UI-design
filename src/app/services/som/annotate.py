@@ -67,27 +67,25 @@ def annotate_som(graph: dict, output_dir: str) -> dict:
                 "overlay": bool(c.get("overlay", False)),
                 "zIndex": int(c.get("zIndex") or 0),
                 "style": c.get("style") or {},
+                **({"contentRef": c["contentRef"]} if c.get("contentRef") else {}),
+                **(
+                    {"sceneOwnerId": c["sceneOwnerId"]} if c.get("sceneOwnerId") else {}
+                ),
                 # 祖先裁剪矩形：滚动/隐藏容器（如 antd 横向滚动表格）
                 # 会把滚出可视区的后代裁掉，输出端据此裁边
                 **({"clip": c["clip"]} if c.get("clip") else {}),
                 # 图层面板可读名（采集端已算好），没有就不写
                 **({"name": c["name"]} if c.get("name") else {}),
-                **(
-                    {"clipToBounds": True} if c.get("clipToBounds") else {}
-                ),
+                **({"clipToBounds": True} if c.get("clipToBounds") else {}),
                 **({"overflowX": c["overflowX"]} if c.get("overflowX") else {}),
                 **({"overflowY": c["overflowY"]} if c.get("overflowY") else {}),
                 **({"clientWidth": c["clientWidth"]} if c.get("clientWidth") else {}),
                 **(
-                    {"clientHeight": c["clientHeight"]}
-                    if c.get("clientHeight")
-                    else {}
+                    {"clientHeight": c["clientHeight"]} if c.get("clientHeight") else {}
                 ),
                 **({"scrollWidth": c["scrollWidth"]} if c.get("scrollWidth") else {}),
                 **(
-                    {"scrollHeight": c["scrollHeight"]}
-                    if c.get("scrollHeight")
-                    else {}
+                    {"scrollHeight": c["scrollHeight"]} if c.get("scrollHeight") else {}
                 ),
             }
             for c in graph["containers"]
@@ -124,6 +122,18 @@ def annotate_som(graph: dict, output_dir: str) -> dict:
                 "container": e["container"],
                 "overlay": bool(e.get("overlay", False)),
                 "zIndex": int(e.get("zIndex") or 0),
+                **({"contentRef": e["contentRef"]} if e.get("contentRef") else {}),
+                **(
+                    {"sceneOwnerId": e["sceneOwnerId"]} if e.get("sceneOwnerId") else {}
+                ),
+                **(
+                    {"sceneParentId": e["sceneParentId"]}
+                    if e.get("sceneParentId")
+                    else {}
+                ),
+                **(
+                    {"textOwnerRef": e["textOwnerRef"]} if e.get("textOwnerRef") else {}
+                ),
                 # bbox 取自“文本行框”的元素（混合内容节点）：几何一律按
                 # 原图像素取整，这个标记供渲染/诊断侧识别来源
                 **({"textLineBox": True} if e.get("textLineBox") else {}),
@@ -136,27 +146,19 @@ def annotate_som(graph: dict, output_dir: str) -> dict:
                 **({"textEmLines": e["textEmLines"]} if e.get("textEmLines") else {}),
                 **({"textLines": e["textLines"]} if e.get("textLines") else {}),
                 **({"richRuns": e["richRuns"]} if e.get("richRuns") else {}),
-                **(
-                    {"clipToBounds": True} if e.get("clipToBounds") else {}
-                ),
+                **({"clipToBounds": True} if e.get("clipToBounds") else {}),
                 **({"overflowX": e["overflowX"]} if e.get("overflowX") else {}),
                 **({"overflowY": e["overflowY"]} if e.get("overflowY") else {}),
                 **(
-                    {"textOverflow": e["textOverflow"]}
-                    if e.get("textOverflow")
-                    else {}
+                    {"textOverflow": e["textOverflow"]} if e.get("textOverflow") else {}
                 ),
                 **({"clientWidth": e["clientWidth"]} if e.get("clientWidth") else {}),
                 **(
-                    {"clientHeight": e["clientHeight"]}
-                    if e.get("clientHeight")
-                    else {}
+                    {"clientHeight": e["clientHeight"]} if e.get("clientHeight") else {}
                 ),
                 **({"scrollWidth": e["scrollWidth"]} if e.get("scrollWidth") else {}),
                 **(
-                    {"scrollHeight": e["scrollHeight"]}
-                    if e.get("scrollHeight")
-                    else {}
+                    {"scrollHeight": e["scrollHeight"]} if e.get("scrollHeight") else {}
                 ),
                 **(
                     {"assetIdentity": e["assetIdentity"]}

@@ -152,6 +152,47 @@ def _bundle() -> dict:
     }
 
 
+def _acceptance_kwargs(
+    root: Path,
+    *,
+    region_regression: dict[str, float] | None = None,
+    region_quality: dict | None = None,
+    repair_status: str | None = None,
+    repair_history: dict | None = None,
+    fidelity: dict | None = None,
+) -> dict:
+    bundle = _bundle()
+    reference = root / "reference.png"
+    export = root / "export.png"
+    _png(reference)
+    _png(export)
+    kwargs = {
+        "design": bundle["design"],
+        "truth": bundle["truth"],
+        "readback_tree": bundle["readback_tree"],
+        "reference_path": reference,
+        "export_path": export,
+        "text_probe": bundle["text_probe"],
+        "asset_probe": bundle["asset_probe"],
+        "image_ir": bundle["image_ir"],
+        "run_summary": {
+            "status": "captured-figma-evidence",
+            "frame_id": "76:9000",
+        },
+    }
+    if region_regression is not None:
+        kwargs["region_regression"] = region_regression
+    if region_quality is not None:
+        kwargs["region_quality"] = region_quality
+    if repair_status is not None:
+        kwargs["repair_status"] = repair_status
+    if repair_history is not None:
+        kwargs["repair_history"] = repair_history
+    if fidelity is not None:
+        kwargs["fidelity"] = fidelity
+    return kwargs
+
+
 class ImageFigmaAcceptanceTests(unittest.TestCase):
     def test_reference_only_display_asset_can_pass_without_original_claim(self) -> None:
         with tempfile.TemporaryDirectory() as raw_dir:
@@ -281,6 +322,92 @@ class ImageFigmaAcceptanceTests(unittest.TestCase):
         self.assertEqual(
             report["artifact_sha256"]["export.png"],
             expected_export_sha256,
+        )
+
+    def test_visual_pass_cannot_mask_region_regression(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_dir:
+            report = build_image_acceptance_report(
+                **_acceptance_kwargs(
+                    Path(raw_dir),
+                    region_regression={"table": 0.08},
+                    repair_status="not-needed",
+                )
+            )
+
+        self.assertEqual(report["status"], "blocked-fail")
+        self.assertIn("region-visual:table", report["blockers"])
+        self.assertEqual(
+            report["dimensions"]["region_visual"]["status"],
+            "fail",
+        )
+
+    def test_repair_budget_exhaustion_blocks_acceptance(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_dir:
+            report = build_image_acceptance_report(
+                **_acceptance_kwargs(
+                    Path(raw_dir),
+                    region_quality={
+                        "status": "measured",
+                        "regions": {"form": {"bad_pixel_ratio": 0.0}},
+                    },
+                    repair_status="budget-exhausted",
+                )
+            )
+
+        self.assertEqual(report["status"], "blocked-fail")
+        self.assertIn("repair-budget", report["blockers"])
+        self.assertEqual(
+            report["dimensions"]["repair_budget"]["status"],
+            "fail",
+        )
+
+    def test_high_fidelity_requires_region_and_repair_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_dir:
+            report = build_image_acceptance_report(
+                **_acceptance_kwargs(
+                    Path(raw_dir),
+                    fidelity={
+                        "mode": "high",
+                        "status": "pass",
+                        "blockers": [],
+                    },
+                )
+            )
+
+        self.assertEqual(report["status"], "blocked-fail")
+        self.assertIn("region-visual:missing", report["blockers"])
+        self.assertIn("repair-budget:missing", report["blockers"])
+
+    def test_high_fidelity_region_and_repair_evidence_can_pass(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_dir:
+            report = build_image_acceptance_report(
+                **_acceptance_kwargs(
+                    Path(raw_dir),
+                    fidelity={
+                        "mode": "high",
+                        "status": "pass",
+                        "blockers": [],
+                    },
+                    region_quality={
+                        "status": "measured",
+                        "regions": {"form": {"bad_pixel_ratio": 0.01}},
+                    },
+                    repair_history={
+                        "status": "not-needed",
+                        "extra_calls": 0,
+                        "rounds": 0,
+                    },
+                )
+            )
+
+        self.assertEqual(report["status"], "pass")
+        self.assertEqual(
+            report["dimensions"]["region_visual"]["status"],
+            "pass",
+        )
+        self.assertEqual(
+            report["dimensions"]["repair_budget"]["status"],
+            "pass",
         )
 
     def test_real_runner_keeps_image_schema_and_export_bytes(self) -> None:

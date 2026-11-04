@@ -318,6 +318,20 @@ def test_apply_scene_plan_suppresses_duplicate_and_preserves_source() -> None:
     assert applied["tables"][0]["sceneOwnerId"] == "table-node:0"
 
 
+def test_apply_keeps_control_owner_when_label_shares_source() -> None:
+    graph = _base_graph()
+    plan = build_scene_plan(
+        graph,
+        _inventory_with_checkbox_label(),
+        _geometry(),
+    )
+    applied = apply_scene_plan(graph, plan)
+
+    control = applied["elements"][0]
+    assert control["contentRef"] == "control:10"
+    assert control["textOwnerRef"] == "text:checkbox-label"
+
+
 def test_plan_rejects_duplicate_content_owners() -> None:
     plan = build_scene_plan(
         _base_graph(),
@@ -345,3 +359,112 @@ def test_plan_keeps_source_pixel_boxes_without_translation() -> None:
         node for node in plan["nodes"] if node["content_ref"] == "text:checkbox-label"
     )
     assert label["bbox"] == [44, 22, 180, 20]
+
+
+def test_overlapping_table_header_suppresses_ocr_text_owner() -> None:
+    graph = _graph_with_duplicate_table_text()
+    inventory = _inventory_with_table_rows()
+    inventory["items"].append(
+        {
+            "id": "table-header:time",
+            "kind": "table-header",
+            "text": "执行时间",
+            "table_id": "0",
+            "row_index": None,
+            "column_index": 0,
+            "bbox": [20, 88, 170, 40],
+            "role": "table-cell",
+            "source_ref": "graph.tables[0].header_texts[0]",
+            "authority": "image-enrichment",
+        }
+    )
+    inventory["items"].append(
+        {
+            "id": "text:ocr-noise",
+            "kind": "text",
+            "text": "执行#间",
+            "bbox": [30, 96, 100, 20],
+            "role": "",
+            "source_ref": "graph.elements[0]",
+            "authority": "ocr",
+        }
+    )
+    plan = build_scene_plan(graph, inventory, _geometry_with_table_grid())
+
+    assert not any(node["content_ref"] == "text:ocr-noise" for node in plan["nodes"])
+    assert any(
+        item["content_ref"] == "text:ocr-noise"
+        and item["reason"] == "overlapping-text-owner"
+        for item in plan["suppressed"]
+    )
+
+
+def test_grounded_control_label_beats_overlapping_ocr_variant() -> None:
+    inventory = _inventory_with_checkbox_label()
+    inventory["items"].append(
+        {
+            "id": "text:ocr-label",
+            "kind": "text",
+            "text": "Wauto用户身份执行",
+            "bbox": [44, 22, 180, 20],
+            "role": "control-label",
+            "source_ref": "graph.elements[0]",
+            "authority": "ocr",
+        }
+    )
+    plan = build_scene_plan(_base_graph(), inventory, _geometry())
+
+    refs = {node["content_ref"] for node in plan["nodes"]}
+    assert "text:checkbox-label" in refs
+    assert "text:ocr-label" not in refs
+    assert any(
+        item["content_ref"] == "text:ocr-label"
+        and item["replacement_ref"] == "text:checkbox-label"
+        for item in plan["suppressed"]
+    )
+
+
+def test_control_value_absorbs_duplicate_text_inside_its_box() -> None:
+    inventory = {
+        "schema_version": "grounding-content-inventory/1.0",
+        "image_size": [400, 240],
+        "items": [
+            {
+                "id": "control:name",
+                "kind": "control",
+                "text": "auto_backup",
+                "control_type": "input",
+                "state": "enabled",
+                "bbox": [100, 40, 200, 32],
+                "role": "",
+                "source_ref": "graph.elements[0]",
+                "authority": "image-enrichment",
+            },
+            {
+                "id": "text:duplicate-value",
+                "kind": "text",
+                "text": "auto_backup",
+                "bbox": [112, 46, 100, 20],
+                "role": "",
+                "source_ref": "graph.elements[1]",
+                "authority": "ocr",
+            },
+        ],
+        "tables": [],
+        "unknowns": [],
+    }
+    geometry = _geometry()
+    geometry["items"].append(
+        {
+            "id": "geometry:name",
+            "kind": "control",
+            "role": "input",
+            "bbox": [100, 40, 200, 32],
+            "content_ref": "control:name",
+        }
+    )
+    plan = build_scene_plan(_base_graph(), inventory, geometry)
+
+    refs = {node["content_ref"] for node in plan["nodes"]}
+    assert "control:name" in refs
+    assert "text:duplicate-value" not in refs

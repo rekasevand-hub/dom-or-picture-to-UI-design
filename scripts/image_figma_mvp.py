@@ -18,6 +18,9 @@ from src.app.services.evidence.image_figma_acceptance import (  # noqa: E402
     build_image_acceptance_report,
     run_image_figma_evidence,
 )
+from src.app.services.evidence.region_quality import (  # noqa: E402
+    evaluate_region_quality,
+)
 from src.app.services.rendering.figma_adapter import FigmaBridgeAdapter  # noqa: E402
 from src.app.services.structure.image_contract import (  # noqa: E402
     inspect_image_reference,
@@ -85,6 +88,53 @@ def _write_json(path: Path, value: dict) -> None:
     )
 
 
+def _optional_json(path: Path) -> dict | None:
+    return _read_json(path) if path.is_file() else None
+
+
+def _fidelity_regions(geometry: dict | None) -> list[dict]:
+    if not isinstance(geometry, dict):
+        return []
+    regions: list[dict] = []
+    seen_ids: set[str] = set()
+    for item in geometry.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("kind") or "") not in {"page", "container", "table"}:
+            continue
+        bbox = item.get("bbox")
+        if not isinstance(bbox, list) or len(bbox) != 4:
+            continue
+        if int(bbox[2]) * int(bbox[3]) < 100:
+            continue
+        role = str(item.get("role") or item.get("kind") or "region")
+        region_id = role
+        suffix = 2
+        while region_id in seen_ids:
+            region_id = f"{role}:{suffix}"
+            suffix += 1
+        seen_ids.add(region_id)
+        regions.append(
+            {
+                "id": region_id,
+                "role": role,
+                "bbox": bbox,
+            }
+        )
+    if not any(region["id"] == "page" for region in regions):
+        size = geometry.get("image_size") or []
+        if len(size) == 2:
+            regions.insert(
+                0,
+                {
+                    "id": "page",
+                    "role": "page",
+                    "bbox": [0, 0, int(size[0]), int(size[1])],
+                },
+            )
+    return regions
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     image = args.image.resolve()
@@ -135,6 +185,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     manifest = _read_json(pipeline_output / "manifest.json")
     ocr_supplement = _read_json(pipeline_output / "ocr_supplement.json")
     region_recovery = _read_json(pipeline_output / "image_region_recovery.json")
+    fidelity = _optional_json(pipeline_output / "13_fidelity_report.json")
+    repair_history = _optional_json(pipeline_output / "14_repair_history.json")
+    geometry = _optional_json(pipeline_output / "10_geometry_manifest.json")
 
     prepared = {
         "status": "prepared",
@@ -153,11 +206,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             "status": region_recovery.get("status"),
             "added_count": region_recovery.get("added_count"),
         },
+        "grounding_fidelity": {
+            "status": (fidelity or {}).get("status"),
+            "scene_nodes": ((fidelity or {}).get("counts") or {}).get("scene_nodes"),
+            "repair_status": (repair_history or {}).get("status"),
+        },
         "pipeline_output": str(pipeline_output),
     }
     if args.prepare_only:
         _write_json(output / "prepared.json", prepared)
-        print(json.dumps(prepared, ensure_ascii=False))
+        print(json.dumps(prepared, ensure_ascii=True))
         return 0
 
     design.setdefault("canvas", {})
@@ -175,8 +233,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     if run_summary.get("status") != "captured-figma-evidence":
         _write_json(output / "acceptance.json", run_summary)
-        print(json.dumps(run_summary, ensure_ascii=False))
+        print(json.dumps(run_summary, ensure_ascii=True))
         return 2
+
+    region_quality = None
+    regions = _fidelity_regions(geometry)
+    if regions:
+        region_quality = evaluate_region_quality(
+            image,
+            run_root / "export.png",
+            regions,
+        )
+        _write_json(output / "region_quality.json", region_quality)
 
     report = build_image_acceptance_report(
         design=design,
@@ -188,6 +256,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         asset_probe=_read_json(run_root / "asset_probe.json"),
         image_ir=image_ir,
         run_summary=run_summary,
+        fidelity=fidelity,
+        region_quality=region_quality,
+        repair_history=repair_history,
     )
     report["pipeline"] = prepared
     report["artifacts"] = {
@@ -195,6 +266,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         "image_ir": "pipeline/image_ir.json",
         "ocr_supplement": "pipeline/ocr_supplement.json",
         "image_region_recovery": "pipeline/image_region_recovery.json",
+        "evidence_bundle": "pipeline/09_evidence_bundle.json",
+        "content_inventory": "pipeline/10_content_inventory.json",
+        "geometry_manifest": "pipeline/10_geometry_manifest.json",
+        "scene_plan": "pipeline/11_scene_plan.json",
+        "fidelity_report": "pipeline/13_fidelity_report.json",
+        "repair_history": "pipeline/14_repair_history.json",
+        "region_quality": "region_quality.json",
         "design": "figma_design.json",
         "figma_run": "figma/summary.json",
         "readback": "figma/readback.json",
@@ -202,7 +280,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "acceptance": "acceptance.json",
     }
     _write_json(output / "acceptance.json", report)
-    print(json.dumps(report, ensure_ascii=False))
+    print(json.dumps(report, ensure_ascii=True))
     return 0 if report.get("status") == "pass" else 2
 
 

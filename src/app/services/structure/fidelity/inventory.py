@@ -286,6 +286,16 @@ def build_content_inventory(bundle: Mapping[str, Any]) -> dict[str, Any]:
         sources.get("reference") or bundle.get("reference") or {}
     )
     graph = copy.deepcopy(dict(graph))
+    element_records = _mapping_list(graph.get("elements"))
+    text_geometry = [
+        {
+            "text": normalize_match_text(element.get("text")),
+            "bbox": _source_box(element, width, height),
+        }
+        for element in element_records
+        if str(element.get("type") or "").lower() in {"text", "link"}
+        and str(element.get("text") or "").strip()
+    ]
     items: list[dict[str, Any]] = []
     tables: list[dict[str, Any]] = []
     unknowns: list[dict[str, Any]] = []
@@ -315,6 +325,35 @@ def build_content_inventory(bundle: Mapping[str, Any]) -> dict[str, Any]:
         if candidate_type in _CONTROL_TYPES:
             label = ""
             control_text = text
+            if candidate_type in {
+                "button",
+                "icon-button",
+                "navigation",
+                "pagination",
+            } and normalize_match_text(text):
+                match = next(
+                    (
+                        geometry
+                        for geometry in text_geometry
+                        if geometry["bbox"] is not None
+                        and geometry["text"] == normalize_match_text(text)
+                        and abs(
+                            geometry["bbox"][1]
+                            + geometry["bbox"][3] / 2
+                            - (bbox[1] + bbox[3] / 2)
+                        )
+                        >= 32
+                    ),
+                    None,
+                )
+                if match is not None:
+                    text_x, text_y, text_width, text_height = match["bbox"]
+                    bbox = [
+                        max(0, text_x - 8),
+                        max(0, text_y - 8),
+                        min(width - max(0, text_x - 8), text_width + 16),
+                        min(height - max(0, text_y - 8), text_height + 16),
+                    ]
             if candidate_type in _CHECK_TYPES:
                 label = str(
                     element.get("label")
@@ -630,24 +669,88 @@ def build_geometry_manifest(bundle: Mapping[str, Any]) -> dict[str, Any]:
         )
     for table_index, table in enumerate(inventory["tables"]):
         table_bbox = table["bbox"]
-        add(
-            kind="table",
-            role="table",
-            bbox=table_bbox,
-            content_ref=table["id"],
-            source_ref=table["source_ref"],
-        )
+        detected_grid = None
+        image_path = str(graph.get("image") or "")
+        if image_path:
+            from src.app.services.structure.image_enrichment.table_scene import (
+                detect_table_grid,
+            )
+
+            x, y, table_width, table_height = table_bbox
+            expanded_bbox = [
+                x,
+                max(0, y - 140),
+                table_width,
+                min(height - max(0, y - 140), table_height + 140),
+            ]
+            detected_grid = detect_table_grid(image_path, expanded_bbox)
+        x_boundaries: list[int] = []
+        y_boundaries: list[int] = []
+        if isinstance(detected_grid, Mapping):
+            source_x, source_y, _source_width, _source_height = detected_grid[
+                "source_bbox"
+            ]
+            x_boundaries = [
+                source_x + int(value)
+                for value in detected_grid.get("x_boundaries") or []
+            ]
+            y_boundaries = [
+                source_y + int(value)
+                for value in detected_grid.get("y_boundaries") or []
+            ]
+            expected_columns = int(table["column_count"]) + 1
+            expected_rows = int(table["row_count"]) + (1 if table["headers"] else 0) + 1
+            if len(x_boundaries) > expected_columns:
+                x_boundaries = x_boundaries[-expected_columns:]
+            if len(y_boundaries) > expected_rows:
+                y_boundaries = y_boundaries[-expected_rows:]
+            if len(x_boundaries) >= 2 and len(y_boundaries) >= 2:
+                table_bbox = [
+                    x_boundaries[0],
+                    y_boundaries[0],
+                    x_boundaries[-1] - x_boundaries[0],
+                    y_boundaries[-1] - y_boundaries[0],
+                ]
+        table_geometry = {
+            "id": stable_id(
+                "geometry",
+                "table",
+                "table",
+                table_bbox,
+                table["id"],
+            ),
+            "kind": "table",
+            "role": "table",
+            "bbox": table_bbox,
+            "content_ref": table["id"],
+            "source_ref": table["source_ref"],
+        }
+        if len(x_boundaries) >= 2 and len(y_boundaries) >= 2:
+            table_geometry["grid"] = {
+                "x_boundaries": x_boundaries,
+                "y_boundaries": y_boundaries,
+            }
+        items.append(table_geometry)
+        seen.add(("table", "table", tuple(table_bbox), table["id"]))
         column_count = int(table["column_count"])
         row_count = int(table["row_count"]) + (1 if table["headers"] else 0)
+        if len(x_boundaries) != column_count + 1:
+            x_boundaries = [
+                table_bbox[0] + round(index * table_bbox[2] / column_count)
+                for index in range(column_count + 1)
+            ]
+        if len(y_boundaries) != row_count + 1:
+            y_boundaries = [
+                table_bbox[1] + round(index * table_bbox[3] / row_count)
+                for index in range(row_count + 1)
+            ]
         for column_index in range(column_count):
-            column_bbox = _cell_bbox(
-                table_bbox,
-                row_index=0,
-                column_index=column_index,
-                row_count=1,
-                column_count=column_count,
-            )
-            column_bbox[3] = table_bbox[3]
+            column_bbox = [
+                x_boundaries[column_index],
+                table_bbox[1],
+                x_boundaries[column_index + 1] - x_boundaries[column_index],
+                table_bbox[3],
+            ]
             add(
                 kind="table-column",
                 role="table-column",
@@ -656,14 +759,12 @@ def build_geometry_manifest(bundle: Mapping[str, Any]) -> dict[str, Any]:
                 source_ref=f"{table['source_ref']}.column[{column_index}]",
             )
         for row_index in range(row_count):
-            row_bbox = _cell_bbox(
-                table_bbox,
-                row_index=row_index,
-                column_index=0,
-                row_count=row_count,
-                column_count=1,
-            )
-            row_bbox[2] = table_bbox[2]
+            row_bbox = [
+                table_bbox[0],
+                y_boundaries[row_index],
+                table_bbox[2],
+                y_boundaries[row_index + 1] - y_boundaries[row_index],
+            ]
             add(
                 kind="table-row",
                 role="table-row",

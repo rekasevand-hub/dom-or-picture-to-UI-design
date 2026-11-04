@@ -6,7 +6,7 @@ import base64
 import hashlib
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Callable
 
@@ -29,6 +29,16 @@ DEFAULT_POLICY = {
     "claimed_asset_replacement_required": True,
     "original_asset_identity_required": False,
     "adaptive_flow_required": False,
+    "region_bad_pixel_ratio_max": 0.05,
+    "region_quality_required_for_high_fidelity": True,
+    "repair_budget_required_for_high_fidelity": True,
+}
+
+_PASSING_REPAIR_STATUSES = {
+    "not-needed",
+    "pass",
+    "converged",
+    "no-repair-needed",
 }
 
 
@@ -87,6 +97,9 @@ def evaluate_image_mvp(
     image_ir: Mapping[str, Any],
     policy: Mapping[str, Any] | None = None,
     fidelity: Mapping[str, Any] | None = None,
+    region_quality: Mapping[str, Any] | None = None,
+    repair_history: Mapping[str, Any] | None = None,
+    region_regression: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Evaluate content, structure, editability, assets and visual usability."""
     resolved_policy = {**DEFAULT_POLICY, **(policy or truth.get("policy") or {})}
@@ -130,8 +143,10 @@ def evaluate_image_mvp(
         for item in image_elements
         if item.get("imageBase64") or item.get("displayPayload")
     ]
-    expected_assets = int(truth.get("expected_asset_count") or 0)
-    claimed_assets = max(expected_assets, len(raster_image_elements))
+    expected_assets = int(
+        truth.get("expected_asset_count") or len(truth.get("assets") or []) or 0
+    )
+    claimed_assets = expected_assets if expected_assets else len(raster_image_elements)
     asset_ir = [
         item for item in image_ir.get("assets") or [] if isinstance(item, Mapping)
     ]
@@ -166,6 +181,22 @@ def evaluate_image_mvp(
         and (claimed_assets == 0 or len(image_elements) >= claimed_assets)
         else "fail"
     )
+    high_fidelity = (
+        isinstance(fidelity, Mapping) and str(fidelity.get("mode") or "") == "high"
+    )
+    region_blockers, region_status = _region_visual_status(
+        region_quality,
+        region_regression,
+        threshold=float(resolved_policy["region_bad_pixel_ratio_max"]),
+        required=high_fidelity
+        and bool(resolved_policy.get("region_quality_required_for_high_fidelity")),
+    )
+    repair_blockers, repair_status = _repair_budget_status(
+        repair_history,
+        fidelity=fidelity,
+        required=high_fidelity
+        and bool(resolved_policy.get("repair_budget_required_for_high_fidelity")),
+    )
     dimensions = {
         "text": {"status": text_status, "source": "critical-text"},
         "structure": {"status": structure_status, "source": "text-and-asset-nodes"},
@@ -178,6 +209,14 @@ def evaluate_image_mvp(
                 else "not-evaluated"
             ),
             "source": "content-geometry-native-audit",
+        },
+        "region_visual": {
+            "status": region_status,
+            "source": "same-size-region-metrics",
+        },
+        "repair_budget": {
+            "status": repair_status,
+            "source": "bounded-repair-history",
         },
         "visual": {
             "status": visual_status,
@@ -198,6 +237,8 @@ def evaluate_image_mvp(
         blockers.extend(
             f"fidelity:{blocker}" for blocker in fidelity.get("blockers") or ["blocked"]
         )
+    blockers.extend(region_blockers)
+    blockers.extend(repair_blockers)
     if visual_status != "pass":
         blockers.append("visual")
     status = "pass" if not blockers else "blocked-fail"
@@ -225,6 +266,12 @@ def evaluate_image_mvp(
         "visual": dict(visual_metrics),
         "asset_claims": asset_claims,
         "fidelity": dict(fidelity) if isinstance(fidelity, Mapping) else None,
+        "region_quality": (
+            dict(region_quality) if isinstance(region_quality, Mapping) else None
+        ),
+        "repair_history": (
+            dict(repair_history) if isinstance(repair_history, Mapping) else None
+        ),
         "blockers": blockers,
         "limitations": list(dict.fromkeys(limitations)),
         "non_claims": [
@@ -253,6 +300,12 @@ def build_image_acceptance_report(
     image_ir: Mapping[str, Any],
     run_summary: Mapping[str, Any],
     policy: Mapping[str, Any] | None = None,
+    fidelity: Mapping[str, Any] | None = None,
+    region_quality: Mapping[str, Any] | None = None,
+    repair_history: Mapping[str, Any] | None = None,
+    region_regression: Mapping[str, Any] | None = None,
+    repair_status: str | None = None,
+    regions: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Attach real Figma/export identity to the independent MVP evaluation."""
     reference = Path(reference_path)
@@ -262,12 +315,26 @@ def build_image_acceptance_report(
         **dict(truth),
         "reference_image_path": str(reference),
     }
-    fidelity = evaluate_image_enrichment(
-        fidelity_truth,
-        dict(design),
-        dict(readback_tree),
-        export,
+    resolved_fidelity = (
+        dict(fidelity)
+        if isinstance(fidelity, Mapping)
+        else evaluate_image_enrichment(
+            fidelity_truth,
+            dict(design),
+            dict(readback_tree),
+            export,
+        )
     )
+    resolved_regions = region_quality
+    if resolved_regions is None and regions:
+        from src.app.services.evidence.region_quality import (
+            evaluate_region_quality,
+        )
+
+        resolved_regions = evaluate_region_quality(reference, export, regions)
+    resolved_repair = repair_history
+    if resolved_repair is None and repair_status:
+        resolved_repair = {"status": repair_status}
     evaluation = evaluate_image_mvp(
         design=design,
         truth=truth,
@@ -277,7 +344,10 @@ def build_image_acceptance_report(
         asset_probe=asset_probe,
         image_ir=image_ir,
         policy=policy,
-        fidelity=fidelity,
+        fidelity=resolved_fidelity,
+        region_quality=resolved_regions,
+        repair_history=resolved_repair,
+        region_regression=region_regression,
     )
     export_summary = {
         "exists": export.is_file(),
@@ -311,6 +381,91 @@ def build_image_acceptance_report(
         report["blockers"] = blockers
         report["status"] = "blocked-environment"
     return report
+
+
+def _region_visual_status(
+    region_quality: Mapping[str, Any] | None,
+    region_regression: Mapping[str, Any] | None,
+    *,
+    threshold: float,
+    required: bool,
+) -> tuple[list[str], str]:
+    blockers: list[str] = []
+    evaluated = False
+    if isinstance(region_quality, Mapping):
+        evaluated = True
+        if str(region_quality.get("status") or "") == "blocked":
+            blockers.append("region-visual")
+        if region_quality.get("size_match") is False:
+            blockers.append("region-visual:size")
+        for region_id, metrics in (region_quality.get("regions") or {}).items():
+            if not isinstance(metrics, Mapping):
+                continue
+            regressed = bool(metrics.get("regressed"))
+            ratio = _number(metrics.get("bad_pixel_ratio"))
+            if regressed or (ratio is not None and ratio > threshold):
+                blockers.append(f"region-visual:{region_id}")
+    if isinstance(region_regression, Mapping):
+        evaluated = True
+        for region_id, value in region_regression.items():
+            if isinstance(value, Mapping):
+                regressed = bool(value.get("regressed"))
+                ratio = _number(value.get("bad_pixel_ratio") or value.get("regression"))
+            else:
+                regressed = False
+                ratio = _number(value)
+            if regressed or (ratio is not None and ratio > threshold):
+                blockers.append(f"region-visual:{region_id}")
+    if required and not evaluated:
+        blockers.append("region-visual:missing")
+    blockers = list(dict.fromkeys(blockers))
+    return blockers, "fail" if blockers else "pass" if evaluated else "not-evaluated"
+
+
+def _repair_budget_status(
+    repair_history: Mapping[str, Any] | None,
+    *,
+    fidelity: Mapping[str, Any] | None,
+    required: bool,
+) -> tuple[list[str], str]:
+    status = ""
+    source: Mapping[str, Any] | None = None
+    if isinstance(repair_history, Mapping):
+        source = repair_history
+        status = str(repair_history.get("status") or "")
+    elif isinstance(fidelity, Mapping) and isinstance(fidelity.get("repair"), Mapping):
+        source = fidelity["repair"]
+        status = str(source.get("status") or "")
+    if not status:
+        return (
+            (["repair-budget:missing"], "fail") if required else ([], "not-evaluated")
+        )
+    blockers: list[str] = []
+    if status not in _PASSING_REPAIR_STATUSES:
+        blockers.append("repair-budget")
+    budget = source.get("budget") if isinstance(source, Mapping) else None
+    if isinstance(budget, Mapping):
+        rounds = _number(source.get("rounds"))
+        extra_calls = _number(source.get("extra_calls"))
+        max_rounds = _number(budget.get("max_rounds"))
+        max_extra_calls = _number(budget.get("max_extra_calls"))
+        if (rounds is not None and max_rounds is not None and rounds > max_rounds) or (
+            extra_calls is not None
+            and max_extra_calls is not None
+            and extra_calls > max_extra_calls
+        ):
+            blockers.append("repair-budget")
+    blockers = list(dict.fromkeys(blockers))
+    return blockers, "fail" if blockers else "pass"
+
+
+def _number(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def run_image_figma_evidence(

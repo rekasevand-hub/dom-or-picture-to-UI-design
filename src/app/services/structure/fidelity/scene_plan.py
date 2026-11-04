@@ -63,6 +63,96 @@ def _intersection_over_union(left: list[int], right: list[int]) -> float:
     return intersection / union if union > 0 else 0.0
 
 
+def _overlap_over_smaller(left: list[int], right: list[int]) -> float:
+    left_x, left_y, left_w, left_h = left
+    right_x, right_y, right_w, right_h = right
+    intersection_width = max(
+        0,
+        min(left_x + left_w, right_x + right_w) - max(left_x, right_x),
+    )
+    intersection_height = max(
+        0,
+        min(left_y + left_h, right_y + right_h) - max(left_y, right_y),
+    )
+    intersection = intersection_width * intersection_height
+    smaller = min(left_w * left_h, right_w * right_h)
+    return intersection / smaller if smaller > 0 else 0.0
+
+
+def _text_owner_priority(node: Mapping[str, Any]) -> tuple[int, int, int, int]:
+    role = str(node.get("role") or "")
+    authority = str(node.get("authority") or "")
+    role_priority = (
+        4
+        if node.get("table_id") or role == "table-cell"
+        else 3
+        if role == "control-label"
+        else 0
+    )
+    authority_priority = 2 if authority in {"grounding", "image-enrichment"} else 1
+    return (
+        role_priority,
+        authority_priority,
+        len(normalize_match_text(node.get("text"))),
+        -int(node["bbox"][2] * node["bbox"][3]),
+    )
+
+
+def _suppress_overlapping_text_owners(
+    accepted: list[dict[str, Any]],
+    suppressed: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    text_nodes = [node for node in accepted if node.get("type") == "text"]
+    kept: list[dict[str, Any]] = []
+    removed: dict[str, dict[str, Any]] = {}
+    for node in sorted(text_nodes, key=_text_owner_priority, reverse=True):
+        control_owner = next(
+            (
+                owner
+                for owner in accepted
+                if owner.get("type") == "control"
+                and normalize_match_text(owner.get("text"))
+                == normalize_match_text(node.get("text"))
+                and _overlap_over_smaller(owner["bbox"], node["bbox"]) >= 0.45
+            ),
+            None,
+        )
+        if control_owner is not None:
+            removed[str(node["content_ref"])] = {
+                "content_ref": str(node["content_ref"]),
+                "source_ref": str(node.get("source_ref") or ""),
+                "reason": "control-value-owner-authoritative",
+                "replacement_ref": control_owner["content_ref"],
+            }
+            continue
+        conflict = next(
+            (
+                existing
+                for existing in kept
+                if normalize_match_text(existing.get("text"))
+                != normalize_match_text(node.get("text"))
+                and _overlap_over_smaller(existing["bbox"], node["bbox"]) >= 0.45
+            ),
+            None,
+        )
+        if conflict is not None:
+            removed[str(node["content_ref"])] = {
+                "content_ref": str(node["content_ref"]),
+                "source_ref": str(node.get("source_ref") or ""),
+                "reason": "overlapping-text-owner",
+                "replacement_ref": conflict["content_ref"],
+            }
+            continue
+        kept.append(node)
+    retained = {str(node["content_ref"]) for node in kept}
+    suppressed.extend(removed.values())
+    return [
+        node
+        for node in accepted
+        if node.get("type") != "text" or str(node.get("content_ref")) in retained
+    ]
+
+
 def _role_id(role: str, source_id: str) -> str:
     role_slug = re.sub(r"[^a-z0-9_-]+", "-", role.strip().lower()).strip("-")
     return f"{role_slug or 'container'}:{source_id}"
@@ -93,6 +183,42 @@ def _node_type(item: Mapping[str, Any]) -> str:
     return "text"
 
 
+def _plan_item_bbox(
+    item: Mapping[str, Any],
+    geometry_by_content: Mapping[str, Mapping[str, Any]],
+    width: int,
+    height: int,
+) -> list[int] | None:
+    table_id = str(item.get("table_id") or "")
+    if table_id and item.get("kind") in _TABLE_KINDS:
+        table_geometry = geometry_by_content.get(table_id) or {}
+        grid = table_geometry.get("grid") or {}
+        x_boundaries = list(grid.get("x_boundaries") or [])
+        y_boundaries = list(grid.get("y_boundaries") or [])
+        column_index = item.get("column_index")
+        row_index = item.get("row_index")
+        if (
+            isinstance(column_index, int)
+            and 0 <= column_index < len(x_boundaries) - 1
+            and len(y_boundaries) >= 2
+        ):
+            plan_row = (
+                0 if item.get("kind") == "table-header" else int(row_index or 0) + 1
+            )
+            if 0 <= plan_row < len(y_boundaries) - 1:
+                return normalize_bbox(
+                    [
+                        x_boundaries[column_index],
+                        y_boundaries[plan_row],
+                        x_boundaries[column_index + 1] - x_boundaries[column_index],
+                        y_boundaries[plan_row + 1] - y_boundaries[plan_row],
+                    ],
+                    width,
+                    height,
+                )
+    return normalize_bbox(item.get("bbox"), width, height)
+
+
 def _node_from_item(
     item: Mapping[str, Any],
     *,
@@ -102,7 +228,7 @@ def _node_from_item(
     parent_id: str | None,
 ) -> dict[str, Any] | None:
     content_ref = str(item.get("id") or "")
-    bbox = normalize_bbox(item.get("bbox"), width, height)
+    bbox = _plan_item_bbox(item, geometry_by_content, width, height)
     if not content_ref or bbox is None:
         return None
     node_type = _node_type(item)
@@ -294,7 +420,12 @@ def build_scene_plan(
         if not isinstance(table, Mapping):
             continue
         table_id = str(table.get("id") or "")
-        bbox = normalize_bbox(table.get("bbox"), width, height)
+        table_geometry = geometry_by_content.get(table_id) or {}
+        bbox = normalize_bbox(
+            table_geometry.get("bbox") or table.get("bbox"),
+            width,
+            height,
+        )
         if not table_id or bbox is None:
             continue
         parent = _element_parent(
@@ -432,6 +563,7 @@ def build_scene_plan(
         content_refs.add(content_ref)
         accepted.append(node)
 
+    accepted = _suppress_overlapping_text_owners(accepted, suppressed)
     text_nodes = [node for node in accepted if node["type"] == "text"]
     for node in accepted:
         if node["type"] != "control":
@@ -550,7 +682,11 @@ def apply_scene_plan(
     for node in plan["nodes"]:
         source_ref = str(node.get("source_ref") or "")
         if source_ref:
-            owners_by_source[source_ref] = dict(node)
+            current = owners_by_source.get(source_ref)
+            if current is None or (
+                node.get("type") == "control" and current.get("type") != "control"
+            ):
+                owners_by_source[source_ref] = dict(node)
 
     for collection in ("containers", "elements", "tables"):
         records = applied.get(collection)
@@ -568,6 +704,11 @@ def apply_scene_plan(
             record["sceneParentId"] = owner.get("parent_id")
             if collection == "elements" and owner.get("type") == "control":
                 record["textOwnerRef"] = owner.get("text_owner_ref")
+                if owner.get("text") and not (
+                    record.get("text") or record.get("controlValue")
+                ):
+                    record["text"] = str(owner["text"])
+                    record["controlValue"] = str(owner["text"])
 
     suppressed_source_refs = {
         str(item.get("source_ref") or "")
