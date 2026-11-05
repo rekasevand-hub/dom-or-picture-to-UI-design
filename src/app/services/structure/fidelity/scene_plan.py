@@ -153,6 +153,89 @@ def _suppress_overlapping_text_owners(
     ]
 
 
+def _arbitrate_table_controls(
+    accepted: list[dict[str, Any]],
+    suppressed: list[dict[str, Any]],
+    geometry_by_content: Mapping[str, Mapping[str, Any]],
+    table_nodes: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    table_geometries = [
+        item
+        for item in geometry_by_content.values()
+        if item.get("kind") == "table" and isinstance(item.get("bbox"), list)
+    ]
+    table_text_owners = {
+        normalize_match_text(node.get("text")): node
+        for node in accepted
+        if node.get("table_id") and normalize_match_text(node.get("text"))
+    }
+    table_node_by_id = {str(node.get("content_ref")): node for node in table_nodes}
+    removed: set[str] = set()
+    for control in accepted:
+        if control.get("type") != "control":
+            continue
+        control_bbox = control.get("bbox")
+        if not isinstance(control_bbox, list):
+            continue
+        table = next(
+            (
+                item
+                for item in table_geometries
+                if _overlap_over_smaller(control_bbox, item["bbox"]) >= 0.25
+            ),
+            None,
+        )
+        if table is None:
+            continue
+        content_ref = str(control.get("content_ref") or "")
+        table_owner = table_text_owners.get(normalize_match_text(control.get("text")))
+        if table_owner is not None:
+            removed.add(content_ref)
+            suppressed.append(
+                {
+                    "content_ref": content_ref,
+                    "source_ref": str(control.get("source_ref") or ""),
+                    "reason": "table-text-owner-authoritative",
+                    "replacement_ref": table_owner["content_ref"],
+                }
+            )
+            continue
+        if (
+            str(control.get("control_type") or "") not in {"button", "icon-button"}
+            or int(control_bbox[2]) < 100
+            or int(control_bbox[3]) < 28
+        ):
+            continue
+        table_bbox = table["bbox"]
+        table_id = str(table.get("content_ref") or "")
+        parent = table_node_by_id.get(table_id)
+        toolbar_width = max(
+            80,
+            min(
+                int(control_bbox[2]),
+                len(str(control.get("text") or "")) * 16 + 24,
+            ),
+        )
+        control["bbox"] = (
+            normalize_bbox(
+                [
+                    table_bbox[0],
+                    max(0, table_bbox[1] - 49),
+                    toolbar_width,
+                    min(36, int(control_bbox[3])),
+                ],
+                int(table_bbox[0] + table_bbox[2]),
+                int(table_bbox[1] + table_bbox[3]),
+            )
+            or control["bbox"]
+        )
+        control["parent_id"] = parent.get("parent_id") if parent else None
+        control["role"] = "toolbar-control"
+    return [
+        node for node in accepted if str(node.get("content_ref") or "") not in removed
+    ]
+
+
 def _role_id(role: str, source_id: str) -> str:
     role_slug = re.sub(r"[^a-z0-9_-]+", "-", role.strip().lower()).strip("-")
     return f"{role_slug or 'container'}:{source_id}"
@@ -563,6 +646,12 @@ def build_scene_plan(
         content_refs.add(content_ref)
         accepted.append(node)
 
+    accepted = _arbitrate_table_controls(
+        accepted,
+        suppressed,
+        geometry_by_content,
+        table_nodes,
+    )
     accepted = _suppress_overlapping_text_owners(accepted, suppressed)
     text_nodes = [node for node in accepted if node["type"] == "text"]
     for node in accepted:

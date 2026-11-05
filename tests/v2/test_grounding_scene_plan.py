@@ -468,3 +468,84 @@ def test_control_value_absorbs_duplicate_text_inside_its_box() -> None:
     refs = {node["content_ref"] for node in plan["nodes"]}
     assert "control:name" in refs
     assert "text:duplicate-value" not in refs
+
+
+def test_table_misclassified_text_control_uses_table_text_owner() -> None:
+    inventory = _inventory_with_table_rows()
+    inventory["items"].append(
+        {
+            "id": "control:fake-result",
+            "kind": "control",
+            "text": "Alpha",
+            "control_type": "input",
+            "state": "enabled",
+            "bbox": [20, 128, 170, 44],
+            "role": "",
+            "source_ref": "graph.elements[0]",
+            "authority": "grounding",
+        }
+    )
+    geometry = _geometry_with_table_grid()
+    geometry["items"][-1]["grid"] = {
+        "x_boundaries": [20, 190, 360],
+        "y_boundaries": [88, 128, 172, 216],
+    }
+    plan = build_scene_plan(
+        _graph_with_duplicate_table_text(),
+        inventory,
+        geometry,
+    )
+
+    refs = {node["content_ref"] for node in plan["nodes"]}
+    assert "control:fake-result" not in refs
+    assert any(
+        item["content_ref"] == "control:fake-result"
+        and item["reason"] == "table-text-owner-authoritative"
+        for item in plan["suppressed"]
+    )
+
+
+def test_table_toolbar_button_is_moved_above_grid() -> None:
+    graph = _graph_with_duplicate_table_text()
+    inventory = {
+        "schema_version": "grounding-content-inventory/1.0",
+        "image_size": [400, 240],
+        "items": [
+            {
+                "id": "control:pause",
+                "kind": "control",
+                "text": "暂停自动刷新",
+                "control_type": "button",
+                "state": "enabled",
+                "bbox": [30, 130, 120, 36],
+                "role": "",
+                "source_ref": "graph.elements[0]",
+                "authority": "grounding",
+            }
+        ],
+        "tables": [
+            {
+                "id": "0",
+                "name": "Results",
+                "bbox": [20, 88, 340, 128],
+                "headers": ["Name", "Status"],
+                "rows": [["Alpha", "Ready"]],
+                "row_count": 1,
+                "column_count": 2,
+                "source_ref": "graph.tables[0]",
+            }
+        ],
+        "unknowns": [],
+    }
+    geometry = _geometry_with_table_grid()
+    geometry["items"][-1]["grid"] = {
+        "x_boundaries": [20, 190, 360],
+        "y_boundaries": [88, 128, 172, 216],
+    }
+    plan = build_scene_plan(graph, inventory, geometry)
+
+    control = next(
+        node for node in plan["nodes"] if node["content_ref"] == "control:pause"
+    )
+    assert control["bbox"][1] < 88
+    assert control["bbox"][0] == 20

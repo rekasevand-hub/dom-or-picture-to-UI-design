@@ -1027,6 +1027,12 @@ def build_image_design(
             element["layoutChildren"] = [{"id": item_id} for item_id in children]
     scene_plan = graph.get("scenePlan")
     if isinstance(scene_plan, Mapping):
+        elements = _remove_unowned_scene_table_text(
+            elements,
+            scene_plan,
+            width=width,
+            height=height,
+        )
         elements = _materialize_scene_plan_text(
             elements,
             scene_plan,
@@ -1074,6 +1080,55 @@ def build_image_design(
         },
     }
     return design
+
+
+def _remove_unowned_scene_table_text(
+    elements: list[dict[str, Any]],
+    scene_plan: Mapping[str, Any],
+    *,
+    width: int,
+    height: int,
+) -> list[dict[str, Any]]:
+    planned_refs = {
+        str(node.get("content_ref"))
+        for node in scene_plan.get("nodes") or []
+        if isinstance(node, Mapping) and node.get("content_ref")
+    }
+    table_boxes: list[tuple[int, int, int, int]] = []
+    for node in scene_plan.get("nodes") or []:
+        if not isinstance(node, Mapping) or node.get("type") != "table":
+            continue
+        bbox = _normalized_box(node.get("bbox"), width, height)
+        if bbox is None:
+            continue
+        expanded_top = max(0, bbox[1] - 40)
+        table_boxes.append(
+            (
+                bbox[0],
+                expanded_top,
+                bbox[2],
+                bbox[3] + (bbox[1] - expanded_top),
+            )
+        )
+    if not table_boxes:
+        return elements
+
+    def inside_table(element: Mapping[str, Any]) -> bool:
+        center_x = float(element.get("x") or 0) + float(element.get("width") or 0) / 2
+        center_y = float(element.get("y") or 0) + float(element.get("height") or 0) / 2
+        return any(
+            box[0] <= center_x <= box[0] + box[2]
+            and box[1] <= center_y <= box[1] + box[3]
+            for box in table_boxes
+        )
+
+    return [
+        element
+        for element in elements
+        if str(element.get("type") or "") not in {"text", "button", "input"}
+        or not inside_table(element)
+        or str(element.get("contentRef") or "") in planned_refs
+    ]
 
 
 def _materialize_scene_plan_text(
@@ -1133,6 +1188,27 @@ def _materialize_scene_plan_text(
                 "height": node_height,
             }
         if str(node.get("type") or "") == "control":
+            control_type = str(node.get("control_type") or "button").lower()
+            owner_type = (
+                "input"
+                if control_type
+                in {
+                    "checkbox",
+                    "input",
+                    "radio",
+                    "select",
+                    "textarea",
+                    "toggle",
+                }
+                else "button"
+            )
+            if (
+                owner_type == "button"
+                and int(node_width) >= 180
+                and 28 <= int(node_height) <= 60
+            ):
+                control_type = "input"
+                owner_type = "input"
             owner = next(
                 (
                     element
@@ -1153,27 +1229,25 @@ def _materialize_scene_plan_text(
                     None,
                 )
             if owner is not None:
+                owner["type"] = owner_type
                 owner["text"] = text
+                owner["controlType"] = control_type
                 owner["controlValue"] = text
                 owner["contentRef"] = content_ref
                 owner["sceneOwnerId"] = str(node.get("id") or content_ref)
+                owner.update(rendered)
                 owner.setdefault("imageMVP", {})["source"] = "scene-plan"
+                if owner_type == "input":
+                    owner["textBox"] = [
+                        rendered["x"] + 12,
+                        rendered["y"] + 10,
+                        max(1, rendered["width"] - 24),
+                        20,
+                    ]
+                    owner.setdefault("style", {}).setdefault("borderColor", "#c2cad8")
+                    owner["style"].setdefault("borderWidth", 1)
                 existing_refs.add(content_ref)
                 continue
-            control_type = str(node.get("control_type") or "button").lower()
-            owner_type = (
-                "input"
-                if control_type
-                in {
-                    "checkbox",
-                    "input",
-                    "radio",
-                    "select",
-                    "textarea",
-                    "toggle",
-                }
-                else "button"
-            )
             owner = {
                 "id": f"scene-control-{index}",
                 "type": owner_type,
@@ -1211,6 +1285,13 @@ def _materialize_scene_plan_text(
                 "sceneOwnerId": str(node.get("id") or content_ref),
                 **rendered,
             }
+            if owner_type == "input":
+                owner["textBox"] = [
+                    rendered["x"] + 12,
+                    rendered["y"] + 10,
+                    max(1, rendered["width"] - 24),
+                    20,
+                ]
             elements.append(owner)
             additions.append(owner)
             existing_refs.add(content_ref)
@@ -1240,7 +1321,11 @@ def _materialize_scene_plan_text(
                 rendered["height"],
             ],
         )
-        if role in {"table-cell", "table-header"}:
+        is_table_header = role == "table-header" or content_ref.startswith(
+            "table-header:"
+        )
+        is_table_cell = role == "table-cell" and content_ref.startswith("table-cell:")
+        if is_table_header or is_table_cell:
             font_size = 13
         elif role == "control-label":
             font_size = 13
@@ -2050,6 +2135,15 @@ def _recover_chrome_icons(
         bbox = _normalized_box(container.get("bbox"), width, height)
         if role and bbox is not None:
             containers[role] = bbox
+    scene_plan = graph.get("scenePlan")
+    if isinstance(scene_plan, Mapping):
+        for node in scene_plan.get("nodes") or []:
+            if not isinstance(node, Mapping) or node.get("type") != "container":
+                continue
+            role = str(node.get("role") or "").lower()
+            bbox = _normalized_box(node.get("bbox"), width, height)
+            if role and bbox is not None:
+                containers.setdefault(role, bbox)
     header = containers.get("header")
     sidebar = containers.get("sidebar")
     main = containers.get("main-content")
@@ -2098,6 +2192,65 @@ def _recover_chrome_icons(
                 vector = vector_icon_svg(name, icon_width, icon_height, icon_color)
                 geometry_source = "lucide-template"
         if vector is None:
+            return
+        if isinstance(scene_plan, Mapping):
+            payload = crop_image_b64(
+                image_path,
+                left,
+                top,
+                icon_width,
+                icon_height,
+                width,
+                height,
+            )
+            digest = (
+                hashlib.sha256(base64.b64decode(payload)).hexdigest()
+                if payload
+                else None
+            )
+            record = build_asset_record(
+                sample_id=f"chrome-{name}",
+                node_index=len([*elements, *icons]),
+                source_kind="screenshot-crop",
+                source=None,
+                natural_size=(icon_width, icon_height),
+                display_box=(left, top, icon_width, icon_height),
+                display_payload_sha256=digest,
+                screenshot_sha256=None,
+                source_rect=(left, top, icon_width, icon_height),
+            )
+            if payload:
+                record = attach_display_payload(
+                    record,
+                    payload_sha256=digest,
+                    screenshot_sha256=None,
+                    display_box=(left, top, icon_width, icon_height),
+                )
+            icons.append(
+                {
+                    "id": f"chrome-icon-{name}-{left}-{top}",
+                    "type": "image",
+                    "x": left,
+                    "y": top,
+                    "width": icon_width,
+                    "height": icon_height,
+                    "text": "",
+                    "role": "ui-icon",
+                    "assetName": name,
+                    "assetKind": "icon",
+                    "imageBase64": payload,
+                    "assetIdentity": {"asset_record": record},
+                    "displayPayload": dict(record["display_payload"]),
+                    "sourceResolution": fuse_asset_record(record),
+                    "geometrySource": "source-pixel-crop",
+                    "imageMVP": {
+                        "source": "source-pixels",
+                        "reference_only": True,
+                        "originalAssetClaimed": False,
+                        "generated": False,
+                    },
+                }
+            )
             return
         if name == "mail" and any(
             "badge" in str(existing.get("assetName") or "").lower()
