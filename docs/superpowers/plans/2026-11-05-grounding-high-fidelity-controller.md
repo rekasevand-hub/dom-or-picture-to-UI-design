@@ -591,6 +591,12 @@ passed, but strict content and regional gates failed, so this step remains
 open. Evidence:
 `docs/v2_mentor/GROUNDING_HIGH_FIDELITY_ACCEPTANCE_2026-11-05.md`.
 
+Latest Flex repair pass: 24/24 critical content and native editability pass;
+strict region gate remains 6/7 failing. Further one-shot global style changes
+regressed at least one protected region, so the next implementation step is
+the live `region blocker -> patch -> re-render -> compare -> rollback` loop,
+not another global typography heuristic.
+
 - [x] **Step 6: Commit**
 
 ```bash
