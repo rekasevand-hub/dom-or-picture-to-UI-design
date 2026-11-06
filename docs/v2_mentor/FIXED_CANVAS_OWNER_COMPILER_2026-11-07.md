@@ -1,0 +1,70 @@
+# Fixed-Canvas Owner Compiler
+
+Date: 2026-11-07
+
+## Decision
+
+Adopt the mentor-agent sample's fixed-canvas mechanism:
+
+- one occurrence-level owner per visible content item;
+- source-pixel absolute geometry;
+- native fixed-size text;
+- isolated image fills for artwork;
+- structural table cell identity;
+- authoring Frames independent from source regions.
+
+Do not copy its implementation blindly. Reuse the decisions as contracts and
+resolve styles dynamically for each new screenshot.
+
+## Mentor Sample Result
+
+| Metric | Result |
+| --- | ---: |
+| Declared owners mapped | 138 / 138 |
+| Native TEXT owners | 79 / 79 |
+| Text value mismatches | 0 |
+| Table | 7 headers, 5 rows, 35 body cells |
+| Overlapping duplicate text owners | 0 |
+| Within-30 similarity | 97.202% |
+| MAE | 2.564 |
+| Bad-pixel ratio | 2.798% |
+| Truth container regions | all below 5% |
+| Image fills | logo and avatar only |
+| Full screenshot underlay | none |
+
+The notes control contains an exact whitespace mismatch and must not pass an
+exact-content gate until it is corrected.
+
+## Geometry Contract
+
+`source_bbox` is the visible source region. `authoring_bbox` is the Figma Frame
+used for layer organization. A root-sized authoring Frame is valid for fixed
+canvas reconstruction when children use absolute source coordinates.
+
+## Text Contract
+
+Fixed-size native text is valid. Native editability means characters and style
+can change and restore while the node remains TEXT. Auto Resize and geometry
+growth are not required.
+
+## Style Contract
+
+Mentor values are priors:
+
+- `Noto Sans SC` for CJK candidates;
+- `Open Sans` for Latin candidates;
+- `#555555` common UI text color;
+- table headers bold and centered;
+- table body text regular and left aligned.
+
+For every new image, StyleResolver samples background/foreground, ink geometry,
+font size, weight, script family and parent-relative alignment. Unknown font
+identity remains explicit.
+
+## Rejected Oversights
+
+- Treating root-sized authoring Frames as source-region geometry.
+- Requiring text geometry growth after editing.
+- Using string equality as table row or owner identity.
+- Appending OCR text after a semantic control or table owner already claimed
+  the same occurrence.

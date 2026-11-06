@@ -77,18 +77,31 @@ def resolve_text_style(
     if crop.size == 0:
         raise ValueError("text bbox does not intersect the source image")
 
+    inset = 2 if min(box_width, box_height) >= 8 else 1
+    inner = crop[
+        inset : max(inset + 1, box_height - inset),
+        inset : max(inset + 1, box_width - inset),
+    ]
     border = np.concatenate(
         [
-            crop[0, :, :],
-            crop[-1, :, :],
-            crop[:, 0, :],
-            crop[:, -1, :],
+            inner[0, :, :],
+            inner[-1, :, :],
+            inner[:, 0, :],
+            inner[:, -1, :],
         ],
         axis=0,
     )
     background_rgb = np.median(border, axis=0)
     distance = np.abs(crop - background_rgb.reshape(1, 1, 3)).max(axis=2)
     mask = distance >= 24
+    mask[
+        mask.sum(axis=1) >= max(4, int(round(box_width * 0.75))),
+        :,
+    ] = False
+    mask[
+        :,
+        mask.sum(axis=0) >= max(4, int(round(box_height * 0.75))),
+    ] = False
     ink_count = int(mask.sum())
     if ink_count < 2:
         align, center_delta = _alignment(normalized, parent_bbox, role)

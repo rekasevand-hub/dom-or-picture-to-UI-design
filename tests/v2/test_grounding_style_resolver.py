@@ -121,3 +121,24 @@ def test_resolver_exposes_low_confidence_when_no_ink_is_found(
 
     assert result["confidence"] < 0.5
     assert result["evidence"]["status"] == "low-confidence"
+
+
+def test_table_cell_border_is_not_misread_as_text_ink(tmp_path: Path) -> None:
+    path = tmp_path / "cell.png"
+    image = Image.new("RGB", (220, 60), "#ffffff")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((5, 5, 214, 54), outline="#e0e0e0", width=1)
+    draw.text((20, 20), "执行时间", fill="#555555", font=_font(16))
+    image.save(path)
+
+    result = resolve_text_style(
+        path,
+        "执行时间",
+        [5, 5, 210, 50],
+        role="table-header",
+        parent_bbox=[5, 5, 210, 50],
+    )
+
+    assert result["fontSize"] < 24
+    assert result["fontFamily"] == "Noto Sans SC"
+    assert result["textAlign"] == "center"

@@ -1,0 +1,73 @@
+{
+  "schema_version": "fixed-canvas-mentor-contract/1.0",
+  "sample_id": "IMG-FLEXWEAVER-ADMIN",
+  "frame": {
+    "name": "FLEXWEAVER reconstruction",
+    "size": [1920, 826]
+  },
+  "owner_contract": {
+    "declared_owners": 138,
+    "mapped_owners": 138,
+    "missing_nodes": 0,
+    "type_mismatches": 0,
+    "declared_text_owners": 79,
+    "live_text_nodes": 79,
+    "text_value_mismatches": 0
+  },
+  "table_contract": {
+    "header_cells": 7,
+    "visible_body_rows": 5,
+    "body_cells": 35,
+    "repeated_values": [
+      "auto",
+      "2"
+    ]
+  },
+  "duplicate_contract": {
+    "overlapping_text_owners": 0
+  },
+  "native_structure": {
+    "image_fill_nodes": 2,
+    "image_fill_names": [
+      "logo_tetuo_auto",
+      "account_avatar"
+    ],
+    "full_screenshot_underlay": false,
+    "fixed_size_text_allowed": true,
+    "auto_resize_required": false
+  },
+  "visual_contract": {
+    "within30_pct": 97.20244400726392,
+    "mae": 2.5638863666935703,
+    "bad_pixel_ratio": 0.027975559927360776,
+    "truth_regions": {
+      "page": 0.027975559927360776,
+      "header": 0.025597993827160492,
+      "sidebar": 0.015725207435051996,
+      "main": 0.03031516162378473,
+      "form": 0.022294858890412543,
+      "panel": 0.03937547279462613,
+      "table": 0.04647919233111026
+    }
+  },
+  "style_priors": {
+    "cjk_family": "Noto Sans SC",
+    "latin_family": "Open Sans",
+    "text_color": "#555555",
+    "table_header": {
+      "font_size": 17.25,
+      "font_weight": "bold",
+      "alignment": "center"
+    },
+    "table_body": {
+      "font_size": 16.25,
+      "font_weight": "regular",
+      "alignment": "left"
+    }
+  },
+  "known_exact_content_issue": {
+    "owner_id": "note_value",
+    "current": "2023年12月16日： 修改成凌晨3： 30执行备份",
+    "expected": "2023年12月16日：修改成凌晨3：30执行备份"
+  }
+}

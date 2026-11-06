@@ -184,25 +184,25 @@ Commit compiler integration files.
 **Interfaces:**
 - Consumes: audit JSON and live readback stored under the distillation output.
 
-- [ ] **Step 1: Add contract assertions**
+- [x] **Step 1: Add contract assertions**
 
 Assert the golden sample keeps 138/138 owner mapping, 79 native TEXT nodes,
 42 table text owners, zero duplicate overlaps, and all truth regions below the
 configured threshold.
 
-- [ ] **Step 2: Run the golden contract tests**
+- [x] **Step 2: Run the golden contract tests**
 
 Expected: pass against the retained evidence.
 
-- [ ] **Step 3: Document adopted and rejected mechanisms**
+- [x] **Step 3: Document adopted and rejected mechanisms**
 
 Record fixed text policy, dual geometry, dynamic style resolution, and the
 remaining exact-whitespace issue.
 
-- [ ] **Step 4: Run full verification**
+- [x] **Step 4: Run full verification**
 
 Run the full pytest suite, touched-file Ruff, formatting, and Node syntax.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Commit the golden regression and documentation.
