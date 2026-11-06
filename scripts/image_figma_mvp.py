@@ -25,6 +25,9 @@ from src.app.services.rendering.figma_adapter import FigmaBridgeAdapter  # noqa:
 from src.app.services.structure.image_contract import (  # noqa: E402
     inspect_image_reference,
 )
+from src.app.services.structure.fidelity.text_calibration import (  # noqa: E402
+    calibrate_control_fonts,
+)
 from src.main import load_config  # noqa: E402
 
 
@@ -236,6 +239,29 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps(run_summary, ensure_ascii=True))
         return 2
 
+    initial_readback = _read_json(run_root / "readback.json")
+    calibrated_design, calibration_report = calibrate_control_fonts(
+        design,
+        initial_readback,
+    )
+    _write_json(output / "font_calibration.json", calibration_report)
+    if calibration_report["adjusted_count"]:
+        _write_json(output / "figma_design_initial.json", design)
+        design = calibrated_design
+        _write_json(output / "figma_design.json", design)
+        run_root = output / "figma_calibrated"
+        run_summary = run_image_figma_evidence(
+            design,
+            output_dir=run_root,
+            sample_id=str(truth.get("sample_id") or ""),
+            adapter_factory=ImageMVFigmaAdapter,
+            readback_depth=max(1, args.readback_depth),
+        )
+        if run_summary.get("status") != "captured-figma-evidence":
+            _write_json(output / "acceptance.json", run_summary)
+            print(json.dumps(run_summary, ensure_ascii=True))
+            return 2
+
     region_quality = None
     regions = _fidelity_regions(geometry)
     if regions:
@@ -274,9 +300,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         "repair_history": "pipeline/14_repair_history.json",
         "region_quality": "region_quality.json",
         "design": "figma_design.json",
-        "figma_run": "figma/summary.json",
-        "readback": "figma/readback.json",
-        "export": "figma/export.png",
+        "figma_run": str((run_root / "summary.json").relative_to(output)),
+        "readback": str((run_root / "readback.json").relative_to(output)),
+        "export": str((run_root / "export.png").relative_to(output)),
+        "font_calibration": "font_calibration.json",
         "acceptance": "acceptance.json",
     }
     _write_json(output / "acceptance.json", report)

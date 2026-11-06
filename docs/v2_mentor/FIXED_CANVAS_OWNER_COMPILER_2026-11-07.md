@@ -81,13 +81,15 @@ the same owner compiler used for the final DesignSpec:
 - table grid boundaries come from the geometry manifest;
 - table toolbar regions are reconciled from their visible controls;
 - header bottom separator bands are sampled and trimmed from pixels.
+- control text receives one bounded font-width calibration from rendered
+  Figma TEXT bounds against source ink width.
 
 Latest real Figma acceptance:
 
 | Metric | Before owner cleanup | Latest |
 | --- | ---: | ---: |
-| Within-30 similarity | 90.987% | 94.478% |
-| Page bad-pixel ratio | 9.013% | 5.522% |
+| Within-30 similarity | 90.987% | 94.483% |
+| Page bad-pixel ratio | 9.013% | 5.517% |
 | Header bad-pixel ratio | 9.684% | 3.000% |
 | Sidebar bad-pixel ratio | 2.334% | 2.057% |
 | Critical text | 23 / 24 | 24 / 24 |
