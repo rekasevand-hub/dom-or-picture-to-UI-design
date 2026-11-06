@@ -308,6 +308,7 @@ def run_text_edit_probe(
     frame_id: str,
     readback: Mapping[str, Any],
     depth: int = 8,
+    require_geometry_update: bool = True,
 ) -> dict[str, Any]:
     nodes = _flatten_nodes(readback)
     target = next(
@@ -336,20 +337,30 @@ def run_text_edit_probe(
     )
     restored_node = _find_node(restored_tree, before["node_id"])
     after_restore = _node_snapshot(restored_node) if restored_node else {}
+    geometry_updated = _geometry_changed(before, after_edit)
     checks = {
         "node_type_preserved": after_edit.get("node_type") == before["node_type"],
         "characters_updated": after_edit.get("characters") == edited,
         "font_preserved": after_edit.get("font") == before["font"],
-        "geometry_updated": _geometry_changed(before, after_edit),
+        "geometry_updated": geometry_updated,
         "restored": _snapshot_restored(before, after_restore),
     }
+    required_checks = [
+        checks["node_type_preserved"],
+        checks["characters_updated"],
+        checks["font_preserved"],
+        checks["restored"],
+    ]
+    if require_geometry_update:
+        required_checks.append(checks["geometry_updated"])
     return {
-        "status": "pass" if all(checks.values()) else "fail",
+        "status": "pass" if all(required_checks) else "fail",
         "node_id": before["node_id"],
         "before": before,
         "after_edit": after_edit,
         "after_restore": after_restore,
         **checks,
+        "geometry_policy": ("required" if require_geometry_update else "fixed-allowed"),
         "parent_layout_propagation": "not-evaluated",
     }
 

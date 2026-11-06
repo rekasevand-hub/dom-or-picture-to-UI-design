@@ -16,6 +16,7 @@ from src.app.services.evidence.image_figma_acceptance import (
     run_image_figma_evidence,
     visual_similarity_metrics,
 )
+from src.app.services.evidence.dom_figma_acceptance import run_text_edit_probe
 
 
 def _png(path: Path, *, include_second_text: bool = True) -> None:
@@ -194,6 +195,70 @@ def _acceptance_kwargs(
 
 
 class ImageFigmaAcceptanceTests(unittest.TestCase):
+    def test_fixed_size_native_text_can_pass_editable_policy(self) -> None:
+        class FixedTextAdapter:
+            def __init__(self) -> None:
+                self.characters = "Fixed title"
+
+            def set_text(self, node_id, text) -> None:
+                assert node_id == "1:1"
+                self.characters = text
+
+            def _send(self, action, params):
+                assert action == "get_node_tree"
+                assert params["nodeId"] == "76:9200"
+                return {
+                    "id": "76:9200",
+                    "type": "FRAME",
+                    "children": [
+                        {
+                            "id": "1:1",
+                            "type": "TEXT",
+                            "characters": self.characters,
+                            "x": 20,
+                            "y": 30,
+                            "width": 120,
+                            "height": 20,
+                            "font": {
+                                "family": "Noto Sans SC",
+                                "style": "Regular",
+                            },
+                            "font_size": 16,
+                        }
+                    ],
+                }
+
+        adapter = FixedTextAdapter()
+        result = run_text_edit_probe(
+            adapter,
+            frame_id="76:9200",
+            readback={
+                "id": "76:9200",
+                "type": "FRAME",
+                "children": [
+                    {
+                        "id": "1:1",
+                        "type": "TEXT",
+                        "characters": "Fixed title",
+                        "x": 20,
+                        "y": 30,
+                        "width": 120,
+                        "height": 20,
+                        "font": {
+                            "family": "Noto Sans SC",
+                            "style": "Regular",
+                        },
+                        "font_size": 16,
+                    }
+                ],
+            },
+            require_geometry_update=False,
+        )
+
+        self.assertEqual(result["status"], "pass")
+        self.assertFalse(result["geometry_updated"])
+        self.assertEqual(result["geometry_policy"], "fixed-allowed")
+
     def test_reference_only_display_asset_can_pass_without_original_claim(self) -> None:
         with tempfile.TemporaryDirectory() as raw_dir:
             root = Path(raw_dir)

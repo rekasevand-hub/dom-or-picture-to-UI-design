@@ -505,6 +505,7 @@ def run_image_figma_evidence(
             frame_id=frame_id,
             readback=readback,
             depth=readback_depth,
+            require_geometry_update=False,
         )
         asset_probe, image_report = run_asset_fill_probe(
             adapter,
