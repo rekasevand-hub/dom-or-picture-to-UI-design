@@ -8,6 +8,9 @@ from src.app.services.structure.fidelity.inventory import (
 from src.app.services.structure.fidelity.container_manifest import (
     build_container_manifest,
 )
+from src.app.services.structure.fidelity.fixed_canvas_compiler import (
+    compile_scene_plan_to_design,
+)
 from src.app.services.structure.fidelity.local_repair import (
     GroundingLocalRepairer,
 )
@@ -30,6 +33,7 @@ __all__ = [
     "build_evidence_bundle",
     "build_geometry_manifest",
     "build_scene_plan",
+    "compile_scene_plan_to_design",
     "GroundingLocalRepairer",
     "plan_repair_requests",
     "run_bounded_repair_loop",

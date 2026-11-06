@@ -113,6 +113,7 @@ def test_scene_plan_text_nodes_are_compiled_as_native_text(tmp_path: Path) -> No
     assert by_content["table-header:0:0"]["style"]["fontWeight"] == "bold"
     assert by_content["table-header:0:0"]["styleEvidence"]["evidence"]["status"] in {
         "observed",
+        "low-contrast",
         "low-confidence",
     }
     assert by_content["control:manual"]["controlValue"] == "手动执行"
@@ -349,7 +350,7 @@ def test_unowned_offset_control_shadow_is_removed_by_scene_bbox() -> None:
     assert [element["id"] for element in filtered] == ["owner"]
 
 
-def test_scene_plan_header_role_recovers_reference_icon_crop(
+def test_scene_plan_header_role_does_not_invent_unplanned_icons(
     tmp_path: Path,
 ) -> None:
     path = _image(tmp_path)
@@ -389,14 +390,11 @@ def test_scene_plan_header_role_recovers_reference_icon_crop(
     )
     graph["imageEnrichment"] = {"mode": "apply", "status": "applied"}
     design = build_image_design(graph, inspect_image_reference(path))
-    icon = next(
-        element
+    assert design["_meta"]["mode"] == "fixed-canvas-owner-compiler"
+    assert not any(
+        str(element.get("id") or "").startswith("chrome-icon-")
         for element in design["elements"]
-        if str(element.get("id") or "").startswith("chrome-icon-search-")
     )
-
-    assert icon["imageBase64"]
-    assert icon["sourceResolution"]["display"]["reference_only"] is True
 
 
 def test_acceptance_asset_count_uses_truth_assets() -> None:

@@ -206,3 +206,44 @@ Run the full pytest suite, touched-file Ruff, formatting, and Node syntax.
 - [x] **Step 5: Commit**
 
 Commit the golden regression and documentation.
+
+---
+
+### Task 6: Single ScenePlan Compiler Entry
+
+**Files:**
+- Create: `src/app/services/structure/fidelity/fixed_canvas_compiler.py`
+- Modify: `src/app/services/structure/image_contract.py`
+- Test: `tests/v2/test_fixed_canvas_compiler.py`
+
+**Interfaces:**
+- Produces: `compile_scene_plan_to_design(graph, reference, plan, *, image_path, width, height, background, sample_id) -> dict`
+- `build_image_design` delegates to it when `graph["scenePlan"]` exists.
+
+- [x] **Step 1: Write failing compiler tests**
+
+Assert one rendered owner per ScenePlan content item, fixed native text with
+StyleEvidence, separated controls/labels, structural table text, and
+reference-only image fills.
+
+- [x] **Step 2: Run tests and verify module failure**
+
+Expected: `ModuleNotFoundError`.
+
+- [x] **Step 3: Implement the compiler**
+
+Compile containers, text, controls, images and table decoration from ScenePlan
+only. Do not call any post-hoc recovery or append pass.
+
+- [x] **Step 4: Route high-fidelity DesignSpec through the compiler**
+
+In `build_image_design`, return the ScenePlan compiler result before legacy
+heuristic stages when `scenePlan` exists.
+
+- [x] **Step 5: Run tests and verify**
+
+Run compiler, scene-plan, image-contract and high-fidelity integration tests.
+
+- [x] **Step 6: Commit**
+
+Commit the single compiler and route.

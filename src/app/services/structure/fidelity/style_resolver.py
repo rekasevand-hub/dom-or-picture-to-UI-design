@@ -143,6 +143,9 @@ def resolve_text_style(
     ]
     strong_threshold = float(np.percentile(distance[mask], 80))
     strong_mask = mask & (distance >= max(32.0, strong_threshold))
+    low_contrast = not strong_mask.any()
+    if low_contrast:
+        strong_mask = mask
     foreground_rgb = np.median(crop[strong_mask], axis=0)
     contrast = float(distance[strong_mask].mean()) if strong_mask.any() else 0.0
     align, center_delta = _alignment(normalized, parent_bbox, role)
@@ -154,6 +157,8 @@ def resolve_text_style(
     )
     weight = "bold" if role == "table-header" else "normal"
     confidence = min(0.95, 0.6 + min(0.25, contrast / 255))
+    if low_contrast:
+        confidence = min(confidence, 0.65)
     return {
         "schema_version": SCHEMA_VERSION,
         "fontFamily": family,
@@ -168,7 +173,7 @@ def resolve_text_style(
         "lineHeightPolicy": "auto",
         "confidence": confidence,
         "evidence": {
-            "status": "observed",
+            "status": "low-contrast" if low_contrast else "observed",
             "source_bbox": normalized,
             "ink_bbox": ink_box,
             "background": _hex_color(background_rgb),

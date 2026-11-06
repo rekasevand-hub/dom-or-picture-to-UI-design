@@ -142,3 +142,20 @@ def test_table_cell_border_is_not_misread_as_text_ink(tmp_path: Path) -> None:
     assert result["fontSize"] < 24
     assert result["fontFamily"] == "Noto Sans SC"
     assert result["textAlign"] == "center"
+
+
+def test_low_contrast_ink_uses_fallback_instead_of_nan(tmp_path: Path) -> None:
+    path = tmp_path / "low-contrast.png"
+    image = Image.new("RGB", (120, 40), "#ffffff")
+    ImageDraw.Draw(image).text(
+        (10, 10),
+        "Low",
+        fill="#e6e6e6",
+        font=_font(14),
+    )
+    image.save(path)
+
+    result = resolve_text_style(path, "Low", [5, 5, 100, 30])
+
+    assert result["textColor"].startswith("#")
+    assert result["confidence"] < 1.0

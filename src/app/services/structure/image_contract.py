@@ -399,6 +399,22 @@ def build_image_design(
     width, height = (int(value) for value in reference["input"]["size"])
     screenshot_sha = str(reference["input"]["sha256"])
     background = _dominant_color(image_path, [0, 0, width, height])
+    scene_plan = graph.get("scenePlan")
+    if isinstance(scene_plan, Mapping):
+        from src.app.services.structure.fidelity.fixed_canvas_compiler import (
+            compile_scene_plan_to_design,
+        )
+
+        return compile_scene_plan_to_design(
+            graph,
+            reference,
+            scene_plan,
+            image_path=image_path,
+            width=width,
+            height=height,
+            background=background,
+            sample_id=sample_id,
+        )
     elements: list[dict[str, Any]] = []
     route = str(graph.get("route") or "grounding")
     presentation = f"{route}-pixel-sampled-fixed-coordinate"
