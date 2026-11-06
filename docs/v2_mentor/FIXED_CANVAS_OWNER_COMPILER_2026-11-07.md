@@ -86,8 +86,8 @@ Latest real Figma acceptance:
 
 | Metric | Before owner cleanup | Latest |
 | --- | ---: | ---: |
-| Within-30 similarity | 90.987% | 94.429% |
-| Page bad-pixel ratio | 9.013% | 5.571% |
+| Within-30 similarity | 90.987% | 94.478% |
+| Page bad-pixel ratio | 9.013% | 5.522% |
 | Header bad-pixel ratio | 9.684% | 3.000% |
 | Sidebar bad-pixel ratio | 2.334% | 2.057% |
 | Critical text | 23 / 24 | 24 / 24 |

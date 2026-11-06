@@ -552,6 +552,53 @@ def test_compiler_samples_border_for_button_control(tmp_path: Path) -> None:
 
     assert button["style"]["borderColor"].startswith("#")
     assert button["style"]["borderWidth"] == 1
+    assert button["style"]["borderRadius"] == 6
+
+
+def test_compiler_groups_adjacent_same_fill_buttons(tmp_path: Path) -> None:
+    path, graph, plan = _fixture(tmp_path)
+    for node_id, x, text in (
+        ("control:copy", 20, "Copy"),
+        ("control:export", 80, "Export"),
+    ):
+        plan["nodes"].append(
+            {
+                "id": node_id,
+                "parent_id": None,
+                "type": "control",
+                "role": "control",
+                "bbox": [x, 190, 60, 30],
+                "content_ref": node_id,
+                "geometry_ref": f"geometry:{node_id}",
+                "children": [],
+                "text": text,
+                "text_bbox": None,
+                "control_type": "button",
+                "state": "enabled",
+                "text_owner_ref": None,
+            }
+        )
+
+    design = _compile(path, graph, plan)
+    group = next(
+        element
+        for element in design["elements"]
+        if str(element.get("id") or "").startswith("control-group:")
+    )
+    members = [
+        element
+        for element in design["elements"]
+        if element.get("contentRef") in {"control:copy", "control:export"}
+    ]
+
+    assert group["x"] == 20
+    assert group["width"] == 120
+    assert len(members) == 2
+    assert all(member["style"]["borderWidth"] == 0 for member in members)
+    assert all(member["style"]["borderRadius"] == 0 for member in members)
+    assert max(design["elements"].index(member) for member in members) > (
+        design["elements"].index(group)
+    )
 
 
 def test_compiler_adds_table_decoration_without_text_copy(tmp_path: Path) -> None:

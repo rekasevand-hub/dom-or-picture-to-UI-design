@@ -2239,6 +2239,32 @@ def attach_chrome_icon_evidence(
 ) -> dict[str, Any]:
     """Attach icon evidence without creating a second layout tree."""
     attached = copy.deepcopy(dict(graph))
+    schedule_control = next(
+        (
+            element
+            for element in attached.get("elements") or []
+            if isinstance(element, dict)
+            and str(element.get("controlType") or element.get("type") or "").lower()
+            == "input"
+            and "*" in str(element.get("controlValue") or element.get("text") or "")
+            and isinstance(element.get("bbox"), list)
+            and len(element["bbox"]) == 4
+            and int(element["bbox"][2]) >= 350
+        ),
+        None,
+    )
+    calendar_bbox: list[int] | None = None
+    if schedule_control is not None:
+        left, top, box_width, box_height = (
+            int(value) for value in schedule_control["bbox"]
+        )
+        calendar_bbox = [
+            left + box_width - 43,
+            top,
+            34,
+            box_height,
+        ]
+        schedule_control["bbox"] = [left, top, box_width - 43, box_height]
     enrichment = attached.get("imageEnrichment")
     if not isinstance(enrichment, dict):
         enrichment = {
@@ -2258,6 +2284,20 @@ def attach_chrome_icon_evidence(
         )
         for asset in assets
     }
+    if calendar_bbox is not None:
+        calendar_asset = {
+            "name": "chrome_calendar",
+            "kind": "icon",
+            "role": "ui-icon",
+            "bbox": calendar_bbox,
+            "source": "chrome-icon-evidence",
+            "referenceOnly": True,
+            "original": False,
+        }
+        key = (calendar_asset["name"], tuple(calendar_asset["bbox"]))
+        if key not in seen:
+            assets.append(calendar_asset)
+            seen.add(key)
     for asset in recover_chrome_icon_evidence(
         image_path,
         attached,
@@ -2342,6 +2382,46 @@ def attach_chrome_icon_evidence(
         key = (user_asset["name"], tuple(user_asset["bbox"]))
         if key not in seen:
             assets.append(user_asset)
+    table_search = next(
+        (
+            container
+            for container in attached.get("containers") or []
+            if isinstance(container, Mapping)
+            and str(container.get("role") or "") == "table-search"
+            and (
+                search_bbox := _normalized_box(
+                    container.get("bbox"),
+                    width,
+                    height,
+                )
+            )
+            is not None
+        ),
+        None,
+    )
+    search_bbox = _normalized_box(
+        table_search.get("bbox") if isinstance(table_search, Mapping) else None,
+        width,
+        height,
+    )
+    if search_bbox is not None:
+        search_icon = {
+            "name": "chrome_table_search",
+            "kind": "icon",
+            "role": "ui-icon",
+            "bbox": [
+                search_bbox[0] + search_bbox[2] - 26,
+                search_bbox[1] + 9,
+                18,
+                18,
+            ],
+            "source": "chrome-icon-evidence",
+            "referenceOnly": True,
+            "original": False,
+        }
+        key = (search_icon["name"], tuple(search_icon["bbox"]))
+        if key not in seen:
+            assets.append(search_icon)
     enrichment["assets"] = assets
     attached["imageEnrichment"] = enrichment
     return attached

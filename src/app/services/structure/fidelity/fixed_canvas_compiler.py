@@ -162,6 +162,7 @@ def _control_element(
     height: int,
     node_by_id: Mapping[str, Mapping[str, Any]],
     index: int,
+    group_fill: str | None = None,
 ) -> dict[str, Any]:
     from src.app.services.structure.image_contract import (
         _dominant_color,
@@ -200,16 +201,26 @@ def _control_element(
         role="control",
     )
     fill = _dominant_color(image_path, bbox, inset=2)
+    if group_fill is not None:
+        fill = group_fill
     style_spec = {
         "fillColor": fill,
-        "borderColor": _sample_border_color(image_path, bbox, fill),
-        "borderWidth": 1,
+        "borderColor": (
+            _sample_border_color(image_path, bbox, fill) if group_fill is None else fill
+        ),
+        "borderWidth": 0 if group_fill is not None else 1,
         "textColor": style["textColor"],
         "fontSize": style["fontSize"],
         "fontWeight": "normal",
         "fontFamily": style["fontFamily"],
         "textAlign": "left",
-        "borderRadius": 6 if box_width >= 24 and box_height >= 20 else 0,
+        "borderRadius": (
+            0
+            if group_fill is not None
+            else 6
+            if box_width >= 24 and box_height >= 20
+            else 0
+        ),
     }
     element = {
         "id": str(node.get("id") or f"control-{index}"),
@@ -230,7 +241,9 @@ def _control_element(
             "source": "scene-plan",
             "role": str(node.get("role") or "control"),
             "candidate_type": control_type,
-            "grouping_status": "planned",
+            "grouping_status": (
+                "grouped-control" if group_fill is not None else "planned"
+            ),
             "reference_only": False,
             "generated": False,
             "textStatus": "scene-plan-owner",
@@ -401,6 +414,126 @@ def _is_source_pixel_control(node: Mapping[str, Any]) -> bool:
     return small_control or checked_control
 
 
+def _hex_rgb(value: str) -> tuple[int, int, int]:
+    text = value.lstrip("#")
+    if len(text) != 6:
+        return (0, 0, 0)
+    try:
+        return tuple(int(text[index : index + 2], 16) for index in (0, 2, 4))
+    except ValueError:
+        return (0, 0, 0)
+
+
+def _same_fill(left: str, right: str, tolerance: int = 20) -> bool:
+    left_rgb = _hex_rgb(left)
+    right_rgb = _hex_rgb(right)
+    return (
+        max(abs(left_rgb[index] - right_rgb[index]) for index in range(3)) <= tolerance
+    )
+
+
+def _button_groups(
+    nodes: list[dict[str, Any]],
+    *,
+    image_path: str,
+    width: int,
+    height: int,
+) -> tuple[dict[str, str], dict[str, str], list[dict[str, Any]]]:
+    from src.app.services.structure.image_contract import (
+        _dominant_color,
+        _sample_border_color,
+    )
+
+    candidates: list[tuple[dict[str, Any], list[int], str]] = []
+    for node in nodes:
+        if node.get("type") != "control":
+            continue
+        if str(node.get("control_type") or "").lower() != "button":
+            continue
+        if _is_source_pixel_control(node):
+            continue
+        try:
+            bbox = _node_bbox(node, width, height)
+        except ValueError:
+            continue
+        candidates.append(
+            (
+                node,
+                bbox,
+                _dominant_color(image_path, bbox, inset=2),
+            )
+        )
+    candidates.sort(key=lambda item: (item[1][1], item[1][0]))
+
+    runs: list[list[tuple[dict[str, Any], list[int], str]]] = []
+    for candidate in candidates:
+        if not runs:
+            runs.append([candidate])
+            continue
+        previous = runs[-1][-1]
+        previous_bbox = previous[1]
+        bbox = candidate[1]
+        previous_right = previous_bbox[0] + previous_bbox[2]
+        gap = bbox[0] - previous_right
+        same_row = (
+            abs(previous_bbox[1] - bbox[1]) <= 2
+            and abs(previous_bbox[3] - bbox[3]) <= 2
+        )
+        if same_row and -2 <= gap <= 2 and _same_fill(previous[2], candidate[2]):
+            runs[-1].append(candidate)
+        else:
+            runs.append([candidate])
+
+    grouped: dict[str, str] = {}
+    grouped_fill: dict[str, str] = {}
+    group_elements: list[dict[str, Any]] = []
+    for run in runs:
+        if len(run) < 2:
+            continue
+        boxes = [item[1] for item in run]
+        left = min(box[0] for box in boxes)
+        top = min(box[1] for box in boxes)
+        right = max(box[0] + box[2] for box in boxes)
+        bottom = max(box[1] + box[3] for box in boxes)
+        group_id = f"control-group:{run[0][0].get('id')}"
+        fill = run[0][2]
+        for node, _bbox, _fill in run:
+            node_id = str(node.get("id") or "")
+            grouped[node_id] = group_id
+            grouped_fill[node_id] = fill
+        group_elements.append(
+            {
+                "id": group_id,
+                "type": "container",
+                "x": left,
+                "y": top,
+                "width": right - left,
+                "height": bottom - top,
+                "text": "",
+                "style": {
+                    "fillColor": fill,
+                    "borderColor": _sample_border_color(
+                        image_path,
+                        [left, top, right - left, bottom - top],
+                        fill,
+                    ),
+                    "borderWidth": 1,
+                    "borderRadius": 6,
+                },
+                "role": "control-group",
+                "name": "control-group",
+                "contentRef": None,
+                "sceneOwnerId": group_id,
+                "imageMVP": {
+                    "source": "scene-plan",
+                    "role": "control-group",
+                    "grouping_status": "shared-border",
+                },
+            }
+        )
+    return grouped, grouped_fill, group_elements
+
+
 def _container_element(
     node: Mapping[str, Any],
     *,
@@ -556,6 +689,12 @@ def compile_scene_plan_to_design(
     containers: list[dict[str, Any]] = []
     decorations: list[dict[str, Any]] = []
     leaves: list[dict[str, Any]] = []
+    grouped_controls, grouped_fill, control_groups = _button_groups(
+        nodes,
+        image_path=image_path,
+        width=width,
+        height=height,
+    )
     table_ordinal = 0
     for index, node in enumerate(nodes):
         node_type = str(node.get("type") or "")
@@ -611,6 +750,7 @@ def compile_scene_plan_to_design(
                         height=height,
                         node_by_id=node_by_id,
                         index=index,
+                        group_fill=grouped_fill.get(str(node.get("id") or "")),
                     )
                 )
         elif node_type == "image":
@@ -625,6 +765,7 @@ def compile_scene_plan_to_design(
                     index=index,
                 )
             )
+    containers.extend(control_groups)
     elements = [*containers, *decorations, *leaves]
     text_count = sum(
         element.get("type") == "text" and bool(element.get("text"))

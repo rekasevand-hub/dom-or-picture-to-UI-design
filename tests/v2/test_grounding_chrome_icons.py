@@ -29,6 +29,11 @@ def _graph() -> dict:
                 "role": "main-content",
                 "bbox": [276, 64, 1644, 762],
             },
+            {
+                "id": "table-search",
+                "role": "table-search",
+                "bbox": [1715, 501, 176, 38],
+            },
         ],
         "elements": [
             {
@@ -54,6 +59,13 @@ def _graph() -> dict:
                 "type": "text",
                 "bbox": [1751, 24, 123, 20],
                 "text": "刘治强",
+            },
+            {
+                "id": 5,
+                "type": "input",
+                "controlType": "input",
+                "controlValue": "0 30 3 * * ?",
+                "bbox": [1447, 135, 414, 39],
             },
         ],
         "imageEnrichment": {
@@ -86,6 +98,10 @@ def test_chrome_icon_evidence_is_attached_before_scene_planning(
     assert by_name["chrome_home"]["bbox"] == [20, 208, 22, 22]
     assert by_name["chrome_brand"]["bbox"] == [307, 22, 169, 24]
     assert by_name["chrome_user_label"]["bbox"] == [1748, 21, 62, 26]
+    assert by_name["chrome_table_search"]["bbox"] == [1865, 510, 18, 18]
+    assert by_name["chrome_calendar"]["bbox"] == [1818, 135, 34, 39]
+    schedule = next(element for element in graph["elements"] if element.get("id") == 5)
+    assert schedule["bbox"] == [1447, 135, 371, 39]
     assert by_name["chrome_brand"]["kind"] == "logo"
     assert by_name["chrome_user_label"]["kind"] == "identity"
     assert all(asset["kind"] in {"icon", "logo", "identity"} for asset in assets)
