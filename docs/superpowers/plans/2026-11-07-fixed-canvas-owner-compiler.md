@@ -79,25 +79,25 @@ Commit only Task 1 files.
 **Interfaces:**
 - Produces: `build_container_manifest(scene_plan: Mapping[str, Any], authoring_frames: Mapping[str, Mapping[str, Any]] | None = None) -> dict`
 
-- [ ] **Step 1: Write failing tests for root-sized authoring frames and authoring geometry**
+- [x] **Step 1: Write failing tests for root-sized authoring frames and authoring geometry**
 
 Assert source and authoring bboxes remain distinct and local child transforms
 are derived from absolute source geometry.
 
-- [ ] **Step 2: Run tests and verify module failure**
+- [x] **Step 2: Run tests and verify module failure**
 
 Expected: `ModuleNotFoundError`.
 
-- [ ] **Step 3: Implement the manifest**
+- [x] **Step 3: Implement the manifest**
 
 Emit `owner_id`, `parent_id`, `source_bbox`, `authoring_bbox`, `layout_mode`,
 and `children`.
 
-- [ ] **Step 4: Verify tests**
+- [x] **Step 4: Verify tests**
 
 Run the new tests. Expected: pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Commit only container-manifest files.
 

@@ -11,6 +11,7 @@ from typing import Any
 EVIDENCE_SCHEMA_VERSION = "grounding-fidelity-evidence/1.0"
 INVENTORY_SCHEMA_VERSION = "grounding-content-inventory/1.0"
 GEOMETRY_SCHEMA_VERSION = "grounding-geometry-manifest/1.0"
+CONTAINER_MANIFEST_SCHEMA_VERSION = "grounding-container-manifest/1.0"
 SCENE_PLAN_SCHEMA_VERSION = "grounding-scene-plan/1.0"
 FIDELITY_SCHEMA_VERSION = "grounding-fidelity-report/1.0"
 

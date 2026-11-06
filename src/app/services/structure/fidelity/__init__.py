@@ -5,6 +5,9 @@ from src.app.services.structure.fidelity.inventory import (
     build_evidence_bundle,
     build_geometry_manifest,
 )
+from src.app.services.structure.fidelity.container_manifest import (
+    build_container_manifest,
+)
 from src.app.services.structure.fidelity.local_repair import (
     GroundingLocalRepairer,
 )
@@ -22,6 +25,7 @@ __all__ = [
     "apply_repair_patch",
     "apply_scene_plan",
     "build_content_inventory",
+    "build_container_manifest",
     "build_evidence_bundle",
     "build_geometry_manifest",
     "build_scene_plan",
