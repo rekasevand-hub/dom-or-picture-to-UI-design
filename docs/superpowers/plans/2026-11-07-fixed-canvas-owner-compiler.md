@@ -152,24 +152,24 @@ Commit only style-resolver files.
 - Consumes: `resolve_text_style(...)`.
 - Scene-plan text and table text use resolved style evidence.
 
-- [ ] **Step 1: Write failing compiler tests**
+- [x] **Step 1: Write failing compiler tests**
 
 Assert planner text no longer uses a hardcoded table font size/line height, and
 style evidence is retained on the design element.
 
-- [ ] **Step 2: Run tests and verify failure**
+- [x] **Step 2: Run tests and verify failure**
 
 Expected: style evidence fields absent.
 
-- [ ] **Step 3: Wire the resolver**
+- [x] **Step 3: Wire the resolver**
 
 Apply it to scene-plan text owners while preserving the existing geometry.
 
-- [ ] **Step 4: Verify tests and focused image suite**
+- [x] **Step 4: Verify tests and focused image suite**
 
 Expected: pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Commit compiler integration files.
 

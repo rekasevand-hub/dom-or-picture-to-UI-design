@@ -31,6 +31,7 @@ from src.app.services.structure.image_enrichment.vector_icons import (
 from src.app.services.structure.image_enrichment.table_scene import (
     normalize_table_design,
 )
+from src.app.services.structure.fidelity.style_resolver import resolve_text_style
 
 SCHEMA_VERSION = "image-figma-mvp/1.0"
 REFERENCE_SCHEMA_VERSION = "image-reference/1.0"
@@ -1176,6 +1177,11 @@ def _materialize_scene_plan_text(
         if element.get("contentRef")
     }
     additions: list[dict[str, Any]] = []
+    node_by_id = {
+        str(node.get("id") or ""): node
+        for node in scene_plan.get("nodes") or []
+        if isinstance(node, Mapping) and node.get("id")
+    }
     for index, node in enumerate(scene_plan.get("nodes") or []):
         if not isinstance(node, Mapping) or str(node.get("type") or "") not in {
             "text",
@@ -1326,6 +1332,30 @@ def _materialize_scene_plan_text(
             additions.append(owner)
             existing_refs.add(content_ref)
             continue
+        parent = node_by_id.get(str(node.get("parent_id") or ""))
+        parent_bbox = (
+            _normalized_box(parent.get("bbox"), width, height)
+            if isinstance(parent, Mapping)
+            else None
+        )
+        style_role = "table-header" if content_ref.startswith("table-header:") else role
+        style_evidence = resolve_text_style(
+            image_path,
+            text,
+            list(bbox),
+            parent_bbox=list(parent_bbox) if parent_bbox is not None else None,
+            role=style_role,
+        )
+        text_style = {
+            "textColor": style_evidence["textColor"],
+            "fontSize": style_evidence["fontSize"],
+            "fontWeight": (
+                "bold" if node.get("role") == "title" else style_evidence["fontWeight"]
+            ),
+            "fontFamily": style_evidence["fontFamily"],
+        }
+        if style_evidence["lineHeightPolicy"] != "auto":
+            text_style["lineHeight"] = style_evidence["lineHeightPolicy"]
         covered_by = next(
             (
                 existing
@@ -1340,42 +1370,16 @@ def _materialize_scene_plan_text(
             covered_by["contentRef"] = content_ref
             covered_by["sceneOwnerId"] = str(node.get("id") or content_ref)
             covered_by.setdefault("imageMVP", {})["source"] = "scene-plan"
+            covered_by["style"] = text_style
+            covered_by["styleEvidence"] = style_evidence
             existing_refs.add(content_ref)
             continue
-        text_color, ink_box, band_height = _foreground_color(
-            image_path,
-            [
-                rendered["x"],
-                rendered["y"],
-                rendered["width"],
-                rendered["height"],
-            ],
-        )
-        is_table_header = role == "table-header" or content_ref.startswith(
-            "table-header:"
-        )
-        is_table_cell = role == "table-cell" and content_ref.startswith("table-cell:")
-        if is_table_header or is_table_cell:
-            font_size = 13
-        elif role == "control-label":
-            font_size = 13
-        else:
-            font_size = _estimate_font_size(
-                text,
-                ink_box or list(rendered.values()),
-                band_height,
-            )
         element = {
             "id": f"scene-text-{index}",
             "type": "text",
             "text": text,
-            "style": {
-                "textColor": text_color,
-                "fontSize": font_size,
-                "fontWeight": "bold" if node.get("role") == "title" else "normal",
-                "fontFamily": _teacher_font_family(text),
-                "lineHeight": max(18, min(24, rendered["height"])),
-            },
+            "style": text_style,
+            "styleEvidence": style_evidence,
             "imageMVP": {
                 "source": "scene-plan",
                 "role": role,

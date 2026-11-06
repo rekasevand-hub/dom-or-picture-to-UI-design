@@ -110,8 +110,11 @@ def test_scene_plan_text_nodes_are_compiled_as_native_text(tmp_path: Path) -> No
     assert by_content["text:title"]["text"] == "自动备份管理"
     assert by_content["text:checkbox-label"]["text"] == "以auto用户身份执行"
     assert by_content["table-cell:0:0"]["text"] == "2026-11-01 03:30:00"
-    assert by_content["table-header:0:0"]["style"]["fontSize"] == 13
-    assert by_content["table-header:0:0"]["style"]["fontWeight"] == "normal"
+    assert by_content["table-header:0:0"]["style"]["fontWeight"] == "bold"
+    assert by_content["table-header:0:0"]["styleEvidence"]["evidence"]["status"] in {
+        "observed",
+        "low-confidence",
+    }
     assert by_content["control:manual"]["controlValue"] == "手动执行"
 
 
@@ -164,6 +167,8 @@ def test_scene_text_keeps_source_geometry_and_editable_style(tmp_path: Path) -> 
     ]
     assert label["style"]["fontFamily"]
     assert label["style"]["fontSize"] > 0
+    assert label["styleEvidence"]["evidence"]["source_bbox"] == [64, 72, 180, 22]
+    assert "lineHeight" not in label["style"]
     assert label["imageMVP"]["source"] == "scene-plan"
 
 
