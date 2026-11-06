@@ -51,7 +51,7 @@ output/_grounding_high_fidelity_2026-11-05/IMG-ARTICLE
 
 | Sample | Acceptance | Critical text | Within-30 | Failed regions | Figma frame |
 | --- | --- | ---: | ---: | ---: | --- |
-| `IMG-FLEXWEAVER-ADMIN` | blocked-fail | 24 / 24 | 94.034% | 6 / 7 | `3:902` |
+| `IMG-FLEXWEAVER-ADMIN` | blocked-fail | 24 / 24 | 93.959% | 6 / 7 | `5:2` |
 | `IMG-ACCTOKEN-API` | blocked-fail | 44 / 48 | 95.797% | 3 / 7 | `26:2726` |
 | `IMG-ARTICLE` | blocked-fail | 22 / 43 | 92.030% | 10 / 12 | `26:2830` |
 
@@ -76,9 +76,9 @@ Failed regions:
 | header | 9.226% |
 | table-section | 6.442% |
 | table | 6.249% |
-| main-content | 6.462% |
-| page | 5.966% |
-| form-section | 6.093% |
+| main-content | 6.557% |
+| page | 6.041% |
+| form-section | 6.237% |
 
 The latest local repair pass uses reference-only screenshot crops for chrome
 icons, left-aligned text boxes for input values, a single ScenePlan owner for
@@ -86,6 +86,11 @@ table text, automatic removal of unowned table-model text, and relocation of
 mis-snapped table-toolbar buttons. It keeps 24/24 critical content and native
 editability, but header typography/icons and text-heavy form/table rendering
 still exceed the region threshold.
+
+The final ownership repair also removes 1px-offset unowned input shadows that
+were covering real values, and resolves large icon-button mislabels back to
+editable inputs. Those changes improve structural correctness even though the
+strict region metric remains above threshold.
 
 ### Account Token API
 

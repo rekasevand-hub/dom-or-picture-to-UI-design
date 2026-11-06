@@ -1027,6 +1027,7 @@ def build_image_design(
             element["layoutChildren"] = [{"id": item_id} for item_id in children]
     scene_plan = graph.get("scenePlan")
     if isinstance(scene_plan, Mapping):
+        elements = _remove_unowned_control_shadows(elements, scene_plan)
         elements = _remove_unowned_scene_table_text(
             elements,
             scene_plan,
@@ -1080,6 +1081,35 @@ def build_image_design(
         },
     }
     return design
+
+
+def _remove_unowned_control_shadows(
+    elements: list[dict[str, Any]],
+    scene_plan: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    planned_boxes = [
+        {
+            "x": bbox[0],
+            "y": bbox[1],
+            "width": bbox[2],
+            "height": bbox[3],
+        }
+        for node in scene_plan.get("nodes") or []
+        if isinstance(node, Mapping)
+        and node.get("type") == "control"
+        and isinstance(node.get("bbox"), list)
+        and len(node["bbox"]) == 4
+        and (bbox := node["bbox"])
+    ]
+    if not planned_boxes:
+        return elements
+    return [
+        element
+        for element in elements
+        if element.get("contentRef")
+        or str(element.get("type") or "") not in {"input", "button"}
+        or not any(_scene_text_overlaps(element, planned) for planned in planned_boxes)
+    ]
 
 
 def _remove_unowned_scene_table_text(

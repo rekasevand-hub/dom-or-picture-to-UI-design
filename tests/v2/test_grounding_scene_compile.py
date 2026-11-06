@@ -7,6 +7,7 @@ from PIL import Image
 
 from src.app.services.evidence.image_figma_acceptance import evaluate_image_mvp
 from src.app.services.structure.image_contract import (
+    _remove_unowned_control_shadows,
     build_image_design,
     inspect_image_reference,
 )
@@ -286,7 +287,7 @@ def test_unowned_control_shadow_is_removed(tmp_path: Path) -> None:
         },
         {
             "id": 2,
-            "bbox": [100, 40, 200, 32],
+            "bbox": [101, 41, 200, 32],
             "type": "input",
             "text": "",
             "controlValue": "",
@@ -303,6 +304,44 @@ def test_unowned_control_shadow_is_removed(tmp_path: Path) -> None:
 
     assert len(controls) == 1
     assert controls[0]["contentRef"] == "control:name"
+
+
+def test_unowned_offset_control_shadow_is_removed_by_scene_bbox() -> None:
+    scene_plan = {
+        "nodes": [
+            {
+                "id": "control:name",
+                "type": "control",
+                "bbox": [100, 40, 200, 32],
+                "content_ref": "control:name",
+            }
+        ]
+    }
+    elements = [
+        {
+            "id": "owner",
+            "type": "input",
+            "x": 100,
+            "y": 40,
+            "width": 200,
+            "height": 32,
+            "text": "auto_backup",
+            "contentRef": "control:name",
+        },
+        {
+            "id": "shadow",
+            "type": "input",
+            "x": 101,
+            "y": 41,
+            "width": 200,
+            "height": 32,
+            "text": "",
+        },
+    ]
+
+    filtered = _remove_unowned_control_shadows(elements, scene_plan)
+
+    assert [element["id"] for element in filtered] == ["owner"]
 
 
 def test_scene_plan_header_role_recovers_reference_icon_crop(
