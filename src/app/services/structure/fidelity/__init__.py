@@ -15,6 +15,7 @@ from src.app.services.structure.fidelity.scene_plan import (
     apply_scene_plan,
     build_scene_plan,
 )
+from src.app.services.structure.fidelity.style_resolver import resolve_text_style
 from src.app.services.structure.fidelity.repair import (
     apply_repair_patch,
     plan_repair_requests,
@@ -32,4 +33,5 @@ __all__ = [
     "GroundingLocalRepairer",
     "plan_repair_requests",
     "run_bounded_repair_loop",
+    "resolve_text_style",
 ]

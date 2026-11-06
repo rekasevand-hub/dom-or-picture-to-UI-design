@@ -117,26 +117,26 @@ Result fields:
 `fontFamily`, `fontSize`, `fontWeight`, `textColor`, `textAlign`,
 `lineHeightPolicy`, `confidence`, `evidence`.
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 Cover dark text on light background, light text on dark background, CJK versus
 Latin family candidates, header alignment, and explicit fallback confidence.
 
-- [ ] **Step 2: Run tests and verify failure**
+- [x] **Step 2: Run tests and verify failure**
 
 Expected: module missing.
 
-- [ ] **Step 3: Implement deterministic sampling and candidate ranking**
+- [x] **Step 3: Implement deterministic sampling and candidate ranking**
 
 Use ink/background clustering, ink height and advance width for size, CJK/Latin
 script routing for family candidates, and parent-relative geometry for
 alignment.
 
-- [ ] **Step 4: Verify tests**
+- [x] **Step 4: Verify tests**
 
 Run style-resolver and image-contract tests. Expected: pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Commit only style-resolver files.
 
