@@ -6,6 +6,7 @@ import hashlib
 import json
 import unicodedata
 from collections.abc import Mapping, Sequence
+from difflib import SequenceMatcher
 from typing import Any
 
 EVIDENCE_SCHEMA_VERSION = "grounding-fidelity-evidence/1.0"
@@ -109,6 +110,27 @@ def normalize_bbox(
 def normalize_match_text(value: Any) -> str:
     """Normalize text for matching without replacing its display form."""
     return "".join(unicodedata.normalize("NFKC", str(value or "")).casefold().split())
+
+
+def normalize_owner_text(value: Any) -> str:
+    """Normalize text for owner matching while ignoring punctuation differences."""
+    return "".join(char for char in normalize_match_text(value) if char.isalnum())
+
+
+def owner_text_similarity(left: Any, right: Any) -> float:
+    """Return a deterministic similarity for punctuation-tolerant owner matching."""
+    normalized_left = normalize_owner_text(left)
+    normalized_right = normalize_owner_text(right)
+    if not normalized_left or not normalized_right:
+        return 0.0
+    if normalized_left == normalized_right:
+        return 1.0
+    return SequenceMatcher(
+        None,
+        normalized_left,
+        normalized_right,
+        autojunk=False,
+    ).ratio()
 
 
 def source_authority(source: Any) -> str:

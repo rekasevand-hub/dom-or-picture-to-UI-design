@@ -49,6 +49,18 @@ def _text_role(node: Mapping[str, Any]) -> str:
     return str(node.get("role") or "")
 
 
+def _control_text_bbox(bbox: list[int]) -> list[int]:
+    x, y, box_width, box_height = bbox
+    inset_x = min(12, max(1, box_width // 4))
+    line_height = min(20, max(12, box_height - 4))
+    return [
+        x + inset_x,
+        y + max(0, (box_height - line_height) // 2),
+        max(1, box_width - inset_x * 2),
+        line_height,
+    ]
+
+
 def _text_element(
     node: Mapping[str, Any],
     *,
@@ -61,17 +73,49 @@ def _text_element(
     x, y, box_width, box_height = bbox
     text = str(node.get("text") or "")
     role = _text_role(node)
+    is_table_text = role in {"table-cell", "table-header"}
+    text_bbox = normalize_bbox(node.get("text_bbox"), width, height)
+    style_bbox = text_bbox or bbox
     style = resolve_text_style(
         image_path,
         text,
-        bbox,
-        parent_bbox=_parent_bbox(node, node_by_id, width, height),
+        style_bbox,
+        parent_bbox=(
+            bbox if is_table_text else _parent_bbox(node, node_by_id, width, height)
+        ),
         role=role,
     )
     render_x = x
     render_y = y
     render_width = box_width
     render_height = box_height
+    if role == "table-header":
+        style["textAlign"] = "center"
+    elif not is_table_text:
+        style["textAlign"] = "left"
+    if is_table_text:
+        if text_bbox is not None:
+            text_x, text_y, text_width, text_height = text_bbox
+            render_y = text_y
+            render_height = max(18, text_height)
+            if role == "table-header":
+                render_width = box_width
+            else:
+                style["textAlign"] = "left"
+                render_x = text_x
+                render_width = max(1, text_width)
+        else:
+            ink_bbox = style["evidence"].get("ink_bbox")
+            normalized_ink = normalize_bbox(ink_bbox, width, height)
+            if normalized_ink is not None:
+                ink_x, ink_y, ink_width, ink_height = normalized_ink
+                render_y = ink_y
+                render_height = max(18, ink_height + 4)
+                if style["textAlign"] in {"center", "right"}:
+                    render_width = box_width
+                else:
+                    render_x = ink_x
+                    render_width = max(1, x + box_width - ink_x)
     if role == "control-label" and box_width <= 32:
         render_x = x + box_width + 4
         render_width = min(
@@ -127,6 +171,11 @@ def _control_element(
     bbox = _node_bbox(node, width, height)
     x, y, box_width, box_height = bbox
     control_type = str(node.get("control_type") or "button").lower()
+    text_bbox = normalize_bbox(node.get("text_bbox"), width, height)
+    text = "" if node.get("text_owner_ref") else str(node.get("text") or "")
+    style_bbox = text_bbox or (
+        _control_text_bbox(bbox) if text and box_width > 24 else bbox
+    )
     element_type = (
         "input"
         if control_type
@@ -143,17 +192,18 @@ def _control_element(
     )
     if element_type == "input" and control_type in {"button", "icon-button"}:
         control_type = "input"
-    text = "" if node.get("text_owner_ref") else str(node.get("text") or "")
     style = resolve_text_style(
         image_path,
         text,
-        bbox,
-        parent_bbox=_parent_bbox(node, node_by_id, width, height),
+        style_bbox,
+        parent_bbox=bbox,
         role="control",
     )
     fill = _dominant_color(image_path, bbox, inset=2)
     style_spec = {
         "fillColor": fill,
+        "borderColor": _sample_border_color(image_path, bbox, fill),
+        "borderWidth": 1,
         "textColor": style["textColor"],
         "fontSize": style["fontSize"],
         "fontWeight": "normal",
@@ -161,9 +211,6 @@ def _control_element(
         "textAlign": "left",
         "borderRadius": 6 if box_width >= 24 and box_height >= 20 else 0,
     }
-    if element_type == "input":
-        style_spec["borderColor"] = _sample_border_color(image_path, bbox, fill)
-        style_spec["borderWidth"] = 1
     element = {
         "id": str(node.get("id") or f"control-{index}"),
         "type": element_type,
@@ -190,12 +237,9 @@ def _control_element(
         },
     }
     if element_type == "input" and text:
-        element["textBox"] = [
-            x + 12,
-            y + 10,
-            max(1, box_width - 24),
-            20,
-        ]
+        element["textBox"] = (
+            list(text_bbox) if text_bbox is not None else list(style_bbox)
+        )
     return element
 
 
@@ -269,6 +313,94 @@ def _image_element(
     }
 
 
+def _icon_control_element(
+    node: Mapping[str, Any],
+    *,
+    image_path: str,
+    width: int,
+    height: int,
+    sample_id: str,
+    reference: Mapping[str, Any],
+    index: int,
+) -> dict[str, Any]:
+    element = _image_element(
+        node,
+        image_path=image_path,
+        width=width,
+        height=height,
+        sample_id=sample_id,
+        reference=reference,
+        index=index,
+    )
+    control_type = str(node.get("control_type") or "icon-button").lower()
+    element.update(
+        {
+            "text": "",
+            "controlType": control_type,
+            "controlValue": str(node.get("text") or ""),
+            "controlState": str(node.get("state") or "enabled"),
+        }
+    )
+    element["imageMVP"].update(
+        {
+            "candidate_type": control_type,
+            "role": control_type,
+            "textStatus": "reference-only-control",
+        }
+    )
+    return element
+
+
+def _container_render_box(
+    image_path: str,
+    bbox: list[int],
+    role: str,
+) -> list[int]:
+    if role != "header":
+        return bbox
+
+    import numpy as np
+    from PIL import Image
+
+    x, y, box_width, box_height = bbox
+    with Image.open(image_path) as source:
+        image = np.asarray(source.convert("RGB"), dtype=np.int16)
+    if y + box_height > image.shape[0] or x + box_width > image.shape[1]:
+        return bbox
+    trim = 0
+    for row in range(y + box_height - 1, y, -1):
+        pixels = image[row, x : x + box_width]
+        if float(pixels.mean()) < 220 or float(pixels.std()) > 20:
+            break
+        trim += 1
+        if trim >= 8:
+            break
+    if trim < 2 or trim >= box_height:
+        return bbox
+    return [x, y, box_width, box_height - trim]
+
+
+def _is_source_pixel_control(node: Mapping[str, Any]) -> bool:
+    control_type = str(node.get("control_type") or "").lower()
+    bbox = node.get("bbox")
+    if not isinstance(bbox, list) or len(bbox) != 4:
+        return False
+    try:
+        box_width, box_height = (int(value) for value in bbox[2:4])
+    except (TypeError, ValueError):
+        return False
+    small_control = (
+        control_type == "icon-button"
+        and box_width <= 64
+        and box_height <= 64
+        and len(str(node.get("text") or "").strip()) <= 2
+    )
+    checked_control = control_type in {"checkbox", "radio"} and str(
+        node.get("state") or ""
+    ).lower() in {"checked", "mixed"}
+    return small_control or checked_control
+
+
 def _container_element(
     node: Mapping[str, Any],
     *,
@@ -279,7 +411,9 @@ def _container_element(
     from src.app.services.structure.image_contract import _dominant_color
 
     bbox = _node_bbox(node, width, height)
-    x, y, box_width, box_height = bbox
+    role = str(node.get("role") or "")
+    render_bbox = _container_render_box(image_path, bbox, role)
+    x, y, box_width, box_height = render_bbox
     return {
         "id": str(node.get("id") or ""),
         "type": "container",
@@ -288,9 +422,9 @@ def _container_element(
         "width": box_width,
         "height": box_height,
         "text": "",
-        "style": {"fillColor": _dominant_color(image_path, bbox, inset=2)},
-        "role": str(node.get("role") or ""),
-        "name": str(node.get("role") or node.get("id") or "Container"),
+        "style": {"fillColor": _dominant_color(image_path, render_bbox, inset=2)},
+        "role": role,
+        "name": str(role or node.get("id") or "Container"),
         "contentRef": node.get("content_ref"),
         "sceneOwnerId": str(node.get("id") or ""),
         "imageMVP": {
@@ -322,7 +456,33 @@ def _table_decorations(
     if not columns and rows and isinstance(rows[0], list):
         columns = len(rows[0])
     x, y, box_width, box_height = table_bbox
-    header_height = round(box_height / max(1, row_count)) if row_count else box_height
+    grid = table_node.get("grid")
+    x_boundaries: list[int] = []
+    y_boundaries: list[int] = []
+    if isinstance(grid, Mapping):
+        raw_x = grid.get("x_boundaries")
+        raw_y = grid.get("y_boundaries")
+        if isinstance(raw_x, list) and len(raw_x) >= 2:
+            x_boundaries = [int(value) for value in raw_x]
+        if isinstance(raw_y, list) and len(raw_y) >= 2:
+            y_boundaries = [int(value) for value in raw_y]
+    if x_boundaries:
+        columns = len(x_boundaries) - 1
+    else:
+        x_boundaries = [
+            x + round(column_index * box_width / max(1, columns))
+            for column_index in range(columns + 1)
+        ]
+    if y_boundaries:
+        row_count = len(y_boundaries) - 1
+    else:
+        y_boundaries = [
+            y + round(row_index * box_height / max(1, row_count))
+            for row_index in range(row_count + 1)
+        ]
+    header_height = (
+        y_boundaries[1] - y_boundaries[0] if len(y_boundaries) >= 2 else box_height
+    )
     decorations = [
         {
             "id": f"table-grid-header-{table_ordinal}",
@@ -337,8 +497,7 @@ def _table_decorations(
             "contentRef": None,
         }
     ]
-    for column_index in range(columns + 1):
-        line_x = x + round(column_index * box_width / max(1, columns))
+    for column_index, line_x in enumerate(x_boundaries):
         decorations.append(
             {
                 "id": f"table-grid-vertical-{table_ordinal}-{column_index}",
@@ -353,8 +512,7 @@ def _table_decorations(
                 "contentRef": None,
             }
         )
-    for row_index in range(row_count + 1):
-        line_y = y + round(row_index * box_height / max(1, row_count))
+    for row_index, line_y in enumerate(y_boundaries):
         decorations.append(
             {
                 "id": f"table-grid-horizontal-{table_ordinal}-{row_index}",
@@ -432,16 +590,29 @@ def compile_scene_plan_to_design(
                 )
             )
         elif node_type == "control":
-            leaves.append(
-                _control_element(
-                    node,
-                    image_path=image_path,
-                    width=width,
-                    height=height,
-                    node_by_id=node_by_id,
-                    index=index,
+            if _is_source_pixel_control(node):
+                leaves.append(
+                    _icon_control_element(
+                        node,
+                        image_path=image_path,
+                        width=width,
+                        height=height,
+                        sample_id=sample_id,
+                        reference=reference,
+                        index=index,
+                    )
                 )
-            )
+            else:
+                leaves.append(
+                    _control_element(
+                        node,
+                        image_path=image_path,
+                        width=width,
+                        height=height,
+                        node_by_id=node_by_id,
+                        index=index,
+                    )
+                )
         elif node_type == "image":
             leaves.append(
                 _image_element(

@@ -14,6 +14,9 @@ from src.app.services.structure.fidelity.fixed_canvas_compiler import (
 from src.app.services.structure.fidelity.local_repair import (
     GroundingLocalRepairer,
 )
+from src.app.services.structure.fidelity.regions import (
+    reconcile_region_containers,
+)
 from src.app.services.structure.fidelity.scene_plan import (
     apply_scene_plan,
     build_scene_plan,
@@ -36,6 +39,7 @@ __all__ = [
     "compile_scene_plan_to_design",
     "GroundingLocalRepairer",
     "plan_repair_requests",
+    "reconcile_region_containers",
     "run_bounded_repair_loop",
     "resolve_text_style",
 ]

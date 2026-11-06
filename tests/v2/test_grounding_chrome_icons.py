@@ -1,0 +1,93 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from PIL import Image
+
+from src.app.services.structure.image_contract import (
+    attach_chrome_icon_evidence,
+)
+
+
+def _graph() -> dict:
+    return {
+        "image_w": 1920,
+        "image_h": 826,
+        "containers": [
+            {
+                "id": "sidebar",
+                "role": "sidebar",
+                "bbox": [0, 0, 276, 826],
+            },
+            {
+                "id": "header",
+                "role": "header",
+                "bbox": [276, 0, 1644, 64],
+            },
+            {
+                "id": "main",
+                "role": "main-content",
+                "bbox": [276, 64, 1644, 762],
+            },
+        ],
+        "elements": [
+            {
+                "id": 1,
+                "type": "text",
+                "bbox": [323, 24, 153, 20],
+                "text": "FlexWeaver",
+            },
+            {
+                "id": 2,
+                "type": "text",
+                "bbox": [461, 24, 123, 20],
+                "text": "自动备份",
+            },
+            {
+                "id": 3,
+                "type": "text",
+                "bbox": [46, 208, 92, 24],
+                "text": "首页",
+            },
+            {
+                "id": 4,
+                "type": "text",
+                "bbox": [1751, 24, 123, 20],
+                "text": "刘治强",
+            },
+        ],
+        "imageEnrichment": {
+            "mode": "apply",
+            "status": "applied",
+            "assets": [],
+        },
+    }
+
+
+def test_chrome_icon_evidence_is_attached_before_scene_planning(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "chrome.png"
+    image = Image.new("RGB", (1920, 826), "#313c49")
+    image.save(path)
+
+    graph = attach_chrome_icon_evidence(
+        _graph(),
+        str(path),
+        width=1920,
+        height=826,
+    )
+
+    assets = graph["imageEnrichment"]["assets"]
+    by_name = {asset["name"]: asset for asset in assets}
+    assert by_name["chrome_search"]["bbox"] == [1553, 23, 22, 22]
+    assert by_name["chrome_mail"]["bbox"] == [1599, 23, 22, 22]
+    assert by_name["chrome_list"]["bbox"] == [1658, 26, 22, 18]
+    assert by_name["chrome_home"]["bbox"] == [20, 208, 22, 22]
+    assert by_name["chrome_brand"]["bbox"] == [307, 22, 169, 24]
+    assert by_name["chrome_user_label"]["bbox"] == [1748, 21, 62, 26]
+    assert by_name["chrome_brand"]["kind"] == "logo"
+    assert by_name["chrome_user_label"]["kind"] == "identity"
+    assert all(asset["kind"] in {"icon", "logo", "identity"} for asset in assets)
+    assert all(asset["referenceOnly"] is True for asset in assets)
+    assert all(asset["original"] is False for asset in assets)

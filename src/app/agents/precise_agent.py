@@ -588,6 +588,24 @@ class PreciseAgent:
         if getattr(cfg, "grounding_fidelity_mode", "off") == "high":
             if image_reference is None:
                 raise ValueError("GROUNDING_FIDELITY_MODE=high requires image input")
+            from src.app.services.structure.image_contract import (
+                attach_chrome_icon_evidence,
+            )
+            from src.app.services.structure.fidelity import (
+                reconcile_region_containers,
+            )
+
+            graph = reconcile_region_containers(
+                graph,
+                width=graph["image_w"],
+                height=graph["image_h"],
+            )
+            graph = attach_chrome_icon_evidence(
+                graph,
+                str(image_reference["input"]["path"]),
+                width=graph["image_w"],
+                height=graph["image_h"],
+            )
             bundle = build_evidence_bundle(graph, image_reference)
             inventory = build_content_inventory(bundle)
             geometry = build_geometry_manifest(bundle)

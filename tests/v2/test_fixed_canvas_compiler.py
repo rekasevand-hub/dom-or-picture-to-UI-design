@@ -216,6 +216,76 @@ def test_compiler_keeps_native_fixed_text_and_style_evidence(
     assert "lineHeight" not in title["style"]
 
 
+def test_compiler_trims_uniform_light_header_edge(tmp_path: Path) -> None:
+    path = tmp_path / "header-edge.png"
+    image = Image.new("RGB", (400, 240), "#f4f5f5")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((0, 0, 399, 60), fill="#313c49")
+    image.save(path)
+    graph = {
+        "image": str(path),
+        "image_w": 400,
+        "image_h": 240,
+        "route": "grounding",
+        "elements": [],
+        "tables": [],
+    }
+    plan = {
+        "schema_version": "grounding-scene-plan/1.0",
+        "image_size": [400, 240],
+        "coordinate_basis": "source-pixel-top-left",
+        "nodes": [
+            {
+                "id": "header:root",
+                "parent_id": None,
+                "type": "container",
+                "role": "header",
+                "bbox": [0, 0, 400, 64],
+                "content_ref": None,
+                "geometry_ref": "geometry:header",
+                "children": [],
+            }
+        ],
+        "suppressed": [],
+    }
+
+    design = _compile(path, graph, plan)
+    header = next(
+        element for element in design["elements"] if element.get("id") == "header:root"
+    )
+
+    assert header["height"] == 61
+
+
+def test_compiler_keeps_right_side_text_left_aligned_to_its_ink_box(
+    tmp_path: Path,
+) -> None:
+    path, graph, plan = _fixture(tmp_path)
+    plan["nodes"].append(
+        {
+            "id": "text:user",
+            "parent_id": "header:root",
+            "type": "text",
+            "role": "text",
+            "bbox": [260, 20, 110, 24],
+            "content_ref": "text:user",
+            "geometry_ref": "geometry:user",
+            "children": [],
+            "text": "刘治强",
+        }
+    )
+
+    design = _compile(path, graph, plan)
+    user = next(
+        element
+        for element in design["elements"]
+        if element.get("contentRef") == "text:user"
+    )
+
+    assert user["x"] == 260
+    assert user["style"]["textAlign"] == "left"
+
+
 def test_compiler_separates_control_surface_and_value(tmp_path: Path) -> None:
     path, graph, plan = _fixture(tmp_path)
     design = _compile(path, graph, plan)
@@ -227,7 +297,7 @@ def test_compiler_separates_control_surface_and_value(tmp_path: Path) -> None:
 
     assert control["type"] == "input"
     assert control["controlValue"] == "auto"
-    assert control["textBox"] == [52, 82, 136, 20]
+    assert control["textBox"] == [52, 78, 136, 20]
     assert not any(
         element.get("text") == "auto" and element is not control
         for element in design["elements"]
@@ -262,6 +332,83 @@ def test_compiler_handles_empty_control_without_nan_style(tmp_path: Path) -> Non
 
     assert control["style"]["textColor"] == "#555555"
     assert control["style"]["fontSize"] > 0
+
+
+def test_compiler_resolves_control_text_style_from_text_bbox(
+    tmp_path: Path,
+) -> None:
+    path, graph, plan = _fixture(tmp_path)
+    plan["nodes"].append(
+        {
+            "id": "control:remark",
+            "parent_id": None,
+            "type": "control",
+            "role": "control",
+            "bbox": [20, 180, 300, 50],
+            "content_ref": "control:remark",
+            "geometry_ref": "geometry:remark",
+            "children": [],
+            "text": "2023年12月16日：修改成凌晨3：30执行备份",
+            "text_bbox": [30, 190, 250, 20],
+            "control_type": "textarea",
+            "state": "enabled",
+            "text_owner_ref": None,
+        }
+    )
+
+    design = _compile(path, graph, plan)
+    control = next(
+        element
+        for element in design["elements"]
+        if element.get("contentRef") == "control:remark"
+    )
+
+    assert control["styleEvidence"]["evidence"]["source_bbox"] == [
+        30,
+        190,
+        250,
+        20,
+    ]
+    assert control["textBox"] == [30, 190, 250, 20]
+    assert control["style"]["fontSize"] <= 20
+
+
+def test_compiler_uses_inner_line_box_for_control_text_style(
+    tmp_path: Path,
+) -> None:
+    path, graph, plan = _fixture(tmp_path)
+    plan["nodes"].append(
+        {
+            "id": "control:action",
+            "parent_id": None,
+            "type": "control",
+            "role": "control",
+            "bbox": [20, 180, 120, 36],
+            "content_ref": "control:action",
+            "geometry_ref": "geometry:action",
+            "children": [],
+            "text": "Action",
+            "text_bbox": None,
+            "control_type": "button",
+            "state": "enabled",
+            "text_owner_ref": None,
+        }
+    )
+
+    design = _compile(path, graph, plan)
+    control = next(
+        element
+        for element in design["elements"]
+        if element.get("contentRef") == "control:action"
+    )
+
+    assert control["styleEvidence"]["evidence"]["source_bbox"] == [
+        32,
+        188,
+        96,
+        20,
+    ]
+    assert control["style"]["fontSize"] <= 20
 
 
 def test_compiler_expands_fixed_checkbox_label_box(tmp_path: Path) -> None:
@@ -306,6 +453,107 @@ def test_compiler_uses_reference_only_image_fill(tmp_path: Path) -> None:
     assert image["sourceResolution"]["display"]["original"] is False
 
 
+def test_compiler_renders_icon_button_as_reference_only_source_crop(
+    tmp_path: Path,
+) -> None:
+    path, graph, plan = _fixture(tmp_path)
+    plan["nodes"].append(
+        {
+            "id": "control:exit",
+            "parent_id": None,
+            "type": "control",
+            "role": "control",
+            "bbox": [330, 15, 40, 35],
+            "content_ref": "control:exit",
+            "geometry_ref": "geometry:exit",
+            "children": [],
+            "text": "9",
+            "text_bbox": None,
+            "control_type": "icon-button",
+            "state": "enabled",
+            "text_owner_ref": None,
+        }
+    )
+
+    design = _compile(path, graph, plan)
+    icon = next(
+        element
+        for element in design["elements"]
+        if element.get("contentRef") == "control:exit"
+    )
+
+    assert icon["type"] == "image"
+    assert icon["imageBase64"]
+    assert icon["controlType"] == "icon-button"
+    assert icon["sourceResolution"]["display"]["reference_only"] is True
+    assert icon["sourceResolution"]["display"]["original"] is False
+
+
+def test_compiler_renders_checked_checkbox_as_reference_only_source_crop(
+    tmp_path: Path,
+) -> None:
+    path, graph, plan = _fixture(tmp_path)
+    plan["nodes"].append(
+        {
+            "id": "control:checked",
+            "parent_id": None,
+            "type": "control",
+            "role": "control",
+            "bbox": [330, 15, 20, 20],
+            "content_ref": "control:checked",
+            "geometry_ref": "geometry:checked",
+            "children": [],
+            "text": "",
+            "text_bbox": None,
+            "control_type": "checkbox",
+            "state": "checked",
+            "text_owner_ref": None,
+        }
+    )
+
+    design = _compile(path, graph, plan)
+    checkbox = next(
+        element
+        for element in design["elements"]
+        if element.get("contentRef") == "control:checked"
+    )
+
+    assert checkbox["type"] == "image"
+    assert checkbox["controlType"] == "checkbox"
+    assert checkbox["imageMVP"]["reference_only"] is True
+
+
+def test_compiler_samples_border_for_button_control(tmp_path: Path) -> None:
+    path, graph, plan = _fixture(tmp_path)
+    plan["nodes"].append(
+        {
+            "id": "control:toolbar",
+            "parent_id": None,
+            "type": "control",
+            "role": "control",
+            "bbox": [20, 180, 120, 32],
+            "content_ref": "control:toolbar",
+            "geometry_ref": "geometry:toolbar",
+            "children": [],
+            "text": "Action",
+            "text_bbox": None,
+            "control_type": "button",
+            "state": "enabled",
+            "text_owner_ref": None,
+        }
+    )
+
+    design = _compile(path, graph, plan)
+    button = next(
+        element
+        for element in design["elements"]
+        if element.get("contentRef") == "control:toolbar"
+    )
+
+    assert button["style"]["borderColor"].startswith("#")
+    assert button["style"]["borderWidth"] == 1
+
+
 def test_compiler_adds_table_decoration_without_text_copy(tmp_path: Path) -> None:
     path, graph, plan = _fixture(tmp_path)
     design = _compile(path, graph, plan)
@@ -323,6 +571,83 @@ def test_compiler_adds_table_decoration_without_text_copy(tmp_path: Path) -> Non
         if str(element.get("contentRef") or "").startswith("table-")
     ]
     assert table_texts == ["Name", "Alpha"]
+
+
+def test_compiler_uses_source_grid_for_table_decorations(
+    tmp_path: Path,
+) -> None:
+    path, graph, plan = _fixture(tmp_path)
+    table = next(node for node in plan["nodes"] if node["type"] == "table")
+    table["grid"] = {
+        "x_boundaries": [20, 80, 380],
+        "y_boundaries": [120, 150, 220],
+    }
+
+    design = _compile(path, graph, plan)
+    verticals = [
+        element["x"]
+        for element in design["elements"]
+        if str(element.get("id") or "").startswith("table-grid-vertical-0-")
+    ]
+    horizontals = [
+        element["y"]
+        for element in design["elements"]
+        if str(element.get("id") or "").startswith("table-grid-horizontal-0-")
+    ]
+    header = next(
+        element
+        for element in design["elements"]
+        if element.get("id") == "table-grid-header-0"
+    )
+
+    assert verticals == [20, 80, 380]
+    assert horizontals == [120, 150, 220]
+    assert header["height"] == 30
+
+
+def test_compiler_aligns_and_vertically_places_table_header_text(
+    tmp_path: Path,
+) -> None:
+    path, graph, plan = _fixture(tmp_path)
+    design = _compile(path, graph, plan)
+    header = next(
+        element
+        for element in design["elements"]
+        if element.get("contentRef") == "table-header:0:0"
+    )
+
+    assert header["style"]["textAlign"] == "center"
+    assert header["x"] == 20
+    assert header["width"] == 180
+    assert header["y"] == 137
+    assert header["height"] >= 12
+
+
+def test_compiler_uses_table_text_bbox_for_fixed_placement(
+    tmp_path: Path,
+) -> None:
+    path, graph, plan = _fixture(tmp_path)
+    cell = next(
+        node for node in plan["nodes"] if node.get("content_ref") == "table-cell:0:0"
+    )
+    cell["text_bbox"] = [42, 166, 92, 18]
+
+    design = _compile(path, graph, plan)
+    element = next(
+        item
+        for item in design["elements"]
+        if item.get("contentRef") == "table-cell:0:0"
+    )
+
+    assert element["x"] == 42
+    assert element["y"] == 166
+    assert element["style"]["textAlign"] == "left"
+    assert element["styleEvidence"]["evidence"]["source_bbox"] == [
+        42,
+        166,
+        92,
+        18,
+    ]
 
 
 def test_compiler_matches_table_decorations_by_table_ordinal(

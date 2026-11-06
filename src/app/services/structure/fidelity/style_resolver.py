@@ -43,6 +43,8 @@ def _alignment(
     ink_center = ink_bbox[0] + ink_bbox[2] / 2
     parent_center = parent_x + parent_width / 2
     delta = abs(ink_center - parent_center)
+    if role == "table-header":
+        return "center", delta
     tolerance = max(4.0, parent_width * 0.06)
     if delta <= tolerance:
         return "center", delta
@@ -148,7 +150,7 @@ def resolve_text_style(
         strong_mask = mask
     foreground_rgb = np.median(crop[strong_mask], axis=0)
     contrast = float(distance[strong_mask].mean()) if strong_mask.any() else 0.0
-    align, center_delta = _alignment(normalized, parent_bbox, role)
+    align, center_delta = _alignment(ink_box, parent_bbox, role)
     cjk = _has_cjk(text)
     family = _CJK_FAMILY if cjk else _LATIN_FAMILY
     estimated_size = max(

@@ -232,6 +232,41 @@ def test_checkbox_label_and_control_have_distinct_inventory_items() -> None:
     )
 
 
+def test_checkbox_label_uses_adjacent_ocr_text_geometry() -> None:
+    graph = _base_graph()
+    graph["elements"] = [
+        {
+            "id": 1,
+            "bbox": [1644, 290, 24, 23],
+            "type": "checkbox",
+            "controlType": "checkbox",
+            "controlValue": "以auto用户身份执行",
+            "controlState": "checked",
+            "text": "",
+            "source": "image-enrichment:control-recovery",
+        },
+        {
+            "id": 2,
+            "bbox": [1480, 288, 158, 26],
+            "type": "text",
+            "text": "Wauto用户身份执行",
+            "source": "ocr",
+        },
+    ]
+    inventory = build_content_inventory(
+        build_evidence_bundle(graph, _reference()),
+    )
+
+    label = next(
+        item
+        for item in inventory["items"]
+        if item.get("role") == "control-label"
+        and item.get("text") == "以auto用户身份执行"
+    )
+
+    assert label["bbox"] == [1480, 288, 158, 26]
+
+
 def test_geometry_manifest_keeps_source_pixel_boxes() -> None:
     bundle = build_evidence_bundle(_graph_with_layout(), _reference(400, 240))
     geometry = build_geometry_manifest(bundle)

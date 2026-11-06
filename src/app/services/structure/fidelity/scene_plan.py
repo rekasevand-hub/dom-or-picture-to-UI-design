@@ -11,6 +11,7 @@ from src.app.services.structure.fidelity.contracts import (
     SCENE_PLAN_SCHEMA_VERSION,
     normalize_bbox,
     normalize_match_text,
+    owner_text_similarity,
 )
 
 _CONTROL_TYPES = {
@@ -79,6 +80,22 @@ def _overlap_over_smaller(left: list[int], right: list[int]) -> float:
     return intersection / smaller if smaller > 0 else 0.0
 
 
+def _box_gap(left: list[int], right: list[int]) -> float:
+    left_x, left_y, left_width, left_height = left
+    right_x, right_y, right_width, right_height = right
+    horizontal = max(
+        left_x - (right_x + right_width),
+        right_x - (left_x + left_width),
+        0,
+    )
+    vertical = max(
+        left_y - (right_y + right_height),
+        right_y - (left_y + left_height),
+        0,
+    )
+    return float(horizontal + vertical)
+
+
 def _text_owner_priority(node: Mapping[str, Any]) -> tuple[int, int, int, int]:
     role = str(node.get("role") or "")
     authority = str(node.get("authority") or "")
@@ -111,13 +128,16 @@ def _suppress_overlapping_text_owners(
                 owner
                 for owner in accepted
                 if owner.get("type") == "control"
-                and normalize_match_text(owner.get("text"))
-                == normalize_match_text(node.get("text"))
+                and owner.get("text")
+                and owner_text_similarity(owner.get("text"), node.get("text")) >= 0.9
                 and _overlap_over_smaller(owner["bbox"], node["bbox"]) >= 0.45
             ),
             None,
         )
         if control_owner is not None:
+            if not control_owner.get("text_bbox"):
+                control_owner["text_bbox"] = copy.deepcopy(node["bbox"])
+                control_owner["text_bbox_ref"] = str(node["content_ref"])
             removed[str(node["content_ref"])] = {
                 "content_ref": str(node["content_ref"]),
                 "source_ref": str(node.get("source_ref") or ""),
@@ -340,6 +360,7 @@ def _node_from_item(
         node["control_type"] = str(item.get("control_type") or "")
         node["state"] = str(item.get("state") or "")
         node["text_owner_ref"] = None
+        node["text_bbox"] = None
     return node
 
 
@@ -403,20 +424,21 @@ def _tooltip_owner(
     label = normalize_match_text(control.get("text") or "")
     if not label:
         label = normalize_match_text(control.get("label") or "")
-    candidates = [
-        node
-        for node in text_nodes
-        if node.get("role") == "control-label"
-        or normalize_match_text(node.get("text") or "")
-    ]
+    candidates = [node for node in text_nodes if node.get("role") == "control-label"]
     for node in candidates:
         same_source = (
             control_source
             and str(node.get("source_ref") or "") == control_source
             and node.get("role") == "control-label"
         )
-        same_text = label and normalize_match_text(node.get("text") or "") == label
-        if same_source or same_text:
+        same_text = (
+            label and owner_text_similarity(label, node.get("text") or "") >= 0.9
+        )
+        local = (
+            _overlap_over_smaller(control["bbox"], node["bbox"]) > 0
+            or _box_gap(control["bbox"], node["bbox"]) <= 12
+        )
+        if local and (same_source or same_text):
             return str(node["id"])
     return None
 
@@ -528,6 +550,7 @@ def build_scene_plan(
                 "geometry_ref": _geometry_ref(geometry_by_content, table_id),
                 "children": [],
                 "source_ref": str(table.get("source_ref") or ""),
+                "grid": copy.deepcopy(table_geometry.get("grid")),
             }
         )
     nodes.extend(table_nodes)
@@ -584,6 +607,15 @@ def build_scene_plan(
             key = normalize_match_text(node.get("text"))
             if key:
                 table_owner_by_text.setdefault(key, node)
+    identity_owners = [
+        node
+        for node in candidates
+        if node.get("type") == "image"
+        and (
+            node.get("role") in {"brand-logo", "identity-label"}
+            or "chrome_brand" in normalize_match_text(node.get("text"))
+        )
+    ]
 
     accepted: list[dict[str, Any]] = []
     content_refs: set[str] = set()
@@ -599,6 +631,25 @@ def build_scene_plan(
                 }
             )
             continue
+        if node["type"] == "text":
+            identity_owner = next(
+                (
+                    owner
+                    for owner in identity_owners
+                    if _overlap_over_smaller(owner["bbox"], node["bbox"]) >= 0.45
+                ),
+                None,
+            )
+            if identity_owner is not None:
+                suppressed.append(
+                    {
+                        "content_ref": content_ref,
+                        "source_ref": str(node.get("source_ref") or ""),
+                        "reason": "identity-owner-authoritative",
+                        "replacement_ref": identity_owner["content_ref"],
+                    }
+                )
+                continue
         if node["type"] == "text" and not node.get("table_id"):
             text_key = normalize_match_text(node.get("text"))
             table_owner = table_owner_by_text.get(text_key)

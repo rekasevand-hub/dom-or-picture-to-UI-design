@@ -68,3 +68,31 @@ identity remains explicit.
 - Using string equality as table row or owner identity.
 - Appending OCR text after a semantic control or table owner already claimed
   the same occurrence.
+
+## Live Grounding Regression
+
+The `IMG-FLEXWEAVER-ADMIN` pipeline now carries source-pixel evidence through
+the same owner compiler used for the final DesignSpec:
+
+- chrome/icon candidates are attached before ScenePlan construction;
+- brand and user identity marks are isolated reference-only assets;
+- icon-only controls and checked boxes use source crops;
+- control value geometry is taken from local OCR evidence;
+- table grid boundaries come from the geometry manifest;
+- table toolbar regions are reconciled from their visible controls;
+- header bottom separator bands are sampled and trimmed from pixels.
+
+Latest real Figma acceptance:
+
+| Metric | Before owner cleanup | Latest |
+| --- | ---: | ---: |
+| Within-30 similarity | 90.987% | 94.429% |
+| Page bad-pixel ratio | 9.013% | 5.571% |
+| Header bad-pixel ratio | 9.684% | 3.000% |
+| Sidebar bad-pixel ratio | 2.334% | 2.057% |
+| Critical text | 23 / 24 | 24 / 24 |
+| Duplicate owner overlap | present | none observed |
+
+The full region gate is still blocked by `form-section`, `table-section`,
+`table`, and the corrected toolbar/search regions. Do not describe this
+snapshot as passed high-fidelity reconstruction.

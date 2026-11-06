@@ -236,7 +236,7 @@ def test_scene_input_fill_keeps_left_text_box(tmp_path: Path) -> None:
 
     assert control["text"] == "auto_backup"
     assert control["textBox"][0] == 112
-    assert control["textBox"][1] == 50
+    assert control["textBox"][1] == 46
     assert control["textBox"][2] == 176
 
 

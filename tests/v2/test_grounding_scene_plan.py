@@ -302,6 +302,45 @@ def test_slice_asset_cannot_create_a_second_layout_tree() -> None:
     assert all(node["type"] != "container" for node in assets)
 
 
+def test_brand_logo_owner_suppresses_overlapping_text() -> None:
+    inventory = {
+        "schema_version": "grounding-content-inventory/1.0",
+        "image_size": [400, 240],
+        "items": [
+            {
+                "id": "asset:brand",
+                "kind": "asset",
+                "text": "chrome_brand",
+                "bbox": [90, 16, 160, 24],
+                "role": "ui-icon",
+                "reference_only": True,
+                "original": False,
+                "source_ref": "graph.imageEnrichment.assets[0]",
+                "authority": "source-pixel",
+            },
+            {
+                "id": "text:brand",
+                "kind": "text",
+                "text": "FlexWeaver",
+                "bbox": [108, 18, 140, 20],
+                "role": "text",
+                "source_ref": "graph.elements[0]",
+                "authority": "grounding",
+            },
+        ],
+        "tables": [],
+        "unknowns": [],
+    }
+    plan = build_scene_plan(_base_graph(), inventory, _geometry())
+
+    assert any(node["content_ref"] == "asset:brand" for node in plan["nodes"])
+    assert not any(node["content_ref"] == "text:brand" for node in plan["nodes"])
+    assert any(
+        item["content_ref"] == "text:brand" and item["replacement_ref"] == "asset:brand"
+        for item in plan["suppressed"]
+    )
+
+
 def test_apply_scene_plan_suppresses_duplicate_and_preserves_source() -> None:
     graph = _graph_with_duplicate_table_text()
     plan = build_scene_plan(
@@ -392,11 +431,55 @@ def test_overlapping_table_header_suppresses_ocr_text_owner() -> None:
     plan = build_scene_plan(graph, inventory, _geometry_with_table_grid())
 
     assert not any(node["content_ref"] == "text:ocr-noise" for node in plan["nodes"])
+    header = next(
+        node for node in plan["nodes"] if node["content_ref"] == "table-header:time"
+    )
+    assert header.get("text_bbox") is None
     assert any(
         item["content_ref"] == "text:ocr-noise"
         and item["reason"] == "overlapping-text-owner"
         for item in plan["suppressed"]
     )
+
+
+def test_table_header_does_not_absorb_ocr_text_bbox() -> None:
+    inventory = _inventory_with_table_rows()
+    inventory["items"].append(
+        {
+            "id": "table-header:time",
+            "kind": "table-header",
+            "text": "执行时间",
+            "table_id": "0",
+            "row_index": None,
+            "column_index": 0,
+            "bbox": [20, 88, 170, 40],
+            "role": "table-cell",
+            "source_ref": "graph.tables[0].header_texts[0]",
+            "authority": "image-enrichment",
+        }
+    )
+    inventory["items"].append(
+        {
+            "id": "text:table-header-ocr",
+            "kind": "text",
+            "text": "执行时间",
+            "bbox": [42, 96, 80, 20],
+            "role": "",
+            "source_ref": "graph.elements[0]",
+            "authority": "ocr",
+        }
+    )
+
+    plan = build_scene_plan(
+        _graph_with_duplicate_table_text(),
+        inventory,
+        _geometry_with_table_grid(),
+    )
+    header = next(
+        node for node in plan["nodes"] if node["content_ref"] == "table-header:time"
+    )
+
+    assert header.get("text_bbox") is None
 
 
 def test_grounded_control_label_beats_overlapping_ocr_variant() -> None:
@@ -468,6 +551,116 @@ def test_control_value_absorbs_duplicate_text_inside_its_box() -> None:
     refs = {node["content_ref"] for node in plan["nodes"]}
     assert "control:name" in refs
     assert "text:duplicate-value" not in refs
+
+
+def test_control_value_absorbs_similar_ocr_text_with_its_geometry() -> None:
+    inventory = {
+        "schema_version": "grounding-content-inventory/1.0",
+        "image_size": [400, 240],
+        "items": [
+            {
+                "id": "control:remark",
+                "kind": "control",
+                "text": "2023年12月16日：修改成凌晨3：30执行备份",
+                "control_type": "textarea",
+                "state": "enabled",
+                "bbox": [100, 40, 260, 72],
+                "role": "",
+                "source_ref": "graph.elements[0]",
+                "authority": "image-enrichment",
+            },
+            {
+                "id": "text:remark-ocr",
+                "kind": "text",
+                "text": "2023年12月16日: 修改成麦晨3: 30执行备份",
+                "bbox": [112, 52, 180, 20],
+                "role": "",
+                "source_ref": "graph.elements[1]",
+                "authority": "ocr",
+            },
+        ],
+        "tables": [],
+        "unknowns": [],
+    }
+    geometry = _geometry()
+    geometry["items"].append(
+        {
+            "id": "geometry:remark",
+            "kind": "control",
+            "role": "textarea",
+            "bbox": [100, 40, 260, 72],
+            "content_ref": "control:remark",
+        }
+    )
+    plan = build_scene_plan(_base_graph(), inventory, geometry)
+
+    control = next(
+        node for node in plan["nodes"] if node["content_ref"] == "control:remark"
+    )
+    assert control["text_bbox"] == [112, 52, 180, 20]
+    assert not any(node["content_ref"] == "text:remark-ocr" for node in plan["nodes"])
+    assert any(
+        item["content_ref"] == "text:remark-ocr"
+        and item["reason"] == "control-value-owner-authoritative"
+        and item["replacement_ref"] == "control:remark"
+        for item in plan["suppressed"]
+    )
+
+
+def test_control_text_owner_must_be_geometrically_local() -> None:
+    inventory = {
+        "schema_version": "grounding-content-inventory/1.0",
+        "image_size": [400, 240],
+        "items": [
+            {
+                "id": "control:name",
+                "kind": "control",
+                "text": "自动备份",
+                "control_type": "input",
+                "state": "enabled",
+                "bbox": [100, 40, 200, 32],
+                "role": "",
+                "source_ref": "graph.elements[0]",
+                "authority": "image-enrichment",
+            },
+            {
+                "id": "text:far-title",
+                "kind": "text",
+                "text": "自动备份",
+                "bbox": [100, 150, 120, 20],
+                "role": "title",
+                "source_ref": "graph.elements[0]",
+                "authority": "grounding",
+            },
+        ],
+        "tables": [],
+        "unknowns": [],
+    }
+    geometry = _geometry()
+    geometry["items"].extend(
+        [
+            {
+                "id": "geometry:name",
+                "kind": "control",
+                "role": "input",
+                "bbox": [100, 40, 200, 32],
+                "content_ref": "control:name",
+            },
+            {
+                "id": "geometry:far-title",
+                "kind": "text",
+                "role": "title",
+                "bbox": [100, 150, 120, 20],
+                "content_ref": "text:far-title",
+            },
+        ]
+    )
+    plan = build_scene_plan(_base_graph(), inventory, geometry)
+
+    control = next(
+        node for node in plan["nodes"] if node["content_ref"] == "control:name"
+    )
+    assert control["text_owner_ref"] is None
 
 
 def test_table_misclassified_text_control_uses_table_text_owner() -> None:
@@ -549,3 +742,22 @@ def test_table_toolbar_button_is_moved_above_grid() -> None:
     )
     assert control["bbox"][1] < 88
     assert control["bbox"][0] == 20
+
+
+def test_table_node_preserves_detected_grid_evidence() -> None:
+    geometry = _geometry_with_table_grid()
+    geometry["items"][-1]["grid"] = {
+        "x_boundaries": [20, 80, 360],
+        "y_boundaries": [88, 120, 216],
+    }
+    plan = build_scene_plan(
+        _graph_with_duplicate_table_text(),
+        _inventory_with_table_rows(),
+        geometry,
+    )
+
+    table = next(node for node in plan["nodes"] if node["type"] == "table")
+    assert table["grid"] == {
+        "x_boundaries": [20, 80, 360],
+        "y_boundaries": [88, 120, 216],
+    }

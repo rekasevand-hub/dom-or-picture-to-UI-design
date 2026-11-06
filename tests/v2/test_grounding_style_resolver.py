@@ -92,7 +92,7 @@ def test_resolver_routes_cjk_to_noto_sans_sc() -> None:
     assert result["fontWeight"] == "bold"
 
 
-def test_resolver_uses_parent_geometry_for_alignment(tmp_path: Path) -> None:
+def test_resolver_uses_ink_geometry_for_alignment(tmp_path: Path) -> None:
     path = tmp_path / "dark.png"
     _dark_text_image(path)
 
@@ -103,8 +103,8 @@ def test_resolver_uses_parent_geometry_for_alignment(tmp_path: Path) -> None:
         parent_bbox=[20, 10, 200, 40],
     )
 
-    assert result["textAlign"] == "center"
-    assert result["evidence"]["parent_center_delta"] <= 5
+    assert result["textAlign"] == "left"
+    assert result["evidence"]["parent_center_delta"] > 5
 
 
 def test_resolver_exposes_low_confidence_when_no_ink_is_found(
@@ -159,3 +159,25 @@ def test_low_contrast_ink_uses_fallback_instead_of_nan(tmp_path: Path) -> None:
 
     assert result["textColor"].startswith("#")
     assert result["confidence"] < 1.0
+
+
+def test_cell_alignment_uses_ink_bbox_not_full_cell_bbox(tmp_path: Path) -> None:
+    path = tmp_path / "left-cell.png"
+    image = Image.new("RGB", (200, 40), "#ffffff")
+    ImageDraw.Draw(image).text(
+        (10, 14),
+        "Left",
+        fill="#333333",
+        font=_font(14),
+    )
+    image.save(path)
+
+    result = resolve_text_style(
+        path,
+        "Left",
+        [0, 0, 200, 40],
+        parent_bbox=[0, 0, 200, 40],
+        role="table-cell",
+    )
+
+    assert result["textAlign"] == "left"

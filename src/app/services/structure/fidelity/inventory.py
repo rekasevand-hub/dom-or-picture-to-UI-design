@@ -14,6 +14,8 @@ from src.app.services.structure.fidelity.contracts import (
     evidence_record,
     normalize_bbox,
     normalize_match_text,
+    normalize_owner_text,
+    owner_text_similarity,
     reference_sha256,
     reference_size,
     stable_id,
@@ -248,6 +250,44 @@ def _cell_bbox(
     return [left, top, max(1, right - left), max(1, bottom - top)]
 
 
+def _box_gap(left: list[int], right: list[int]) -> float:
+    left_x, left_y, left_width, left_height = left
+    right_x, right_y, right_width, right_height = right
+    horizontal = max(
+        left_x - (right_x + right_width),
+        right_x - (left_x + left_width),
+        0,
+    )
+    vertical = max(
+        left_y - (right_y + right_height),
+        right_y - (left_y + left_height),
+        0,
+    )
+    return float(horizontal + vertical)
+
+
+def _label_text_geometry(
+    control_bbox: list[int],
+    label: str,
+    text_geometry: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    candidates: list[tuple[float, float, dict[str, Any]]] = []
+    for geometry in text_geometry:
+        bbox = geometry.get("bbox")
+        if not isinstance(bbox, list):
+            continue
+        gap = _box_gap(control_bbox, bbox)
+        if gap > 32:
+            continue
+        similarity = owner_text_similarity(label, geometry.get("text"))
+        if similarity < 0.72:
+            continue
+        candidates.append((gap, -similarity, geometry))
+    if not candidates:
+        return None
+    return min(candidates, key=lambda item: (item[0], item[1]))[2]
+
+
 def _coalesce_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     coalesced: list[dict[str, Any]] = []
     indexes: dict[tuple[Any, ...], int] = {}
@@ -290,6 +330,7 @@ def build_content_inventory(bundle: Mapping[str, Any]) -> dict[str, Any]:
     text_geometry = [
         {
             "text": normalize_match_text(element.get("text")),
+            "owner_text": normalize_owner_text(element.get("text")),
             "bbox": _source_box(element, width, height),
         }
         for element in element_records
@@ -324,6 +365,7 @@ def build_content_inventory(bundle: Mapping[str, Any]) -> dict[str, Any]:
         source_ref = f"graph.elements[{index}]"
         if candidate_type in _CONTROL_TYPES:
             label = ""
+            label_bbox = bbox
             control_text = text
             if candidate_type in {
                 "button",
@@ -362,6 +404,9 @@ def build_content_inventory(bundle: Mapping[str, Any]) -> dict[str, Any]:
                     or ""
                 )
                 control_text = ""
+                label_geometry = _label_text_geometry(bbox, label, text_geometry)
+                if label_geometry is not None:
+                    label_bbox = list(label_geometry["bbox"])
             items.append(
                 {
                     "id": stable_id("control", element.get("id"), source_ref),
@@ -387,7 +432,7 @@ def build_content_inventory(bundle: Mapping[str, Any]) -> dict[str, Any]:
                         "id": stable_id("text", "checkbox-label", element.get("id")),
                         "kind": "text",
                         "text": label,
-                        "bbox": bbox,
+                        "bbox": label_bbox,
                         "role": "control-label",
                         "source_ref": source_ref,
                         "authority": "grounding",

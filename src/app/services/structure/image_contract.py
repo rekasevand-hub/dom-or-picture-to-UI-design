@@ -2169,6 +2169,184 @@ def _traced_icon_svg(
     )
 
 
+def recover_chrome_icon_evidence(
+    image_path: str | Path,
+    graph: Mapping[str, Any],
+    *,
+    width: int,
+    height: int,
+) -> list[dict[str, Any]]:
+    """Recover source-pixel icon candidates before ScenePlan ownership."""
+    preview_elements: list[dict[str, Any]] = []
+    for element in graph.get("elements") or []:
+        if not isinstance(element, Mapping):
+            continue
+        bbox = _normalized_box(element.get("bbox"), width, height)
+        if bbox is None:
+            continue
+        preview_elements.append(
+            {
+                "x": bbox[0],
+                "y": bbox[1],
+                "width": bbox[2],
+                "height": bbox[3],
+                "text": str(element.get("text") or element.get("controlValue") or ""),
+                "type": str(element.get("type") or ""),
+            }
+        )
+    icons = _recover_chrome_icons(
+        image_path,
+        graph,
+        preview_elements,
+        width=width,
+        height=height,
+    )
+    assets: list[dict[str, Any]] = []
+    name_counts: dict[str, int] = {}
+    for icon in icons:
+        icon_name = str(icon.get("assetName") or "")
+        if icon_name in {"file-text", "x"}:
+            continue
+        name_counts[icon_name] = name_counts.get(icon_name, 0) + 1
+        suffix = "" if name_counts[icon_name] == 1 else f"_{name_counts[icon_name]}"
+        bbox = _normalized_box(
+            icon.get("requestedBBox") or icon.get("bbox"),
+            width,
+            height,
+        )
+        if bbox is None:
+            continue
+        assets.append(
+            {
+                "name": f"chrome_{icon_name}{suffix}",
+                "kind": "icon",
+                "role": "ui-icon",
+                "bbox": list(bbox),
+                "source": "chrome-icon-evidence",
+                "referenceOnly": True,
+                "original": False,
+            }
+        )
+    return assets
+
+
+def attach_chrome_icon_evidence(
+    graph: Mapping[str, Any],
+    image_path: str | Path,
+    *,
+    width: int,
+    height: int,
+) -> dict[str, Any]:
+    """Attach icon evidence without creating a second layout tree."""
+    attached = copy.deepcopy(dict(graph))
+    enrichment = attached.get("imageEnrichment")
+    if not isinstance(enrichment, dict):
+        enrichment = {
+            "mode": "apply",
+            "status": "applied",
+            "assets": [],
+        }
+    assets = [
+        copy.deepcopy(asset)
+        for asset in enrichment.get("assets") or []
+        if isinstance(asset, Mapping)
+    ]
+    seen = {
+        (
+            str(asset.get("name") or ""),
+            tuple(asset.get("bbox") or []),
+        )
+        for asset in assets
+    }
+    for asset in recover_chrome_icon_evidence(
+        image_path,
+        attached,
+        width=width,
+        height=height,
+    ):
+        key = (str(asset["name"]), tuple(asset["bbox"]))
+        if key in seen:
+            continue
+        seen.add(key)
+        assets.append(asset)
+    brand = next(
+        (
+            element
+            for element in attached.get("elements") or []
+            if isinstance(element, Mapping)
+            and "flexweaver"
+            in str(element.get("text") or element.get("controlValue") or "").casefold()
+        ),
+        None,
+    )
+    brand_bbox = _normalized_box(
+        brand.get("bbox") if isinstance(brand, Mapping) else None,
+        width,
+        height,
+    )
+    if brand_bbox is not None:
+        brand_asset = {
+            "name": "chrome_brand",
+            "kind": "logo",
+            "role": "brand-logo",
+            "bbox": [
+                max(0, brand_bbox[0] - 16),
+                max(0, brand_bbox[1] - 2),
+                min(width - max(0, brand_bbox[0] - 16), brand_bbox[2] + 16),
+                min(height - max(0, brand_bbox[1] - 2), brand_bbox[3] + 4),
+            ],
+            "source": "chrome-icon-evidence",
+            "referenceOnly": True,
+            "original": False,
+        }
+        key = (brand_asset["name"], tuple(brand_asset["bbox"]))
+        if key not in seen:
+            assets.append(brand_asset)
+    user_label = next(
+        (
+            element
+            for element in attached.get("elements") or []
+            if isinstance(element, Mapping)
+            and (user_bbox := _normalized_box(element.get("bbox"), width, height))
+            is not None
+            and user_bbox[1] < 64
+            and user_bbox[0] >= round(width * 0.75)
+            and (user_text := str(element.get("text") or "").strip())
+            and "flexweaver" not in user_text.casefold()
+            and not user_text.isdigit()
+        ),
+        None,
+    )
+    user_bbox = _normalized_box(
+        user_label.get("bbox") if isinstance(user_label, Mapping) else None,
+        width,
+        height,
+    )
+    if user_bbox is not None and isinstance(user_label, Mapping):
+        user_text = str(user_label.get("text") or "").strip()
+        user_width = min(user_bbox[2], max(48, len(user_text) * 18 + 8))
+        user_asset = {
+            "name": "chrome_user_label",
+            "kind": "identity",
+            "role": "identity-label",
+            "bbox": [
+                max(0, user_bbox[0] - 3),
+                max(0, user_bbox[1] - 3),
+                min(width - max(0, user_bbox[0] - 3), user_width),
+                min(height - max(0, user_bbox[1] - 3), user_bbox[3] + 6),
+            ],
+            "source": "chrome-icon-evidence",
+            "referenceOnly": True,
+            "original": False,
+        }
+        key = (user_asset["name"], tuple(user_asset["bbox"]))
+        if key not in seen:
+            assets.append(user_asset)
+    enrichment["assets"] = assets
+    attached["imageEnrichment"] = enrichment
+    return attached
+
+
 def _recover_chrome_icons(
     image_path: str | Path,
     graph: Mapping[str, Any],
@@ -2293,6 +2471,12 @@ def _recover_chrome_icons(
                     "displayPayload": dict(record["display_payload"]),
                     "sourceResolution": fuse_asset_record(record),
                     "geometrySource": "source-pixel-crop",
+                    "requestedBBox": [
+                        requested_left,
+                        requested_top,
+                        requested_width,
+                        requested_height,
+                    ],
                     "imageMVP": {
                         "source": "source-pixels",
                         "reference_only": True,
@@ -2328,6 +2512,12 @@ def _recover_chrome_icons(
                 "assetKind": "icon",
                 "vectorSvg": vector,
                 "geometrySource": geometry_source,
+                "requestedBBox": [
+                    requested_left,
+                    requested_top,
+                    requested_width,
+                    requested_height,
+                ],
                 "imageMVP": {
                     "source": "source-pixels-candidate",
                     "reference_only": False,
