@@ -12,6 +12,7 @@ from src.app.services.structure.fidelity.text_calibration import (
     calibrate_table_fonts_from_render,
     calibrate_table_positions,
     calibrate_table_positions_from_render,
+    calibrate_toolbar_letter_spacing_from_render,
 )
 
 
@@ -317,6 +318,56 @@ def test_form_position_calibration_moves_text_box_only(
     assert control["x"] == 0
     assert control["y"] == 0
     assert control["textBox"] == [0, 5, 20, 16]
+    assert report["adjusted_count"] == 1
+
+
+def test_toolbar_letter_spacing_uses_ink_width_delta(tmp_path: Path) -> None:
+    reference = tmp_path / "reference.png"
+    rendered = tmp_path / "rendered.png"
+    for path, box in (
+        (reference, (20, 20, 69, 32)),
+        (rendered, (20, 20, 59, 32)),
+    ):
+        image = Image.new("RGB", (100, 100), "white")
+        ImageDraw.Draw(image).rectangle(box, fill="black")
+        image.save(path)
+    design = {
+        "elements": [
+            {
+                "id": "toolbar",
+                "type": "container",
+                "role": "table-header-controls",
+                "x": 0,
+                "y": 0,
+                "width": 100,
+                "height": 50,
+            },
+            {
+                "contentRef": "control:toolbar",
+                "type": "button",
+                "x": 0,
+                "y": 0,
+                "width": 100,
+                "height": 40,
+                "text": "ABCDEF",
+                "style": {"fontSize": 16},
+                "styleEvidence": {
+                    "evidence": {
+                        "source_bbox": [0, 0, 100, 50],
+                        "ink_bbox": [20, 20, 50, 12],
+                    }
+                },
+            },
+        ]
+    }
+
+    calibrated, report = calibrate_toolbar_letter_spacing_from_render(
+        design,
+        str(reference),
+        str(rendered),
+    )
+
+    assert calibrated["elements"][1]["style"]["letterSpacing"] == 2.0
     assert report["adjusted_count"] == 1
 
 

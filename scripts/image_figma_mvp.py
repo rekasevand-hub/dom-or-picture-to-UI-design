@@ -35,6 +35,7 @@ from src.app.services.structure.fidelity.text_calibration import (  # noqa: E402
     calibrate_form_text_positions,
     calibrate_table_fonts_from_render,
     calibrate_table_positions_from_render,
+    calibrate_toolbar_letter_spacing_from_render,
 )
 from src.main import load_config  # noqa: E402
 
@@ -410,6 +411,29 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps(run_summary, ensure_ascii=True))
             return 2
 
+    toolbar_spacing_design, toolbar_spacing_calibration = (
+        calibrate_toolbar_letter_spacing_from_render(
+            design,
+            str(image),
+            str(run_root / "export.png"),
+        )
+    )
+    if toolbar_spacing_calibration["adjusted_count"]:
+        design = toolbar_spacing_design
+        _write_json(output / "figma_design.json", design)
+        run_root = output / "figma_toolbar_calibrated"
+        run_summary = run_image_figma_evidence(
+            design,
+            output_dir=run_root,
+            sample_id=str(truth.get("sample_id") or ""),
+            adapter_factory=ImageMVFigmaAdapter,
+            readback_depth=max(1, args.readback_depth),
+        )
+        if run_summary.get("status") != "captured-figma-evidence":
+            _write_json(output / "acceptance.json", run_summary)
+            print(json.dumps(run_summary, ensure_ascii=True))
+            return 2
+
     calibration_report = {
         **control_calibration,
         "table_fonts": table_font_calibration,
@@ -418,6 +442,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "form_fonts_post": form_font_calibration,
         "form_positions_post": form_position_calibration,
         "form_positions_post_2": form_position_second_calibration,
+        "toolbar_letter_spacing": toolbar_spacing_calibration,
         "adjusted_count": (
             control_calibration["adjusted_count"]
             + table_font_calibration["adjusted_count"]
@@ -426,6 +451,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             + form_font_calibration["adjusted_count"]
             + form_position_calibration["adjusted_count"]
             + form_position_second_calibration["adjusted_count"]
+            + toolbar_spacing_calibration["adjusted_count"]
         ),
         "status": (
             "applied"
@@ -436,6 +462,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             or form_font_calibration["adjusted_count"]
             or form_position_calibration["adjusted_count"]
             or form_position_second_calibration["adjusted_count"]
+            or toolbar_spacing_calibration["adjusted_count"]
             else "not-needed"
         ),
     }

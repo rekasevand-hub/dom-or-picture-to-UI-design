@@ -611,6 +611,87 @@ def calibrate_form_positions_from_render(
     }
 
 
+def calibrate_toolbar_letter_spacing_from_render(
+    design: Mapping[str, Any],
+    reference_path: str,
+    rendered_path: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Fit toolbar letter spacing without changing font size or shells."""
+    del reference_path
+    calibrated = copy.deepcopy(dict(design))
+    toolbar = next(
+        (
+            element
+            for element in calibrated.get("elements") or []
+            if isinstance(element, Mapping)
+            and element.get("role") == "table-header-controls"
+        ),
+        None,
+    )
+    if toolbar is None:
+        return calibrated, {
+            "schema_version": "grounding-toolbar-letter-spacing/1.0",
+            "status": "not-needed",
+            "adjusted_count": 0,
+            "adjustments": [],
+        }
+    left = float(toolbar.get("x") or 0)
+    top = float(toolbar.get("y") or 0)
+    right = left + float(toolbar.get("width") or 0)
+    bottom = top + float(toolbar.get("height") or 0)
+    adjustments: list[dict[str, Any]] = []
+    for element in calibrated.get("elements") or []:
+        if not isinstance(element, dict):
+            continue
+        if str(element.get("type") or "") not in {"input", "button"}:
+            continue
+        text = str(element.get("text") or "")
+        if len(text) < 2:
+            continue
+        source = _table_source_ink(element)
+        if source is None:
+            continue
+        source_bbox, target_ink = source
+        center_x = source_bbox[0] + source_bbox[2] / 2
+        center_y = source_bbox[1] + source_bbox[3] / 2
+        if not (left <= center_x <= right and top <= center_y <= bottom):
+            continue
+        current_ink = _render_ink_bbox(
+            rendered_path,
+            source_bbox,
+            contrast=True,
+        )
+        if current_ink is None:
+            continue
+        width_delta = target_ink[2] - current_ink[2]
+        if abs(width_delta) <= 1:
+            continue
+        gaps = max(1, len(text) - 1)
+        spacing = max(-1.0, min(2.0, width_delta / gaps))
+        spacing = round(spacing * 4) / 4
+        style = element.setdefault("style", {})
+        previous = float(style.get("letterSpacing") or 0)
+        if spacing == previous:
+            continue
+        style["letterSpacing"] = spacing
+        adjustments.append(
+            {
+                "contentRef": element.get("contentRef"),
+                "text": text,
+                "previous": previous,
+                "updated": spacing,
+                "referenceWidth": target_ink[2],
+                "renderedWidth": current_ink[2],
+            }
+        )
+    return calibrated, {
+        "schema_version": "grounding-toolbar-letter-spacing/1.0",
+        "status": "applied" if adjustments else "not-needed",
+        "adjusted_count": len(adjustments),
+        "adjustments": adjustments,
+    }
+
+
 def calibrate_form_text_positions(
     design: Mapping[str, Any],
     readback: Mapping[str, Any],
