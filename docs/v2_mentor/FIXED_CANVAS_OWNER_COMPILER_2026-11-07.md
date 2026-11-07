@@ -83,13 +83,15 @@ the same owner compiler used for the final DesignSpec:
 - header bottom separator bands are sampled and trimmed from pixels.
 - control text receives one bounded font-width calibration from rendered
   Figma TEXT bounds against source ink width.
+- table-cell frames receive a position-only calibration from rendered bounds;
+  font family and size remain unchanged.
 
 Latest real Figma acceptance:
 
 | Metric | Before owner cleanup | Latest |
 | --- | ---: | ---: |
-| Within-30 similarity | 90.987% | 94.483% |
-| Page bad-pixel ratio | 9.013% | 5.517% |
+| Within-30 similarity | 90.987% | 94.498% |
+| Page bad-pixel ratio | 9.013% | 5.502% |
 | Header bad-pixel ratio | 9.684% | 3.000% |
 | Sidebar bad-pixel ratio | 2.334% | 2.057% |
 | Critical text | 23 / 24 | 24 / 24 |

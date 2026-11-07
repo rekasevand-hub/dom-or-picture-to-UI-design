@@ -27,6 +27,7 @@ from src.app.services.structure.image_contract import (  # noqa: E402
 )
 from src.app.services.structure.fidelity.text_calibration import (  # noqa: E402
     calibrate_control_fonts,
+    calibrate_table_positions,
 )
 from src.main import load_config  # noqa: E402
 
@@ -240,10 +241,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
 
     initial_readback = _read_json(run_root / "readback.json")
-    calibrated_design, calibration_report = calibrate_control_fonts(
+    calibrated_design, control_calibration = calibrate_control_fonts(
         design,
         initial_readback,
     )
+    calibrated_design, table_position_calibration = calibrate_table_positions(
+        calibrated_design,
+        initial_readback,
+    )
+    calibration_report = {
+        **control_calibration,
+        "table_positions": table_position_calibration,
+        "adjusted_count": (
+            control_calibration["adjusted_count"]
+            + table_position_calibration["adjusted_count"]
+        ),
+        "status": (
+            "applied"
+            if control_calibration["adjusted_count"]
+            or table_position_calibration["adjusted_count"]
+            else "not-needed"
+        ),
+    }
     _write_json(output / "font_calibration.json", calibration_report)
     if calibration_report["adjusted_count"]:
         _write_json(output / "figma_design_initial.json", design)
