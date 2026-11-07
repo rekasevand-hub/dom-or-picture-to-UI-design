@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+from PIL import Image, ImageDraw
+
 from src.app.services.structure.fidelity.text_calibration import (
     calibrate_control_fonts,
     calibrate_form_text_positions,
+    calibrate_table_fonts_from_render,
     calibrate_table_positions,
+    calibrate_table_positions_from_render,
 )
 
 
@@ -115,6 +121,85 @@ def test_table_position_calibration_does_not_touch_header() -> None:
 
     assert calibrated["elements"][0]["x"] == 388
     assert report["status"] == "not-needed"
+
+
+def test_table_font_calibration_uses_reference_and_render_ink(tmp_path: Path) -> None:
+    reference = tmp_path / "reference.png"
+    rendered = tmp_path / "rendered.png"
+    for path, box in (
+        (reference, (20, 20, 59, 27)),
+        (rendered, (20, 20, 39, 25)),
+    ):
+        image = Image.new("RGB", (100, 50), "white")
+        ImageDraw.Draw(image).rectangle(box, fill="black")
+        image.save(path)
+    design = {
+        "elements": [
+            {
+                "contentRef": "table-cell:time",
+                "type": "text",
+                "x": 0,
+                "y": 0,
+                "text": "2026-11-01 03:30:00",
+                "style": {"fontSize": 10},
+                "styleEvidence": {
+                    "evidence": {
+                        "source_bbox": [0, 0, 100, 50],
+                        "ink_bbox": [20, 20, 40, 8],
+                    }
+                },
+            }
+        ]
+    }
+
+    calibrated, report = calibrate_table_fonts_from_render(
+        design,
+        str(reference),
+        str(rendered),
+    )
+
+    assert calibrated["elements"][0]["style"]["fontSize"] == 20
+    assert report["adjusted_count"] == 1
+
+
+def test_table_position_calibration_uses_render_ink(tmp_path: Path) -> None:
+    reference = tmp_path / "reference.png"
+    rendered = tmp_path / "rendered.png"
+    for path, box in (
+        (reference, (20, 20, 59, 27)),
+        (rendered, (30, 25, 69, 32)),
+    ):
+        image = Image.new("RGB", (100, 50), "white")
+        ImageDraw.Draw(image).rectangle(box, fill="black")
+        image.save(path)
+    design = {
+        "elements": [
+            {
+                "contentRef": "table-cell:time",
+                "type": "text",
+                "x": 100,
+                "y": 100,
+                "text": "2026-11-01 03:30:00",
+                "style": {"fontSize": 16},
+                "styleEvidence": {
+                    "evidence": {
+                        "source_bbox": [0, 0, 100, 50],
+                        "ink_bbox": [20, 20, 40, 8],
+                    }
+                },
+            }
+        ]
+    }
+
+    calibrated, report = calibrate_table_positions_from_render(
+        design,
+        str(reference),
+        str(rendered),
+    )
+
+    assert calibrated["elements"][0]["x"] == 90
+    assert calibrated["elements"][0]["y"] == 95
+    assert report["adjusted_count"] == 1
 
 
 def test_form_text_position_calibration_uses_target_ink() -> None:

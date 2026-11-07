@@ -28,7 +28,8 @@ from src.app.services.structure.image_contract import (  # noqa: E402
 from src.app.services.structure.fidelity.text_calibration import (  # noqa: E402
     calibrate_control_fonts,
     calibrate_form_text_positions,
-    calibrate_table_positions,
+    calibrate_table_fonts_from_render,
+    calibrate_table_positions_from_render,
 )
 from src.main import load_config  # noqa: E402
 
@@ -246,35 +247,50 @@ def main(argv: Sequence[str] | None = None) -> int:
         design,
         initial_readback,
     )
-    calibrated_design, table_position_calibration = calibrate_table_positions(
+    calibrated_design, table_font_calibration = calibrate_table_fonts_from_render(
         calibrated_design,
-        initial_readback,
+        str(image),
+        str(run_root / "export.png"),
     )
     calibrated_design, form_text_calibration = calibrate_form_text_positions(
         calibrated_design,
         initial_readback,
     )
-    calibration_report = {
-        **control_calibration,
-        "table_positions": table_position_calibration,
-        "form_text_positions": form_text_calibration,
-        "adjusted_count": (
-            control_calibration["adjusted_count"]
-            + table_position_calibration["adjusted_count"]
-            + form_text_calibration["adjusted_count"]
-        ),
-        "status": (
-            "applied"
-            if control_calibration["adjusted_count"]
-            or table_position_calibration["adjusted_count"]
-            or form_text_calibration["adjusted_count"]
-            else "not-needed"
-        ),
-    }
-    _write_json(output / "font_calibration.json", calibration_report)
-    if calibration_report["adjusted_count"]:
+    font_stage_adjusted = (
+        control_calibration["adjusted_count"]
+        + table_font_calibration["adjusted_count"]
+        + form_text_calibration["adjusted_count"]
+    )
+    wrote_initial_design = False
+    if font_stage_adjusted:
         _write_json(output / "figma_design_initial.json", design)
+        wrote_initial_design = True
         design = calibrated_design
+        _write_json(output / "figma_design.json", design)
+        run_root = output / "figma_font_calibrated"
+        run_summary = run_image_figma_evidence(
+            design,
+            output_dir=run_root,
+            sample_id=str(truth.get("sample_id") or ""),
+            adapter_factory=ImageMVFigmaAdapter,
+            readback_depth=max(1, args.readback_depth),
+        )
+        if run_summary.get("status") != "captured-figma-evidence":
+            _write_json(output / "acceptance.json", run_summary)
+            print(json.dumps(run_summary, ensure_ascii=True))
+            return 2
+
+    positioned_design, table_position_calibration = (
+        calibrate_table_positions_from_render(
+            design,
+            str(image),
+            str(run_root / "export.png"),
+        )
+    )
+    if table_position_calibration["adjusted_count"]:
+        if not wrote_initial_design:
+            _write_json(output / "figma_design_initial.json", design)
+        design = positioned_design
         _write_json(output / "figma_design.json", design)
         run_root = output / "figma_calibrated"
         run_summary = run_image_figma_evidence(
@@ -288,6 +304,28 @@ def main(argv: Sequence[str] | None = None) -> int:
             _write_json(output / "acceptance.json", run_summary)
             print(json.dumps(run_summary, ensure_ascii=True))
             return 2
+
+    calibration_report = {
+        **control_calibration,
+        "table_fonts": table_font_calibration,
+        "table_positions": table_position_calibration,
+        "form_text_positions": form_text_calibration,
+        "adjusted_count": (
+            control_calibration["adjusted_count"]
+            + table_font_calibration["adjusted_count"]
+            + table_position_calibration["adjusted_count"]
+            + form_text_calibration["adjusted_count"]
+        ),
+        "status": (
+            "applied"
+            if control_calibration["adjusted_count"]
+            or table_font_calibration["adjusted_count"]
+            or table_position_calibration["adjusted_count"]
+            or form_text_calibration["adjusted_count"]
+            else "not-needed"
+        ),
+    }
+    _write_json(output / "font_calibration.json", calibration_report)
 
     region_quality = None
     regions = _fidelity_regions(geometry)
