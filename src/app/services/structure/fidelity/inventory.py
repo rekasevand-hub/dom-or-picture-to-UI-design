@@ -642,6 +642,27 @@ def build_content_inventory(bundle: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _select_contiguous_boundaries(
+    values: list[int],
+    expected_count: int,
+) -> list[int]:
+    if len(values) <= expected_count:
+        return values
+    candidates = []
+    for index in range(len(values) - expected_count + 1):
+        selected = values[index : index + expected_count]
+        gaps = [
+            selected[position + 1] - selected[position]
+            for position in range(len(selected) - 1)
+        ]
+        mean_gap = sum(gaps) / len(gaps)
+        variance = sum((gap - mean_gap) ** 2 for gap in gaps) / len(gaps)
+        score = variance / (mean_gap * mean_gap) if mean_gap else float("inf")
+        candidates.append((score, index))
+    _score, start = min(candidates)
+    return values[start : start + expected_count]
+
+
 def build_geometry_manifest(bundle: Mapping[str, Any]) -> dict[str, Any]:
     """Project inventory and source regions into one top-left pixel geometry."""
     inventory = build_content_inventory(bundle)
@@ -728,7 +749,11 @@ def build_geometry_manifest(bundle: Mapping[str, Any]) -> dict[str, Any]:
                 table_width,
                 min(height - max(0, y - 140), table_height + 140),
             ]
-            detected_grid = detect_table_grid(image_path, expanded_bbox)
+            detected_grid = detect_table_grid(
+                image_path,
+                expanded_bbox,
+                prefer_color_lines=True,
+            )
         x_boundaries: list[int] = []
         y_boundaries: list[int] = []
         if isinstance(detected_grid, Mapping):
@@ -745,10 +770,14 @@ def build_geometry_manifest(bundle: Mapping[str, Any]) -> dict[str, Any]:
             ]
             expected_columns = int(table["column_count"]) + 1
             expected_rows = int(table["row_count"]) + (1 if table["headers"] else 0) + 1
-            if len(x_boundaries) > expected_columns:
-                x_boundaries = x_boundaries[-expected_columns:]
-            if len(y_boundaries) > expected_rows:
-                y_boundaries = y_boundaries[-expected_rows:]
+            x_boundaries = _select_contiguous_boundaries(
+                x_boundaries,
+                expected_columns,
+            )
+            y_boundaries = _select_contiguous_boundaries(
+                y_boundaries,
+                expected_rows,
+            )
             if len(x_boundaries) >= 2 and len(y_boundaries) >= 2:
                 table_bbox = [
                     x_boundaries[0],

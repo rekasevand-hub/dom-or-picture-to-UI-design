@@ -84,6 +84,8 @@ def _cell_ink_box(
 def detect_table_grid(
     image_path: str | Path,
     table_bbox: list[int],
+    *,
+    prefer_color_lines: bool = False,
 ) -> dict[str, list[int]] | None:
     source = cv2.imread(str(image_path))
     if source is None:
@@ -97,6 +99,37 @@ def detect_table_grid(
     if right - left < 40 or bottom - top < 40:
         return None
     crop = source[top:bottom, left:right]
+    if prefer_color_lines:
+        scan_left = max(0, left - 4)
+        scan_top = max(0, top - 4)
+        scan_right = min(image_width, right + 4)
+        scan_bottom = min(image_height, bottom + 4)
+        scan_crop = source[scan_top:scan_bottom, scan_left:scan_right]
+        channel_range = scan_crop.max(axis=2) - scan_crop.min(axis=2)
+        brightness = scan_crop.mean(axis=2)
+        line_mask = (channel_range <= 18) & (brightness >= 180) & (brightness <= 245)
+        detected_x = _group(
+            [
+                scan_left + int(index) - left
+                for index, count in enumerate(line_mask.sum(axis=0))
+                if count >= max(30, int(line_mask.shape[0] * 0.45))
+            ],
+            tolerance=3,
+        )
+        detected_y = _group(
+            [
+                scan_top + int(index) - top
+                for index, count in enumerate(line_mask.sum(axis=1))
+                if count >= max(60, int(line_mask.shape[1] * 0.45))
+            ],
+            tolerance=3,
+        )
+        if len(detected_x) >= 3 and len(detected_y) >= 3:
+            return {
+                "source_bbox": [left, top, right - left, bottom - top],
+                "x_boundaries": detected_x,
+                "y_boundaries": detected_y,
+            }
     edges = cv2.Canny(cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY), 30, 100)
     lines = cv2.HoughLinesP(
         edges,

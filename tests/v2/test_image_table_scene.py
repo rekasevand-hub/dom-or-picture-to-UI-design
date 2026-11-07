@@ -32,6 +32,42 @@ def test_table_grid_detection_returns_native_rows_and_columns(tmp_path):
     assert len(grid["y_boundaries"]) >= 7
 
 
+def test_high_fidelity_color_grid_detects_real_table_edges() -> None:
+    image_path = Path(
+        "tests/fixtures/image_to_slice_benchmark_2026-11-02/" "IMG-FLEXWEAVER-ADMIN.png"
+    ).resolve()
+
+    grid = detect_table_grid(
+        image_path,
+        [307, 410, 1613, 409],
+        prefer_color_lines=True,
+    )
+
+    assert grid is not None
+    source_x, source_y, _width, _height = grid["source_bbox"]
+    assert [source_x + value for value in grid["x_boundaries"]] == [
+        308,
+        388,
+        577,
+        717,
+        857,
+        1045,
+        1137,
+        1887,
+        1908,
+    ]
+    assert [source_y + value for value in grid["y_boundaries"]] == [
+        472,
+        549,
+        598,
+        642,
+        686,
+        730,
+        774,
+        819,
+    ]
+
+
 def test_table_normalization_keeps_one_owner_per_cell(tmp_path):
     image_path = tmp_path / "table.png"
     _table_image(image_path)

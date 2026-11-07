@@ -9,6 +9,9 @@ from src.app.services.structure.fidelity import (
     build_evidence_bundle,
     build_geometry_manifest,
 )
+from src.app.services.structure.fidelity.inventory import (
+    _select_contiguous_boundaries,
+)
 
 
 def _reference(width: int = 1920, height: int = 826) -> dict:
@@ -27,6 +30,17 @@ def _reference(width: int = 1920, height: int = 826) -> dict:
             "coordinate_basis": "source-pixel-top-left",
         },
     }
+
+
+def test_geometry_boundaries_select_widest_contiguous_grid() -> None:
+    assert _select_contiguous_boundaries(
+        [308, 388, 577, 717, 857, 1045, 1137, 1887, 1908],
+        8,
+    ) == [308, 388, 577, 717, 857, 1045, 1137, 1887]
+    assert _select_contiguous_boundaries(
+        [472, 549, 598, 642, 686, 730, 774, 819],
+        7,
+    ) == [549, 598, 642, 686, 730, 774, 819]
 
 
 def _base_graph(*, width: int = 1920, height: int = 826) -> dict:
