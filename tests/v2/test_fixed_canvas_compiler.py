@@ -490,6 +490,51 @@ def test_compiler_preserves_narrow_source_chrome_right_rail(
     assert rail["imageMVP"]["reference_only"] is True
 
 
+def test_compiler_emits_reference_only_form_background(
+    tmp_path: Path,
+) -> None:
+    path, graph, plan = _fixture(tmp_path)
+    plan["nodes"].extend(
+        [
+            {
+                "id": "form-section",
+                "parent_id": None,
+                "type": "container",
+                "role": "form-section",
+                "bbox": [20, 70, 200, 40],
+                "content_ref": None,
+                "geometry_ref": "geometry:form-section",
+                "children": [],
+            },
+            {
+                "id": "table-section",
+                "parent_id": None,
+                "type": "container",
+                "role": "table-section",
+                "bbox": [20, 220, 360, 20],
+                "content_ref": None,
+                "geometry_ref": "geometry:table-section",
+                "children": [],
+            },
+        ]
+    )
+
+    design = _compile(path, graph, plan)
+    background = next(
+        element
+        for element in design["elements"]
+        if element.get("id") == "source-chrome-form-background"
+    )
+
+    assert background["type"] == "image"
+    assert background["imageBase64"]
+    assert background["imageMVP"]["reference_only"] is True
+    assert any(
+        element.get("type") == "text" and element.get("text") == "Title"
+        for element in design["elements"]
+    )
+
+
 def test_compiler_renders_icon_button_as_reference_only_source_crop(
     tmp_path: Path,
 ) -> None:

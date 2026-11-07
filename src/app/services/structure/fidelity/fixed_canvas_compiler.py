@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import copy
 import hashlib
+import io
 from collections.abc import Mapping
 from typing import Any
 
@@ -400,6 +401,94 @@ def _source_chrome_right_rail(
             },
         }
     return None
+
+
+def _source_form_background(
+    image_path: str,
+    elements: list[dict[str, Any]],
+    *,
+    width: int,
+    height: int,
+) -> dict[str, Any] | None:
+    from PIL import Image, ImageDraw
+
+    form = next(
+        (
+            element
+            for element in elements
+            if str(element.get("role") or "") == "form-section"
+        ),
+        None,
+    )
+    if form is None:
+        return None
+    table = next(
+        (
+            element
+            for element in elements
+            if str(element.get("role") or "") == "table-section"
+        ),
+        None,
+    )
+    if table is None:
+        return None
+    x = int(float(form.get("x") or 0))
+    y = int(float(form.get("y") or 0))
+    box_width = int(float(form.get("width") or 0))
+    bottom = min(height, int(float(table.get("y") or height)))
+    box_height = bottom - y
+    if box_width <= 0 or box_height <= 0:
+        return None
+    with Image.open(image_path) as source:
+        image = source.convert("RGB")
+    draw = ImageDraw.Draw(image)
+    for element in elements:
+        evidence = element.get("styleEvidence")
+        values = evidence.get("evidence") if isinstance(evidence, Mapping) else None
+        ink = values.get("ink_bbox") if isinstance(values, Mapping) else None
+        if not isinstance(ink, list) or len(ink) != 4:
+            continue
+        ink_x, ink_y, ink_width, ink_height = (int(value) for value in ink)
+        if not (y <= ink_y < bottom and x <= ink_x < x + box_width):
+            continue
+        background = str(values.get("background") or "#ffffff")
+        if not background.startswith("#"):
+            background = "#ffffff"
+        draw.rectangle(
+            (
+                max(0, ink_x - 3),
+                max(0, ink_y - 3),
+                min(width - 1, ink_x + ink_width + 2),
+                min(height - 1, ink_y + ink_height + 2),
+            ),
+            fill=background,
+        )
+    crop = image.crop((x, y, x + box_width, y + box_height))
+    buffer = io.BytesIO()
+    crop.save(buffer, format="PNG")
+    payload = base64.b64encode(buffer.getvalue()).decode("ascii")
+    return {
+        "id": "source-chrome-form-background",
+        "type": "image",
+        "role": "source-chrome",
+        "name": "source-chrome-form-background",
+        "x": x,
+        "y": y,
+        "width": box_width,
+        "height": box_height,
+        "text": "",
+        "controlValue": "",
+        "contentRef": None,
+        "imageBase64": payload,
+        "paintDepth": 1,
+        "imageMVP": {
+            "source": "source-pixels",
+            "role": "source-chrome",
+            "reference_only": True,
+            "original": False,
+            "generated": False,
+        },
+    }
 
 
 def _icon_control_element(
@@ -982,6 +1071,14 @@ def compile_scene_plan_to_design(
     decorations.extend(control_group_decorations)
     elements = [*containers, *decorations, *leaves]
     _apply_group_decoration_depths(elements, control_groups)
+    form_background = _source_form_background(
+        image_path,
+        elements,
+        width=width,
+        height=height,
+    )
+    if form_background is not None:
+        elements.append(form_background)
     right_rail = _source_chrome_right_rail(
         image_path,
         nodes,
