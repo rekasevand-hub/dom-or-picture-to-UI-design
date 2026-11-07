@@ -18,6 +18,9 @@ from src.app.services.evidence.image_figma_acceptance import (  # noqa: E402
     build_image_acceptance_report,
     run_image_figma_evidence,
 )
+from src.app.services.evidence.native_text_quality import (  # noqa: E402
+    build_native_text_quality,
+)
 from src.app.services.evidence.region_quality import (  # noqa: E402
     evaluate_region_quality,
 )
@@ -447,6 +450,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             regions,
         )
         _write_json(output / "region_quality.json", region_quality)
+    native_text_quality = build_native_text_quality(
+        design,
+        _read_json(run_root / "readback.json"),
+        str(image),
+        str(run_root / "export.png"),
+        regions,
+    )
+    _write_json(output / "native_text_quality.json", native_text_quality)
 
     report = build_image_acceptance_report(
         design=design,
@@ -475,6 +486,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "fidelity_report": "pipeline/13_fidelity_report.json",
         "repair_history": "pipeline/14_repair_history.json",
         "region_quality": "region_quality.json",
+        "native_text_quality": "native_text_quality.json",
         "design": "figma_design.json",
         "figma_run": str((run_root / "summary.json").relative_to(output)),
         "readback": str((run_root / "readback.json").relative_to(output)),

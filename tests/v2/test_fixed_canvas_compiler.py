@@ -488,6 +488,8 @@ def test_compiler_preserves_narrow_source_chrome_right_rail(
     assert rail["width"] == 10
     assert rail["imageBase64"]
     assert rail["imageMVP"]["reference_only"] is True
+    assert rail["maskEvidence"]["maskSource"] == "not-applicable"
+    assert rail["maskEvidence"]["haloPx"] == 0
 
 
 def test_compiler_emits_reference_only_form_background(
@@ -529,6 +531,11 @@ def test_compiler_emits_reference_only_form_background(
     assert background["type"] == "image"
     assert background["imageBase64"]
     assert background["imageMVP"]["reference_only"] is True
+    assert background["maskEvidence"]["haloPx"] == 2
+    assert background["maskEvidence"]["excludedRectangles"]
+    assert background["maskEvidence"]["residualTextProbe"]["status"] == (
+        "masked-uniform-fill"
+    )
     assert any(
         element.get("type") == "text" and element.get("text") == "Title"
         for element in design["elements"]

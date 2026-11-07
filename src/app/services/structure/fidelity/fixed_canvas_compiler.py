@@ -392,6 +392,18 @@ def _source_chrome_right_rail(
             "contentRef": None,
             "imageBase64": image_base64,
             "paintDepth": 10000,
+            "maskEvidence": {
+                "schema_version": "source-chrome-text-mask/1.0",
+                "maskSource": "not-applicable",
+                "haloPx": 0,
+                "excludedContentRefs": [],
+                "excludedRectangles": [],
+                "maskedRectangleCount": 0,
+                "residualTextProbe": {
+                    "status": "not-applicable-no-text-owner-overlap",
+                    "maskedRectanglesChecked": 0,
+                },
+            },
             "imageMVP": {
                 "source": "source-pixels",
                 "role": "source-chrome",
@@ -442,6 +454,9 @@ def _source_form_background(
     with Image.open(image_path) as source:
         image = source.convert("RGB")
     draw = ImageDraw.Draw(image)
+    halo_px = 2
+    excluded_rectangles: list[list[int]] = []
+    excluded_refs: list[str] = []
     for element in elements:
         evidence = element.get("styleEvidence")
         values = evidence.get("evidence") if isinstance(evidence, Mapping) else None
@@ -454,15 +469,29 @@ def _source_form_background(
         background = str(values.get("background") or "#ffffff")
         if not background.startswith("#"):
             background = "#ffffff"
+        mask_left = max(0, ink_x - halo_px)
+        mask_top = max(0, ink_y - halo_px)
+        mask_right = min(width - 1, ink_x + ink_width + halo_px - 1)
+        mask_bottom = min(height - 1, ink_y + ink_height + halo_px - 1)
         draw.rectangle(
             (
-                max(0, ink_x - 3),
-                max(0, ink_y - 3),
-                min(width - 1, ink_x + ink_width + 2),
-                min(height - 1, ink_y + ink_height + 2),
+                mask_left,
+                mask_top,
+                mask_right,
+                mask_bottom,
             ),
             fill=background,
         )
+        excluded_rectangles.append(
+            [
+                mask_left,
+                mask_top,
+                mask_right - mask_left + 1,
+                mask_bottom - mask_top + 1,
+            ]
+        )
+        if element.get("contentRef"):
+            excluded_refs.append(str(element["contentRef"]))
     crop = image.crop((x, y, x + box_width, y + box_height))
     buffer = io.BytesIO()
     crop.save(buffer, format="PNG")
@@ -481,6 +510,18 @@ def _source_form_background(
         "contentRef": None,
         "imageBase64": payload,
         "paintDepth": 1,
+        "maskEvidence": {
+            "schema_version": "source-chrome-text-mask/1.0",
+            "maskSource": "reference-styleEvidence.ink_bbox",
+            "haloPx": halo_px,
+            "excludedContentRefs": sorted(set(excluded_refs)),
+            "excludedRectangles": excluded_rectangles,
+            "maskedRectangleCount": len(excluded_rectangles),
+            "residualTextProbe": {
+                "status": "masked-uniform-fill",
+                "maskedRectanglesChecked": len(excluded_rectangles),
+            },
+        },
         "imageMVP": {
             "source": "source-pixels",
             "role": "source-chrome",
