@@ -744,6 +744,51 @@ def test_table_toolbar_button_is_moved_above_grid() -> None:
     assert control["bbox"][0] == 20
 
 
+def test_aligned_table_toolbar_button_preserves_source_geometry() -> None:
+    graph = _graph_with_duplicate_table_text()
+    inventory = {
+        "schema_version": "grounding-content-inventory/1.0",
+        "image_size": [400, 240],
+        "items": [
+            {
+                "id": "control:pause",
+                "kind": "control",
+                "text": "暂停自动刷新",
+                "control_type": "button",
+                "state": "enabled",
+                "bbox": [22, 39, 120, 60],
+                "role": "",
+                "source_ref": "graph.elements[0]",
+                "authority": "grounding",
+            }
+        ],
+        "tables": [
+            {
+                "id": "0",
+                "name": "Results",
+                "bbox": [20, 88, 340, 128],
+                "headers": ["Name", "Status"],
+                "rows": [["Alpha", "Ready"]],
+                "row_count": 1,
+                "column_count": 2,
+                "source_ref": "graph.tables[0]",
+            }
+        ],
+        "unknowns": [],
+    }
+    plan = build_scene_plan(
+        graph,
+        inventory,
+        _geometry_with_table_grid(),
+    )
+
+    control = next(
+        node for node in plan["nodes"] if node["content_ref"] == "control:pause"
+    )
+    assert control["bbox"] == [22, 39, 120, 60]
+    assert control["role"] == "toolbar-control"
+
+
 def test_table_node_preserves_detected_grid_evidence() -> None:
     geometry = _geometry_with_table_grid()
     geometry["items"][-1]["grid"] = {

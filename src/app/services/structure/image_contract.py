@@ -2269,6 +2269,95 @@ def _detect_control_border_bbox(
     return list(detected) if detected is not None else None
 
 
+def _detect_control_surface_bbox(
+    image_path: str | Path,
+    bbox: list[int],
+    *,
+    width: int,
+    height: int,
+) -> list[int] | None:
+    import numpy as np
+    from PIL import Image
+
+    x, y, box_width, box_height = bbox
+    left = max(0, x - 4)
+    top = max(0, y - 4)
+    right = min(width, x + box_width + 4)
+    bottom = min(height, y + box_height + 4)
+    with Image.open(image_path) as source:
+        image = np.asarray(source.convert("RGB"), dtype=np.int16)
+    region = image[top:bottom, left:right]
+    channel_range = region.max(axis=2) - region.min(axis=2)
+    mask = (channel_range > 40) & (region.max(axis=2) < 250)
+    if int(mask.sum()) < max(12, int(box_width * box_height * 0.2)):
+        return None
+    rows, columns = np.where(mask)
+    detected = _normalized_box(
+        [
+            left + int(columns.min()),
+            top + int(rows.min()),
+            int(columns.max()) - int(columns.min()) + 1,
+            int(rows.max()) - int(rows.min()) + 1,
+        ],
+        width,
+        height,
+    )
+    return list(detected) if detected is not None else None
+
+
+def _control_bbox_is_close(original: list[int], detected: list[int]) -> bool:
+    ox, oy, ow, oh = original
+    dx, dy, dw, dh = detected
+    if max(abs(dx - ox), abs(dy - oy), abs(dw - ow), abs(dh - oh)) > 8:
+        return False
+    original_area = max(1, ow * oh)
+    detected_area = max(1, dw * dh)
+    return 0.7 <= detected_area / original_area <= 1.3
+
+
+def _refine_button_geometry_from_source(
+    graph: dict[str, Any],
+    image_path: str | Path,
+    *,
+    width: int,
+    height: int,
+) -> None:
+    for element in graph.get("elements") or []:
+        if not isinstance(element, dict):
+            continue
+        control_type = str(
+            element.get("controlType") or element.get("type") or ""
+        ).lower()
+        if control_type not in {"button", "link"}:
+            continue
+        original = _normalized_box(element.get("bbox"), width, height)
+        if original is None:
+            continue
+        detected = _detect_control_border_bbox(
+            image_path,
+            list(original),
+            width=width,
+            height=height,
+        )
+        source = "grayscale-border"
+        if detected is None:
+            detected = _detect_control_surface_bbox(
+                image_path,
+                list(original),
+                width=width,
+                height=height,
+            )
+            source = "color-surface"
+        if detected is None or not _control_bbox_is_close(list(original), detected):
+            continue
+        element["bbox"] = detected
+        element["geometryEvidence"] = {
+            "source": f"source-pixel-{source}",
+            "previousBBox": list(original),
+            "detectedBBox": list(detected),
+        }
+
+
 def attach_chrome_icon_evidence(
     graph: Mapping[str, Any],
     image_path: str | Path,
@@ -2341,6 +2430,12 @@ def attach_chrome_icon_evidence(
             )
             if detected_bbox is not None:
                 search_control["bbox"] = detected_bbox
+    _refine_button_geometry_from_source(
+        attached,
+        image_path,
+        width=width,
+        height=height,
+    )
     schedule_control = next(
         (
             element

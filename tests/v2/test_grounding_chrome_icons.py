@@ -150,3 +150,45 @@ def test_table_search_control_uses_detected_reference_border() -> None:
     )
 
     assert table_search["bbox"] == [1716, 502, 174, 36]
+
+
+def test_toolbar_buttons_use_detected_reference_boundaries() -> None:
+    path = Path(
+        "tests/fixtures/image_to_slice_benchmark_2026-11-02/" "IMG-FLEXWEAVER-ADMIN.png"
+    ).resolve()
+    graph = _graph()
+    graph["elements"].extend(
+        [
+            {
+                "id": 7,
+                "type": "link",
+                "controlType": "link",
+                "controlValue": "暂停自动刷新",
+                "bbox": [305, 501, 133, 38],
+            },
+            {
+                "id": 8,
+                "type": "button",
+                "controlType": "button",
+                "controlValue": "刷新",
+                "bbox": [572, 501, 66, 37],
+            },
+        ]
+    )
+
+    attached = attach_chrome_icon_evidence(
+        graph,
+        str(path),
+        width=1920,
+        height=826,
+    )
+    by_id = {
+        element["id"]: element
+        for element in attached["elements"]
+        if isinstance(element.get("id"), int)
+    }
+
+    assert by_id[7]["bbox"] == [306, 502, 131, 36]
+    assert by_id[7]["geometryEvidence"]["source"] == "source-pixel-grayscale-border"
+    assert by_id[8]["bbox"] == [573, 502, 65, 36]
+    assert by_id[8]["geometryEvidence"]["source"] == "source-pixel-color-surface"

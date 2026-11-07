@@ -96,6 +96,16 @@ def _box_gap(left: list[int], right: list[int]) -> float:
     return float(horizontal + vertical)
 
 
+def _in_table_toolbar_band(
+    control_bbox: list[int],
+    table_bbox: list[int],
+) -> bool:
+    expected_top = max(0, int(table_bbox[1]) - 49)
+    return expected_top - 16 <= int(control_bbox[1]) <= int(table_bbox[1]) and int(
+        table_bbox[0]
+    ) - 8 <= int(control_bbox[0]) <= int(table_bbox[0] + table_bbox[2])
+
+
 def _text_owner_priority(node: Mapping[str, Any]) -> tuple[int, int, int, int]:
     role = str(node.get("role") or "")
     authority = str(node.get("authority") or "")
@@ -205,6 +215,20 @@ def _arbitrate_table_controls(
             ),
             None,
         )
+        button_like = (
+            str(control.get("control_type") or "") in {"button", "icon-button"}
+            and int(control_bbox[2]) >= 100
+            and int(control_bbox[3]) >= 28
+        )
+        if table is None and button_like:
+            table = next(
+                (
+                    item
+                    for item in table_geometries
+                    if _in_table_toolbar_band(control_bbox, item["bbox"])
+                ),
+                None,
+            )
         if table is None:
             continue
         content_ref = str(control.get("content_ref") or "")
@@ -220,15 +244,16 @@ def _arbitrate_table_controls(
                 }
             )
             continue
-        if (
-            str(control.get("control_type") or "") not in {"button", "icon-button"}
-            or int(control_bbox[2]) < 100
-            or int(control_bbox[3]) < 28
-        ):
+        if not button_like:
             continue
         table_bbox = table["bbox"]
         table_id = str(table.get("content_ref") or "")
         parent = table_node_by_id.get(table_id)
+        expected_top = max(0, int(table_bbox[1]) - 49)
+        if _in_table_toolbar_band(control_bbox, table_bbox):
+            control["parent_id"] = parent.get("parent_id") if parent else None
+            control["role"] = "toolbar-control"
+            continue
         toolbar_width = max(
             80,
             min(
@@ -240,7 +265,7 @@ def _arbitrate_table_controls(
             normalize_bbox(
                 [
                     table_bbox[0],
-                    max(0, table_bbox[1] - 49),
+                    expected_top,
                     toolbar_width,
                     min(36, int(control_bbox[3])),
                 ],
