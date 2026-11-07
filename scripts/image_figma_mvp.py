@@ -383,6 +383,30 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps(run_summary, ensure_ascii=True))
             return 2
 
+    form_position_second_design, form_position_second_calibration = (
+        calibrate_form_positions_from_render(
+            design,
+            _read_json(run_root / "readback.json"),
+            str(image),
+            str(run_root / "export.png"),
+        )
+    )
+    if form_position_second_calibration["adjusted_count"]:
+        design = form_position_second_design
+        _write_json(output / "figma_design.json", design)
+        run_root = output / "figma_form_calibrated_2"
+        run_summary = run_image_figma_evidence(
+            design,
+            output_dir=run_root,
+            sample_id=str(truth.get("sample_id") or ""),
+            adapter_factory=ImageMVFigmaAdapter,
+            readback_depth=max(1, args.readback_depth),
+        )
+        if run_summary.get("status") != "captured-figma-evidence":
+            _write_json(output / "acceptance.json", run_summary)
+            print(json.dumps(run_summary, ensure_ascii=True))
+            return 2
+
     calibration_report = {
         **control_calibration,
         "table_fonts": table_font_calibration,
@@ -390,6 +414,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "form_text_positions": form_text_calibration,
         "form_fonts_post": form_font_calibration,
         "form_positions_post": form_position_calibration,
+        "form_positions_post_2": form_position_second_calibration,
         "adjusted_count": (
             control_calibration["adjusted_count"]
             + table_font_calibration["adjusted_count"]
@@ -397,6 +422,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             + form_text_calibration["adjusted_count"]
             + form_font_calibration["adjusted_count"]
             + form_position_calibration["adjusted_count"]
+            + form_position_second_calibration["adjusted_count"]
         ),
         "status": (
             "applied"
@@ -406,6 +432,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             or form_text_calibration["adjusted_count"]
             or form_font_calibration["adjusted_count"]
             or form_position_calibration["adjusted_count"]
+            or form_position_second_calibration["adjusted_count"]
             else "not-needed"
         ),
     }
