@@ -186,3 +186,62 @@ def test_invalid_checkbox_label_is_recovered_from_adjacent_ocr_and_tesseract() -
     assert by_id[1]["label"] == "以auto用户身份执行"
     assert by_id[2]["text"] == "以auto用户身份执行"
     assert by_id[2]["role"] == "control-label"
+
+
+def test_synthetic_check_icon_text_is_not_a_visible_label() -> None:
+    graph = {
+        "elements": [
+            {
+                "id": 1,
+                "type": "checkbox",
+                "controlType": "checkbox",
+                "text": "check icon",
+                "controlValue": "check icon",
+                "controlState": "checked",
+                "bbox": [813, 251, 19, 18],
+                "textOwnerRef": "text:check-icon",
+            }
+        ]
+    }
+
+    reconciled = reconcile_form_evidence(
+        graph,
+        {"observations": []},
+        width=1920,
+        height=826,
+    )
+    control = reconciled["elements"][0]
+
+    assert control["controlValue"] == ""
+    assert control["text"] == ""
+    assert control["label"] == ""
+    assert control["role"] == "ui-icon"
+    assert "textOwnerRef" not in control
+
+
+def test_missing_execution_status_is_restored_from_high_confidence_ocr() -> None:
+    graph = {"elements": []}
+    ocr = {
+        "observations": [
+            {
+                "text": "执行成功",
+                "bbox": [790, 244, 74, 24],
+                "confidence": 0.96,
+            }
+        ]
+    }
+
+    reconciled = reconcile_form_evidence(
+        graph,
+        ocr,
+        width=1920,
+        height=826,
+    )
+    status = next(
+        element
+        for element in reconciled["elements"]
+        if element.get("role") == "form-status"
+    )
+
+    assert status["text"] == "执行成功"
+    assert status["bbox"] == [790, 244, 74, 24]

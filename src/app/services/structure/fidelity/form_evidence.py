@@ -16,7 +16,15 @@ from src.app.services.structure.fidelity.contracts import (
 
 _DATE_TIME = re.compile(r"^(\d{4}-\d{2}-\d{2})(\d{1,2}:\d{2}:\d{2})$")
 _FORM_LABELS = {"执行时间", "执行者"}
+_FORM_STATUS_LABELS = {"执行成功"}
 _INVALID_CHECKBOX_LABELS = {"", "0", "1", "false", "true", "unchecked", "checked"}
+_SYNTHETIC_ICON_LABELS = {
+    "check",
+    "check icon",
+    "checked icon",
+    "icon",
+    "unchecked icon",
+}
 
 
 def _overlap_over_smaller(left: list[int], right: list[int]) -> float:
@@ -164,68 +172,81 @@ def reconcile_form_evidence(
         if float(item.get("confidence") or 0) >= 0.9
     ]
     image_path = str(reconciled.get("image") or "")
-    if image_path:
-        for element in elements:
-            control_type = str(
-                element.get("controlType") or element.get("type") or ""
-            ).lower()
-            current_label = _repair_datetime(
-                element.get("label")
-                or element.get("controlValue")
-                or element.get("text")
-                or ""
-            )
-            if (
-                control_type != "checkbox"
-                or current_label.strip().lower() not in _INVALID_CHECKBOX_LABELS
-            ):
-                continue
-            checkbox_bbox = normalize_bbox(element.get("bbox"), width, height)
-            if checkbox_bbox is None:
-                continue
-            observation = _nearby_checkbox_label_observation(
-                checkbox_bbox,
-                checkbox_observations,
-            )
-            if observation is None:
-                continue
-            label_bbox = normalize_bbox(observation.get("bbox"), width, height)
-            if label_bbox is None:
-                continue
-            recognized = _recognize_checkbox_label(image_path, label_bbox)
-            if (
-                not normalize_match_text(recognized)
-                or owner_text_similarity(
-                    recognized,
-                    observation.get("text") or "",
-                )
-                < 0.6
-            ):
-                continue
-            element["controlValue"] = recognized
-            element["label"] = recognized
-            label = next(
-                (
-                    candidate
-                    for candidate in elements
-                    if str(candidate.get("type") or "").lower() in {"text", "link"}
-                    and normalize_bbox(candidate.get("bbox"), width, height)
-                    == label_bbox
-                ),
-                None,
-            )
-            if label is not None:
-                label["text"] = recognized
-                label["role"] = "control-label"
-                label["source"] = "ocr-supplement:easyocr+tesseract"
+    for element in elements:
+        control_type = str(
+            element.get("controlType") or element.get("type") or ""
+        ).lower()
+        current_label = _repair_datetime(
+            element.get("label")
+            or element.get("controlValue")
+            or element.get("text")
+            or ""
+        )
+        if current_label.strip().lower() in _SYNTHETIC_ICON_LABELS:
+            element["controlValue"] = ""
+            element["text"] = ""
+            element["label"] = ""
+            element["role"] = "ui-icon"
+            element.pop("textOwnerRef", None)
             corrected.append(
                 {
-                    "reason": "checkbox-label-tesseract",
+                    "reason": "synthetic-icon-label-removed",
                     "content_ref": f"graph.elements[{elements.index(element)}]",
-                    "bbox": label_bbox,
-                    "text": recognized,
+                    "text": current_label,
                 }
             )
+            current_label = ""
+        if (
+            not image_path
+            or control_type != "checkbox"
+            or current_label.strip().lower() not in _INVALID_CHECKBOX_LABELS
+        ):
+            continue
+        checkbox_bbox = normalize_bbox(element.get("bbox"), width, height)
+        if checkbox_bbox is None:
+            continue
+        observation = _nearby_checkbox_label_observation(
+            checkbox_bbox,
+            checkbox_observations,
+        )
+        if observation is None:
+            continue
+        label_bbox = normalize_bbox(observation.get("bbox"), width, height)
+        if label_bbox is None:
+            continue
+        recognized = _recognize_checkbox_label(image_path, label_bbox)
+        if (
+            not normalize_match_text(recognized)
+            or owner_text_similarity(
+                recognized,
+                observation.get("text") or "",
+            )
+            < 0.6
+        ):
+            continue
+        element["controlValue"] = recognized
+        element["label"] = recognized
+        label = next(
+            (
+                candidate
+                for candidate in elements
+                if str(candidate.get("type") or "").lower() in {"text", "link"}
+                and normalize_bbox(candidate.get("bbox"), width, height) == label_bbox
+            ),
+            None,
+        )
+        if label is not None:
+            label["text"] = recognized
+            label["role"] = "control-label"
+            label["source"] = "ocr-supplement:easyocr+tesseract"
+        corrected.append(
+            {
+                "reason": "checkbox-label-tesseract",
+                "content_ref": f"graph.elements[{elements.index(element)}]",
+                "bbox": label_bbox,
+                "text": recognized,
+            }
+        )
     for element in elements:
         text = _repair_datetime(
             element.get("controlValue") or element.get("text") or ""
@@ -312,6 +333,44 @@ def reconcile_form_evidence(
             {
                 "reason": "missing-form-label",
                 "content_ref": label_id,
+                "text": text,
+                "bbox": bbox,
+            }
+        )
+
+    existing_texts = {
+        normalize_match_text(element.get("text"))
+        for element in elements
+        if normalize_match_text(element.get("text"))
+    }
+    for observation in observations:
+        text = str(observation.get("text") or "")
+        normalized_text = normalize_match_text(text)
+        if normalized_text not in _FORM_STATUS_LABELS:
+            continue
+        if normalized_text in existing_texts:
+            continue
+        bbox = normalize_bbox(observation.get("bbox"), width, height)
+        if bbox is None:
+            continue
+        status_id = stable_id("text", "form-status", text, bbox)
+        elements.append(
+            {
+                "id": status_id,
+                "type": "text",
+                "text": text,
+                "bbox": bbox,
+                "role": "form-status",
+                "source": "ocr_supplement",
+                "authority": "ocr",
+                "confidence": float(observation.get("confidence") or 0),
+            }
+        )
+        existing_texts.add(normalized_text)
+        corrected.append(
+            {
+                "reason": "missing-form-status",
+                "content_ref": status_id,
                 "text": text,
                 "bbox": bbox,
             }
