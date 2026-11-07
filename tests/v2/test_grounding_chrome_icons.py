@@ -100,6 +100,11 @@ def test_chrome_icon_evidence_is_attached_before_scene_planning(
     assert by_name["chrome_user_label"]["bbox"] == [1748, 21, 62, 26]
     assert by_name["chrome_table_search"]["bbox"] == [1865, 510, 18, 18]
     assert by_name["chrome_calendar"]["bbox"] == [1818, 135, 34, 39]
+    assert by_name["chrome_brand"]["kind"] == "logo"
+    assert by_name["chrome_user_label"]["kind"] == "identity"
+    assert all(asset["kind"] in {"icon", "logo", "identity"} for asset in assets)
+    assert all(asset["referenceOnly"] is True for asset in assets)
+    assert all(asset["original"] is False for asset in assets)
     schedule = next(element for element in graph["elements"] if element.get("id") == 5)
     assert schedule["bbox"] == [1447, 135, 371, 39]
     graph = attach_chrome_icon_evidence(
@@ -117,8 +122,31 @@ def test_chrome_icon_evidence_is_attached_before_scene_planning(
     assert schedule["bbox"] == [1447, 135, 371, 39]
     assert len(calendar_assets) == 1
     assert calendar_assets[0]["bbox"] == [1818, 135, 34, 39]
-    assert by_name["chrome_brand"]["kind"] == "logo"
-    assert by_name["chrome_user_label"]["kind"] == "identity"
-    assert all(asset["kind"] in {"icon", "logo", "identity"} for asset in assets)
-    assert all(asset["referenceOnly"] is True for asset in assets)
-    assert all(asset["original"] is False for asset in assets)
+
+
+def test_table_search_control_uses_detected_reference_border() -> None:
+    path = Path(
+        "tests/fixtures/image_to_slice_benchmark_2026-11-02/" "IMG-FLEXWEAVER-ADMIN.png"
+    ).resolve()
+    graph = _graph()
+    graph["elements"].append(
+        {
+            "id": 6,
+            "type": "input",
+            "controlType": "input",
+            "controlValue": "表内搜索",
+            "bbox": [1715, 501, 176, 38],
+        }
+    )
+
+    attached = attach_chrome_icon_evidence(
+        graph,
+        str(path),
+        width=1920,
+        height=826,
+    )
+    table_search = next(
+        element for element in attached["elements"] if element.get("id") == 6
+    )
+
+    assert table_search["bbox"] == [1716, 502, 174, 36]

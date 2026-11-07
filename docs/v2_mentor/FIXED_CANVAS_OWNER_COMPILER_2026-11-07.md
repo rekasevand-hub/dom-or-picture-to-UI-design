@@ -88,13 +88,15 @@ the same owner compiler used for the final DesignSpec:
 - form evidence removes duplicate schedule controls, restores high-confidence
   status and label boxes, fixes date-time spacing, and then applies a bounded
   position-only calibration to the resulting native TEXT owners.
+- table-search control geometry is refined from the source-pixel border before
+  ScenePlan construction.
 
 Latest real Figma acceptance:
 
 | Metric | Before owner cleanup | Latest |
 | --- | ---: | ---: |
-| Within-30 similarity | 90.987% | 94.469% |
-| Page bad-pixel ratio | 9.013% | 5.531% |
+| Within-30 similarity | 90.987% | 94.515% |
+| Page bad-pixel ratio | 9.013% | 5.485% |
 | Header bad-pixel ratio | 9.684% | 3.000% |
 | Sidebar bad-pixel ratio | 2.334% | 2.057% |
 | Critical text | 23 / 24 | 24 / 24 |

@@ -2230,6 +2230,45 @@ def recover_chrome_icon_evidence(
     return assets
 
 
+def _detect_control_border_bbox(
+    image_path: str | Path,
+    bbox: list[int],
+    *,
+    width: int,
+    height: int,
+) -> list[int] | None:
+    import numpy as np
+    from PIL import Image
+
+    x, y, box_width, box_height = bbox
+    left = max(0, x - 4)
+    top = max(0, y - 4)
+    right = min(width, x + box_width + 4)
+    bottom = min(height, y + box_height + 4)
+    with Image.open(image_path) as source:
+        image = np.asarray(source.convert("RGB"), dtype=np.int16)
+    region = image[top:bottom, left:right]
+    channel_range = region.max(axis=2) - region.min(axis=2)
+    mask = (region.mean(axis=2) < 235) & (channel_range < 40)
+    if mask.size == 0:
+        return None
+    rows = np.where(mask.sum(axis=1) >= int(region.shape[1] * 0.55))[0]
+    columns = np.where(mask.sum(axis=0) >= int(region.shape[0] * 0.55))[0]
+    if len(rows) < 2 or len(columns) < 2:
+        return None
+    detected = _normalized_box(
+        [
+            left + int(columns.min()),
+            top + int(rows.min()),
+            int(columns.max()) - int(columns.min()) + 1,
+            int(rows.max()) - int(rows.min()) + 1,
+        ],
+        width,
+        height,
+    )
+    return list(detected) if detected is not None else None
+
+
 def attach_chrome_icon_evidence(
     graph: Mapping[str, Any],
     image_path: str | Path,
@@ -2253,6 +2292,55 @@ def attach_chrome_icon_evidence(
     has_calendar_evidence = any(
         str(asset.get("name") or "") == "chrome_calendar" for asset in existing_assets
     )
+    table_search_container = next(
+        (
+            container
+            for container in attached.get("containers") or []
+            if isinstance(container, Mapping)
+            and str(container.get("role") or "") == "table-search"
+        ),
+        None,
+    )
+    table_search_bbox = _normalized_box(
+        table_search_container.get("bbox")
+        if isinstance(table_search_container, Mapping)
+        else None,
+        width,
+        height,
+    )
+    if table_search_bbox is not None:
+        search_control = next(
+            (
+                element
+                for element in attached.get("elements") or []
+                if isinstance(element, dict)
+                and element.get("bbox")
+                and (
+                    candidate_bbox := _normalized_box(
+                        element.get("bbox"),
+                        width,
+                        height,
+                    )
+                )
+                is not None
+                and table_search_bbox[0]
+                <= candidate_bbox[0] + candidate_bbox[2] / 2
+                <= table_search_bbox[0] + table_search_bbox[2]
+                and table_search_bbox[1]
+                <= candidate_bbox[1] + candidate_bbox[3] / 2
+                <= table_search_bbox[1] + table_search_bbox[3]
+            ),
+            None,
+        )
+        if search_control is not None:
+            detected_bbox = _detect_control_border_bbox(
+                image_path,
+                list(search_control["bbox"]),
+                width=width,
+                height=height,
+            )
+            if detected_bbox is not None:
+                search_control["bbox"] = detected_bbox
     schedule_control = next(
         (
             element
