@@ -454,6 +454,42 @@ def test_compiler_uses_reference_only_image_fill(tmp_path: Path) -> None:
     assert image["sourceResolution"]["display"]["original"] is False
 
 
+def test_compiler_preserves_narrow_source_chrome_right_rail(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "right-rail.png"
+    image = Image.new("RGB", (400, 240), "#ffffff")
+    ImageDraw.Draw(image).rectangle((390, 0, 399, 239), fill="#dddddd")
+    image.save(path)
+    graph = {
+        "image": str(path),
+        "image_w": 400,
+        "image_h": 240,
+        "route": "grounding",
+        "elements": [],
+        "tables": [],
+    }
+    plan = {
+        "schema_version": "grounding-scene-plan/1.0",
+        "image_size": [400, 240],
+        "coordinate_basis": "source-pixel-top-left",
+        "nodes": [],
+        "suppressed": [],
+    }
+
+    design = _compile(path, graph, plan)
+    rail = next(
+        element
+        for element in design["elements"]
+        if element.get("id") == "source-chrome-right-rail"
+    )
+
+    assert rail["x"] == 390
+    assert rail["width"] == 10
+    assert rail["imageBase64"]
+    assert rail["imageMVP"]["reference_only"] is True
+
+
 def test_compiler_renders_icon_button_as_reference_only_source_crop(
     tmp_path: Path,
 ) -> None:

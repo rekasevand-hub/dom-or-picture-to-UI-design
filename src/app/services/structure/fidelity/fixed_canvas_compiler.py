@@ -326,6 +326,82 @@ def _image_element(
     }
 
 
+def _source_chrome_right_rail(
+    image_path: str,
+    nodes: list[dict[str, Any]],
+    *,
+    width: int,
+    height: int,
+) -> dict[str, Any] | None:
+    import numpy as np
+    from PIL import Image
+
+    with Image.open(image_path) as source:
+        image = np.asarray(source.convert("RGB"), dtype=np.int16)
+    if image.shape[:2] != (height, width):
+        return None
+    for start in range(max(0, width - 32), max(0, width - 7)):
+        fractions = [
+            float((np.max(image[:, start + index], axis=1) < 250).mean())
+            for index in range(min(4, width - start))
+        ]
+        if not fractions or min(fractions) < 0.75:
+            continue
+        left_start = max(0, start - 4)
+        left_fraction = float((np.max(image[:, left_start:start], axis=2) < 250).mean())
+        edge_delta = float(
+            np.abs(
+                image[:, start].mean(axis=1)
+                - image[:, left_start:start].mean(axis=2).mean(axis=1)
+            ).mean()
+        )
+        if left_fraction >= 0.5 or edge_delta < 12:
+            continue
+        if any(
+            str(node.get("type") or "") == "text"
+            and isinstance(node.get("bbox"), list)
+            and len(node["bbox"]) == 4
+            and int(node["bbox"][0]) + int(node["bbox"][2]) > start
+            for node in nodes
+        ):
+            continue
+        rail_width = width - start
+        image_base64 = crop_image_b64(
+            image_path,
+            start,
+            0,
+            rail_width,
+            height,
+            width,
+            height,
+        )
+        if not image_base64:
+            return None
+        return {
+            "id": "source-chrome-right-rail",
+            "type": "image",
+            "role": "source-chrome",
+            "name": "source-chrome-right-rail",
+            "x": start,
+            "y": 0,
+            "width": rail_width,
+            "height": height,
+            "text": "",
+            "controlValue": "",
+            "contentRef": None,
+            "imageBase64": image_base64,
+            "paintDepth": 10000,
+            "imageMVP": {
+                "source": "source-pixels",
+                "role": "source-chrome",
+                "reference_only": True,
+                "original": False,
+                "generated": False,
+            },
+        }
+    return None
+
+
 def _icon_control_element(
     node: Mapping[str, Any],
     *,
@@ -906,6 +982,14 @@ def compile_scene_plan_to_design(
     decorations.extend(control_group_decorations)
     elements = [*containers, *decorations, *leaves]
     _apply_group_decoration_depths(elements, control_groups)
+    right_rail = _source_chrome_right_rail(
+        image_path,
+        nodes,
+        width=width,
+        height=height,
+    )
+    if right_rail is not None:
+        elements.append(right_rail)
     text_count = sum(
         element.get("type") == "text" and bool(element.get("text"))
         for element in elements
