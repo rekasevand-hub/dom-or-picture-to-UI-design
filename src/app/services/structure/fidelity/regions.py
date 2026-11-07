@@ -95,11 +95,26 @@ def reconcile_region_containers(
     containers = reconciled.get("containers")
     if not isinstance(containers, list):
         return reconciled
-    for container in containers:
-        if not isinstance(container, dict):
+    aliases = {
+        "table-header-controls": ("table-header-controls", "toolbar"),
+        "table-search": ("table-search", "table-header"),
+    }
+    for target_role, candidates in aliases.items():
+        bbox = regions[target_role]
+        if bbox is None:
             continue
-        bbox = regions.get(str(container.get("role") or ""))
-        if bbox is not None:
-            container["bbox"] = bbox
-            container["geometryAuthority"] = "visible-control-union"
+        container = next(
+            (
+                item
+                for role in candidates
+                for item in containers
+                if isinstance(item, dict) and str(item.get("role") or "") == role
+            ),
+            None,
+        )
+        if container is None:
+            continue
+        container["role"] = target_role
+        container["bbox"] = bbox
+        container["geometryAuthority"] = "visible-control-union"
     return reconciled

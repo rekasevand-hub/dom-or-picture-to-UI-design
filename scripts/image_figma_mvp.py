@@ -102,6 +102,7 @@ def _fidelity_regions(geometry: dict | None) -> list[dict]:
     if not isinstance(geometry, dict):
         return []
     regions: list[dict] = []
+    table_header_regions: list[dict] = []
     seen_ids: set[str] = set()
     for item in geometry.get("items") or []:
         if not isinstance(item, dict):
@@ -120,13 +121,36 @@ def _fidelity_regions(geometry: dict | None) -> list[dict]:
             region_id = f"{role}:{suffix}"
             suffix += 1
         seen_ids.add(region_id)
-        regions.append(
-            {
-                "id": region_id,
-                "role": role,
-                "bbox": bbox,
-            }
-        )
+        region = {
+            "id": region_id,
+            "role": role,
+            "bbox": bbox,
+        }
+        regions.append(region)
+        grid = item.get("grid")
+        if (
+            item.get("kind") == "table"
+            and isinstance(grid, dict)
+            and len(grid.get("x_boundaries") or []) >= 2
+            and len(grid.get("y_boundaries") or []) >= 3
+        ):
+            x_boundaries = grid["x_boundaries"]
+            y_boundaries = grid["y_boundaries"]
+            table_header_regions.append(
+                {
+                    "id": "table-header",
+                    "role": "table-header",
+                    "bbox": [
+                        int(x_boundaries[0]),
+                        int(y_boundaries[0]),
+                        int(x_boundaries[-1] - x_boundaries[0]),
+                        int(y_boundaries[1] - y_boundaries[0]),
+                    ],
+                }
+            )
+    if table_header_regions:
+        regions = [region for region in regions if region["id"] != "table-header"]
+        regions.extend(table_header_regions)
     if not any(region["id"] == "page" for region in regions):
         size = geometry.get("image_size") or []
         if len(size) == 2:
