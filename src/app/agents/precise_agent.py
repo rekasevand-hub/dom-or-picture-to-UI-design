@@ -592,9 +592,16 @@ class PreciseAgent:
                 attach_chrome_icon_evidence,
             )
             from src.app.services.structure.fidelity import (
+                reconcile_form_evidence,
                 reconcile_region_containers,
             )
 
+            graph = reconcile_form_evidence(
+                graph,
+                ocr_supplement,
+                width=graph["image_w"],
+                height=graph["image_h"],
+            )
             graph = reconcile_region_containers(
                 graph,
                 width=graph["image_w"],

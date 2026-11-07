@@ -172,3 +172,69 @@ def calibrate_table_positions(
         "adjusted_count": len(adjustments),
         "adjustments": adjustments,
     }
+
+
+def calibrate_form_text_positions(
+    design: Mapping[str, Any],
+    readback: Mapping[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Align form labels and status text to source ink without retypesetting."""
+    calibrated = copy.deepcopy(dict(design))
+    candidates = _text_nodes(readback)
+    used: set[int] = set()
+    adjustments: list[dict[str, Any]] = []
+    for element in calibrated.get("elements") or []:
+        if not isinstance(element, dict):
+            continue
+        image_mvp = element.get("imageMVP")
+        role = (
+            str(image_mvp.get("role") or "") if isinstance(image_mvp, Mapping) else ""
+        )
+        if role not in {"form-label", "form-status"}:
+            continue
+        text = str(element.get("text") or "")
+        evidence = element.get("styleEvidence")
+        ink_bbox = (
+            evidence.get("evidence", {}).get("ink_bbox")
+            if isinstance(evidence, Mapping)
+            else None
+        )
+        if not text or not isinstance(ink_bbox, list) or len(ink_bbox) != 4:
+            continue
+        expected_x = float(element.get("x") or 0)
+        expected_y = float(element.get("y") or 0)
+        matches: list[tuple[float, int, Mapping[str, Any]]] = []
+        for index, node in enumerate(candidates):
+            if index in used or str(node.get("characters") or "") != text:
+                continue
+            bounds = _bounds(node)
+            distance = abs(float(bounds.get("x") or 0) - expected_x) + abs(
+                float(bounds.get("y") or 0) - expected_y
+            )
+            matches.append((distance, index, node))
+        if not matches:
+            continue
+        _distance, index, node = min(matches, key=lambda item: item[0])
+        used.add(index)
+        bounds = _bounds(node)
+        delta_x = float(ink_bbox[0]) - float(bounds.get("x") or 0)
+        delta_y = float(ink_bbox[1]) - float(bounds.get("y") or 0)
+        if abs(delta_x) < 0.25 and abs(delta_y) < 0.25:
+            continue
+        element["x"] = round(float(element.get("x") or 0) + delta_x, 2)
+        element["y"] = round(float(element.get("y") or 0) + delta_y, 2)
+        adjustments.append(
+            {
+                "contentRef": element.get("contentRef"),
+                "text": text,
+                "role": role,
+                "x_delta": round(delta_x, 2),
+                "y_delta": round(delta_y, 2),
+            }
+        )
+    return calibrated, {
+        "schema_version": "grounding-form-text-position-calibration/1.0",
+        "status": "applied" if adjustments else "not-needed",
+        "adjusted_count": len(adjustments),
+        "adjustments": adjustments,
+    }

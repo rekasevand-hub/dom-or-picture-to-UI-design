@@ -85,13 +85,16 @@ the same owner compiler used for the final DesignSpec:
   Figma TEXT bounds against source ink width.
 - table-cell frames receive a position-only calibration from rendered bounds;
   font family and size remain unchanged.
+- form evidence removes duplicate schedule controls, restores high-confidence
+  status and label boxes, fixes date-time spacing, and then applies a bounded
+  position-only calibration to the resulting native TEXT owners.
 
 Latest real Figma acceptance:
 
 | Metric | Before owner cleanup | Latest |
 | --- | ---: | ---: |
-| Within-30 similarity | 90.987% | 94.498% |
-| Page bad-pixel ratio | 9.013% | 5.502% |
+| Within-30 similarity | 90.987% | 94.469% |
+| Page bad-pixel ratio | 9.013% | 5.531% |
 | Header bad-pixel ratio | 9.684% | 3.000% |
 | Sidebar bad-pixel ratio | 2.334% | 2.057% |
 | Critical text | 23 / 24 | 24 / 24 |

@@ -2239,6 +2239,20 @@ def attach_chrome_icon_evidence(
 ) -> dict[str, Any]:
     """Attach icon evidence without creating a second layout tree."""
     attached = copy.deepcopy(dict(graph))
+    existing_enrichment = attached.get("imageEnrichment")
+    existing_assets = [
+        copy.deepcopy(asset)
+        for asset in (
+            existing_enrichment.get("assets")
+            if isinstance(existing_enrichment, Mapping)
+            else []
+        )
+        or []
+        if isinstance(asset, Mapping)
+    ]
+    has_calendar_evidence = any(
+        str(asset.get("name") or "") == "chrome_calendar" for asset in existing_assets
+    )
     schedule_control = next(
         (
             element
@@ -2254,7 +2268,7 @@ def attach_chrome_icon_evidence(
         None,
     )
     calendar_bbox: list[int] | None = None
-    if schedule_control is not None:
+    if schedule_control is not None and not has_calendar_evidence:
         left, top, box_width, box_height = (
             int(value) for value in schedule_control["bbox"]
         )
@@ -2265,18 +2279,14 @@ def attach_chrome_icon_evidence(
             box_height,
         ]
         schedule_control["bbox"] = [left, top, box_width - 43, box_height]
-    enrichment = attached.get("imageEnrichment")
+    enrichment = existing_enrichment
     if not isinstance(enrichment, dict):
         enrichment = {
             "mode": "apply",
             "status": "applied",
             "assets": [],
         }
-    assets = [
-        copy.deepcopy(asset)
-        for asset in enrichment.get("assets") or []
-        if isinstance(asset, Mapping)
-    ]
+    assets = existing_assets
     seen = {
         (
             str(asset.get("name") or ""),

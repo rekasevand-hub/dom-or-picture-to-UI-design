@@ -102,6 +102,21 @@ def test_chrome_icon_evidence_is_attached_before_scene_planning(
     assert by_name["chrome_calendar"]["bbox"] == [1818, 135, 34, 39]
     schedule = next(element for element in graph["elements"] if element.get("id") == 5)
     assert schedule["bbox"] == [1447, 135, 371, 39]
+    graph = attach_chrome_icon_evidence(
+        graph,
+        str(path),
+        width=1920,
+        height=826,
+    )
+    schedule = next(element for element in graph["elements"] if element.get("id") == 5)
+    calendar_assets = [
+        asset
+        for asset in graph["imageEnrichment"]["assets"]
+        if asset.get("name") == "chrome_calendar"
+    ]
+    assert schedule["bbox"] == [1447, 135, 371, 39]
+    assert len(calendar_assets) == 1
+    assert calendar_assets[0]["bbox"] == [1818, 135, 34, 39]
     assert by_name["chrome_brand"]["kind"] == "logo"
     assert by_name["chrome_user_label"]["kind"] == "identity"
     assert all(asset["kind"] in {"icon", "logo", "identity"} for asset in assets)

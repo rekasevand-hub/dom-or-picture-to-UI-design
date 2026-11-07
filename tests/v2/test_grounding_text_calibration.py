@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from src.app.services.structure.fidelity.text_calibration import (
     calibrate_control_fonts,
+    calibrate_form_text_positions,
     calibrate_table_positions,
 )
 
@@ -114,3 +115,54 @@ def test_table_position_calibration_does_not_touch_header() -> None:
 
     assert calibrated["elements"][0]["x"] == 388
     assert report["status"] == "not-needed"
+
+
+def test_form_text_position_calibration_uses_target_ink() -> None:
+    design = {
+        "elements": [
+            {
+                "id": "form-label",
+                "type": "text",
+                "x": 1366,
+                "y": 142,
+                "text": "执行时间",
+                "contentRef": "form-label",
+                "style": {"fontSize": 15.25},
+                "imageMVP": {"role": "form-label"},
+                "styleEvidence": {"evidence": {"ink_bbox": [1371, 147, 67, 16]}},
+            },
+            {
+                "id": "header",
+                "type": "text",
+                "x": 461,
+                "y": 24,
+                "text": "自动备份",
+                "contentRef": "header",
+                "style": {"fontSize": 15.25},
+                "imageMVP": {"role": "text"},
+                "styleEvidence": {"evidence": {"ink_bbox": [462, 26, 65, 16]}},
+            },
+        ]
+    }
+    readback = {
+        "children": [
+            {
+                "type": "TEXT",
+                "characters": "执行时间",
+                "bounds": {"x": 1366, "y": 142, "width": 61, "height": 18},
+            },
+            {
+                "type": "TEXT",
+                "characters": "自动备份",
+                "bounds": {"x": 461, "y": 24, "width": 61, "height": 18},
+            },
+        ]
+    }
+
+    calibrated, report = calibrate_form_text_positions(design, readback)
+
+    assert calibrated["elements"][0]["x"] == 1371
+    assert calibrated["elements"][0]["y"] == 147
+    assert calibrated["elements"][1]["x"] == 461
+    assert calibrated["elements"][1]["y"] == 24
+    assert report["adjusted_count"] == 1

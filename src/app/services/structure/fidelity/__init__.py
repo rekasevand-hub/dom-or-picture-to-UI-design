@@ -11,6 +11,9 @@ from src.app.services.structure.fidelity.container_manifest import (
 from src.app.services.structure.fidelity.fixed_canvas_compiler import (
     compile_scene_plan_to_design,
 )
+from src.app.services.structure.fidelity.form_evidence import (
+    reconcile_form_evidence,
+)
 from src.app.services.structure.fidelity.local_repair import (
     GroundingLocalRepairer,
 )
@@ -37,6 +40,7 @@ __all__ = [
     "build_geometry_manifest",
     "build_scene_plan",
     "compile_scene_plan_to_design",
+    "reconcile_form_evidence",
     "GroundingLocalRepairer",
     "plan_repair_requests",
     "reconcile_region_containers",
