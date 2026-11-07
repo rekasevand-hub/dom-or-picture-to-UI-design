@@ -183,6 +183,7 @@ def _render_ink_bbox(
     *,
     inset: int = 3,
     threshold: int = 190,
+    contrast: bool = False,
 ) -> list[int] | None:
     import numpy as np
     from PIL import Image
@@ -197,7 +198,11 @@ def _render_ink_bbox(
     with Image.open(image_path) as source:
         image = np.asarray(source.convert("RGB"), dtype=np.int16)
     region = image[top:bottom, left:right]
-    mask = np.max(region, axis=2) < threshold
+    if contrast:
+        background = np.median(region.reshape(-1, 3), axis=0)
+        mask = np.max(np.abs(region - background), axis=2) > 50
+    else:
+        mask = np.max(region, axis=2) < threshold
     rows, columns = np.where(mask)
     if len(rows) == 0:
         return None
@@ -393,6 +398,213 @@ def calibrate_table_positions_from_render(
         )
     return calibrated, {
         "schema_version": "grounding-table-render-position-calibration/1.0",
+        "status": "applied" if adjustments else "not-needed",
+        "adjusted_count": len(adjustments),
+        "adjustments": adjustments,
+    }
+
+
+def _form_bounds(design: Mapping[str, Any]) -> tuple[int, int, int, int] | None:
+    form = next(
+        (
+            element
+            for element in design.get("elements") or []
+            if isinstance(element, Mapping) and element.get("role") == "form-section"
+        ),
+        None,
+    )
+    if form is None:
+        return None
+    left = int(float(form.get("x") or 0))
+    top = int(float(form.get("y") or 0))
+    right = left + int(float(form.get("width") or 0))
+    bottom = top + int(float(form.get("height") or 0))
+    for role in ("table-section", "table-header-controls", "toolbar"):
+        for element in design.get("elements") or []:
+            if not isinstance(element, Mapping) or element.get("role") != role:
+                continue
+            candidate_top = int(float(element.get("y") or 0))
+            if candidate_top > top:
+                bottom = min(
+                    bottom, candidate_top - (8 if role != "table-section" else 0)
+                )
+            break
+    return left, top, right, bottom
+
+
+def _form_source_ink(
+    element: Mapping[str, Any],
+    bounds: tuple[int, int, int, int],
+) -> tuple[list[int], list[int]] | None:
+    source = _table_source_ink(element)
+    if source is None:
+        return None
+    source_bbox, ink_bbox = source
+    center_x = source_bbox[0] + source_bbox[2] / 2
+    center_y = source_bbox[1] + source_bbox[3] / 2
+    left, top, right, bottom = bounds
+    if not (left <= center_x <= right and top <= center_y < bottom):
+        return None
+    return source_bbox, ink_bbox
+
+
+def calibrate_form_fonts_from_render(
+    design: Mapping[str, Any],
+    reference_path: str,
+    rendered_path: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Fit form typography after table and toolbar calibration is complete."""
+    del reference_path
+    calibrated = copy.deepcopy(dict(design))
+    bounds = _form_bounds(calibrated)
+    if bounds is None:
+        return calibrated, {
+            "schema_version": "grounding-form-font-render-calibration/1.0",
+            "status": "not-needed",
+            "adjusted_count": 0,
+            "adjustments": [],
+        }
+
+    groups: dict[tuple[str, float, str], list[tuple[dict[str, Any], float]]] = {}
+    for element in calibrated.get("elements") or []:
+        if not isinstance(element, dict):
+            continue
+        if str(element.get("type") or "") not in {"text", "input", "button"}:
+            continue
+        source = _form_source_ink(element, bounds)
+        if source is None:
+            continue
+        source_bbox, target_ink = source
+        current_ink = _render_ink_bbox(
+            rendered_path,
+            source_bbox,
+            contrast=True,
+        )
+        if current_ink is None or current_ink[2] <= 0 or target_ink[2] <= 0:
+            continue
+        style = element.setdefault("style", {})
+        evidence = element.get("styleEvidence")
+        values = evidence.get("evidence") if isinstance(evidence, Mapping) else {}
+        key = (
+            str(element.get("type") or ""),
+            float(style.get("fontSize") or 12),
+            str((values or {}).get("script") or ""),
+        )
+        groups.setdefault(key, []).append((element, target_ink[2] / current_ink[2]))
+
+    adjustments: list[dict[str, Any]] = []
+    for (element_type, previous, script), items in groups.items():
+        ratio = statistics.median([item_ratio for _element, item_ratio in items])
+        if not 0.9 <= ratio <= 1.6:
+            continue
+        updated = max(8.0, min(24.0, round(previous * ratio * 4) / 4))
+        if updated == previous:
+            continue
+        for element, _item_ratio in items:
+            element.setdefault("style", {})["fontSize"] = updated
+            adjustments.append(
+                {
+                    "contentRef": element.get("contentRef"),
+                    "text": str(element.get("text") or ""),
+                    "type": element_type,
+                    "previous": previous,
+                    "updated": updated,
+                    "script": script,
+                }
+            )
+    return calibrated, {
+        "schema_version": "grounding-form-font-render-calibration/1.0",
+        "status": "applied" if adjustments else "not-needed",
+        "adjusted_count": len(adjustments),
+        "adjustments": adjustments,
+    }
+
+
+def calibrate_form_positions_from_render(
+    design: Mapping[str, Any],
+    readback: Mapping[str, Any],
+    reference_path: str,
+    rendered_path: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Correct form ink after typography changes; control shells stay fixed."""
+    del reference_path
+    calibrated = copy.deepcopy(dict(design))
+    bounds = _form_bounds(calibrated)
+    if bounds is None:
+        return calibrated, {
+            "schema_version": "grounding-form-render-position-calibration/1.0",
+            "status": "not-needed",
+            "adjusted_count": 0,
+            "adjustments": [],
+        }
+    text_nodes = _text_nodes(readback)
+    adjustments: list[dict[str, Any]] = []
+    for element in calibrated.get("elements") or []:
+        if not isinstance(element, dict):
+            continue
+        source = _form_source_ink(element, bounds)
+        if source is None:
+            continue
+        source_bbox, target_ink = source
+        current_ink = _render_ink_bbox(
+            rendered_path,
+            source_bbox,
+            contrast=True,
+        )
+        if current_ink is None:
+            continue
+        delta_x = float(target_ink[0] - current_ink[0])
+        delta_y = float(target_ink[1] - current_ink[1])
+        if abs(delta_x) < 0.5 and abs(delta_y) < 0.5:
+            continue
+        element_type = str(element.get("type") or "")
+        text = str(element.get("text") or "")
+        if element_type == "text":
+            element["x"] = round(float(element.get("x") or 0) + delta_x, 2)
+            element["y"] = round(float(element.get("y") or 0) + delta_y, 2)
+        elif element_type in {"input", "button"} and text:
+            expected_box = element.get("textBox")
+            expected_x = (
+                float(expected_box[0])
+                if isinstance(expected_box, list) and len(expected_box) == 4
+                else float(element.get("x") or 0)
+            )
+            expected_y = (
+                float(expected_box[1])
+                if isinstance(expected_box, list) and len(expected_box) == 4
+                else float(element.get("y") or 0)
+            )
+            matches = []
+            for node in text_nodes:
+                if str(node.get("characters") or "") != text:
+                    continue
+                node_bounds = _bounds(node)
+                distance = abs(float(node_bounds.get("x") or 0) - expected_x) + abs(
+                    float(node_bounds.get("y") or 0) - expected_y
+                )
+                matches.append((distance, node_bounds))
+            if not matches:
+                continue
+            _distance, node_bounds = min(matches, key=lambda item: item[0])
+            element["textBox"] = [
+                round(float(node_bounds.get("x") or 0) + delta_x, 2),
+                round(float(node_bounds.get("y") or 0) + delta_y, 2),
+                float(node_bounds.get("width") or 0),
+                float(node_bounds.get("height") or 0),
+            ]
+        else:
+            continue
+        adjustments.append(
+            {
+                "contentRef": element.get("contentRef"),
+                "text": text,
+                "type": element_type,
+                "x_delta": round(delta_x, 2),
+                "y_delta": round(delta_y, 2),
+            }
+        )
+    return calibrated, {
+        "schema_version": "grounding-form-render-position-calibration/1.0",
         "status": "applied" if adjustments else "not-needed",
         "adjusted_count": len(adjustments),
         "adjustments": adjustments,

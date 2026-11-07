@@ -27,6 +27,8 @@ from src.app.services.structure.image_contract import (  # noqa: E402
 )
 from src.app.services.structure.fidelity.text_calibration import (  # noqa: E402
     calibrate_control_fonts,
+    calibrate_form_fonts_from_render,
+    calibrate_form_positions_from_render,
     calibrate_form_text_positions,
     calibrate_table_fonts_from_render,
     calibrate_table_positions_from_render,
@@ -314,9 +316,61 @@ def main(argv: Sequence[str] | None = None) -> int:
     if table_position_calibration["adjusted_count"]:
         if not wrote_initial_design:
             _write_json(output / "figma_design_initial.json", design)
+            wrote_initial_design = True
         design = positioned_design
         _write_json(output / "figma_design.json", design)
         run_root = output / "figma_calibrated"
+        run_summary = run_image_figma_evidence(
+            design,
+            output_dir=run_root,
+            sample_id=str(truth.get("sample_id") or ""),
+            adapter_factory=ImageMVFigmaAdapter,
+            readback_depth=max(1, args.readback_depth),
+        )
+        if run_summary.get("status") != "captured-figma-evidence":
+            _write_json(output / "acceptance.json", run_summary)
+            print(json.dumps(run_summary, ensure_ascii=True))
+            return 2
+
+    form_font_design, form_font_calibration = calibrate_form_fonts_from_render(
+        design,
+        str(image),
+        str(run_root / "export.png"),
+    )
+    if form_font_calibration["adjusted_count"]:
+        if not wrote_initial_design:
+            _write_json(output / "figma_design_initial.json", design)
+            wrote_initial_design = True
+        design = form_font_design
+        _write_json(output / "figma_design.json", design)
+        run_root = output / "figma_form_font"
+        run_summary = run_image_figma_evidence(
+            design,
+            output_dir=run_root,
+            sample_id=str(truth.get("sample_id") or ""),
+            adapter_factory=ImageMVFigmaAdapter,
+            readback_depth=max(1, args.readback_depth),
+        )
+        if run_summary.get("status") != "captured-figma-evidence":
+            _write_json(output / "acceptance.json", run_summary)
+            print(json.dumps(run_summary, ensure_ascii=True))
+            return 2
+
+    form_position_design, form_position_calibration = (
+        calibrate_form_positions_from_render(
+            design,
+            _read_json(run_root / "readback.json"),
+            str(image),
+            str(run_root / "export.png"),
+        )
+    )
+    if form_position_calibration["adjusted_count"]:
+        if not wrote_initial_design:
+            _write_json(output / "figma_design_initial.json", design)
+            wrote_initial_design = True
+        design = form_position_design
+        _write_json(output / "figma_design.json", design)
+        run_root = output / "figma_form_calibrated"
         run_summary = run_image_figma_evidence(
             design,
             output_dir=run_root,
@@ -334,11 +388,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         "table_fonts": table_font_calibration,
         "table_positions": table_position_calibration,
         "form_text_positions": form_text_calibration,
+        "form_fonts_post": form_font_calibration,
+        "form_positions_post": form_position_calibration,
         "adjusted_count": (
             control_calibration["adjusted_count"]
             + table_font_calibration["adjusted_count"]
             + table_position_calibration["adjusted_count"]
             + form_text_calibration["adjusted_count"]
+            + form_font_calibration["adjusted_count"]
+            + form_position_calibration["adjusted_count"]
         ),
         "status": (
             "applied"
@@ -346,6 +404,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             or table_font_calibration["adjusted_count"]
             or table_position_calibration["adjusted_count"]
             or form_text_calibration["adjusted_count"]
+            or form_font_calibration["adjusted_count"]
+            or form_position_calibration["adjusted_count"]
             else "not-needed"
         ),
     }

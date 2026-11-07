@@ -6,6 +6,8 @@ from PIL import Image, ImageDraw
 
 from src.app.services.structure.fidelity.text_calibration import (
     calibrate_control_fonts,
+    calibrate_form_fonts_from_render,
+    calibrate_form_positions_from_render,
     calibrate_form_text_positions,
     calibrate_table_fonts_from_render,
     calibrate_table_positions,
@@ -199,6 +201,122 @@ def test_table_position_calibration_uses_render_ink(tmp_path: Path) -> None:
 
     assert calibrated["elements"][0]["x"] == 90
     assert calibrated["elements"][0]["y"] == 95
+    assert report["adjusted_count"] == 1
+
+
+def test_form_font_calibration_groups_by_type_size_and_script(
+    tmp_path: Path,
+) -> None:
+    reference = tmp_path / "reference.png"
+    rendered = tmp_path / "rendered.png"
+    for path, box in (
+        (reference, (20, 20, 49, 27)),
+        (rendered, (20, 20, 39, 25)),
+    ):
+        image = Image.new("RGB", (100, 100), "white")
+        ImageDraw.Draw(image).rectangle(box, fill="black")
+        image.save(path)
+    design = {
+        "elements": [
+            {
+                "id": "form",
+                "type": "container",
+                "role": "form-section",
+                "x": 0,
+                "y": 0,
+                "width": 100,
+                "height": 100,
+            },
+            {
+                "contentRef": "text:form",
+                "type": "text",
+                "x": 0,
+                "y": 0,
+                "text": "Form label",
+                "style": {"fontSize": 10},
+                "styleEvidence": {
+                    "evidence": {
+                        "script": "cjk",
+                        "source_bbox": [0, 0, 100, 50],
+                        "ink_bbox": [20, 20, 30, 8],
+                    }
+                },
+            },
+        ]
+    }
+
+    calibrated, report = calibrate_form_fonts_from_render(
+        design,
+        str(reference),
+        str(rendered),
+    )
+
+    assert calibrated["elements"][1]["style"]["fontSize"] == 15
+    assert report["adjusted_count"] == 1
+
+
+def test_form_position_calibration_moves_text_box_only(
+    tmp_path: Path,
+) -> None:
+    reference = tmp_path / "reference.png"
+    rendered = tmp_path / "rendered.png"
+    for path, box in (
+        (reference, (20, 20, 59, 27)),
+        (rendered, (30, 25, 69, 32)),
+    ):
+        image = Image.new("RGB", (100, 100), "white")
+        ImageDraw.Draw(image).rectangle(box, fill="black")
+        image.save(path)
+    design = {
+        "elements": [
+            {
+                "id": "form",
+                "type": "container",
+                "role": "form-section",
+                "x": 0,
+                "y": 0,
+                "width": 100,
+                "height": 100,
+            },
+            {
+                "contentRef": "control:form",
+                "type": "input",
+                "x": 0,
+                "y": 0,
+                "width": 100,
+                "height": 40,
+                "text": "auto",
+                "textBox": [10, 10, 60, 20],
+                "styleEvidence": {
+                    "evidence": {
+                        "source_bbox": [0, 0, 100, 50],
+                        "ink_bbox": [20, 20, 40, 8],
+                    }
+                },
+            },
+        ]
+    }
+    readback = {
+        "children": [
+            {
+                "type": "TEXT",
+                "characters": "auto",
+                "bounds": {"x": 10, "y": 10, "width": 20, "height": 16},
+            }
+        ]
+    }
+
+    calibrated, report = calibrate_form_positions_from_render(
+        design,
+        readback,
+        str(reference),
+        str(rendered),
+    )
+    control = calibrated["elements"][1]
+
+    assert control["x"] == 0
+    assert control["y"] == 0
+    assert control["textBox"] == [0, 5, 20, 16]
     assert report["adjusted_count"] == 1
 
 
