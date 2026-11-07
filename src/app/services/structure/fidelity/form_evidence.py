@@ -16,6 +16,7 @@ from src.app.services.structure.fidelity.contracts import (
 
 _DATE_TIME = re.compile(r"^(\d{4}-\d{2}-\d{2})(\d{1,2}:\d{2}:\d{2})$")
 _FORM_LABELS = {"执行时间", "执行者"}
+_INVALID_CHECKBOX_LABELS = {"", "0", "1", "false", "true", "unchecked", "checked"}
 
 
 def _overlap_over_smaller(left: list[int], right: list[int]) -> float:
@@ -30,6 +31,56 @@ def _repair_datetime(value: Any) -> str:
     text = str(value or "")
     match = _DATE_TIME.fullmatch(text)
     return f"{match.group(1)} {match.group(2)}" if match else text
+
+
+def _nearby_checkbox_label_observation(
+    checkbox_bbox: list[int],
+    observations: list[Mapping[str, Any]],
+) -> Mapping[str, Any] | None:
+    checkbox_center_y = checkbox_bbox[1] + checkbox_bbox[3] / 2
+    candidates = []
+    for observation in observations:
+        text = str(observation.get("text") or "").strip()
+        bbox = observation.get("bbox")
+        if (
+            not text
+            or not isinstance(bbox, list)
+            or len(bbox) != 4
+            or bbox[2] < 40
+            or bbox[3] < 12
+        ):
+            continue
+        center_y = float(bbox[1]) + float(bbox[3]) / 2
+        gap = max(
+            float(checkbox_bbox[0]) - (float(bbox[0]) + float(bbox[2])),
+            float(bbox[0]) - (float(checkbox_bbox[0]) + float(checkbox_bbox[2])),
+        )
+        if abs(center_y - checkbox_center_y) <= 12 and -4 <= gap <= 32:
+            candidates.append((max(0.0, gap), observation))
+    return min(candidates, key=lambda item: item[0])[1] if candidates else None
+
+
+def _recognize_checkbox_label(image_path: str, bbox: list[int]) -> str:
+    import numpy as np
+    from PIL import Image
+
+    from src.app.services.ocr.tesseract_engine import TesseractEngine
+
+    x, y, width, height = bbox
+    with Image.open(image_path) as source:
+        image = source.convert("RGB")
+        crop = image.crop(
+            (
+                max(0, x - 2),
+                max(0, y - 2),
+                min(image.width, x + width + 2),
+                min(image.height, y + height + 2),
+            )
+        )
+    recognized = TesseractEngine(lang="chi_sim+eng").recognize(np.asarray(crop))
+    return " ".join(
+        line.strip() for line in recognized.splitlines() if line.strip()
+    ).strip()
 
 
 def reconcile_form_evidence(
@@ -100,13 +151,81 @@ def reconcile_form_evidence(
                 }
             )
 
-    observations = [
+    checkbox_observations = [
         item
         for item in (ocr_supplement or {}).get("observations") or []
         if isinstance(item, Mapping)
-        and float(item.get("confidence") or 0) >= 0.9
+        and float(item.get("confidence") or 0) >= 0.45
         and normalize_bbox(item.get("bbox"), width, height) is not None
     ]
+    observations = [
+        item
+        for item in checkbox_observations
+        if float(item.get("confidence") or 0) >= 0.9
+    ]
+    image_path = str(reconciled.get("image") or "")
+    if image_path:
+        for element in elements:
+            control_type = str(
+                element.get("controlType") or element.get("type") or ""
+            ).lower()
+            current_label = _repair_datetime(
+                element.get("label")
+                or element.get("controlValue")
+                or element.get("text")
+                or ""
+            )
+            if (
+                control_type != "checkbox"
+                or current_label.strip().lower() not in _INVALID_CHECKBOX_LABELS
+            ):
+                continue
+            checkbox_bbox = normalize_bbox(element.get("bbox"), width, height)
+            if checkbox_bbox is None:
+                continue
+            observation = _nearby_checkbox_label_observation(
+                checkbox_bbox,
+                checkbox_observations,
+            )
+            if observation is None:
+                continue
+            label_bbox = normalize_bbox(observation.get("bbox"), width, height)
+            if label_bbox is None:
+                continue
+            recognized = _recognize_checkbox_label(image_path, label_bbox)
+            if (
+                not normalize_match_text(recognized)
+                or owner_text_similarity(
+                    recognized,
+                    observation.get("text") or "",
+                )
+                < 0.6
+            ):
+                continue
+            element["controlValue"] = recognized
+            element["label"] = recognized
+            label = next(
+                (
+                    candidate
+                    for candidate in elements
+                    if str(candidate.get("type") or "").lower() in {"text", "link"}
+                    and normalize_bbox(candidate.get("bbox"), width, height)
+                    == label_bbox
+                ),
+                None,
+            )
+            if label is not None:
+                label["text"] = recognized
+                label["role"] = "control-label"
+                label["source"] = "ocr-supplement:easyocr+tesseract"
+            corrected.append(
+                {
+                    "reason": "checkbox-label-tesseract",
+                    "content_ref": f"graph.elements[{elements.index(element)}]",
+                    "bbox": label_bbox,
+                    "text": recognized,
+                }
+            )
     for element in elements:
         text = _repair_datetime(
             element.get("controlValue") or element.get("text") or ""

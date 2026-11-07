@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from pathlib import Path
+from unittest.mock import patch
+
 from src.app.services.structure.fidelity.form_evidence import (
     reconcile_form_evidence,
 )
@@ -130,3 +133,56 @@ def test_form_evidence_deduplicates_schedule_and_repairs_status() -> None:
         )
         == 2
     )
+
+
+def test_invalid_checkbox_label_is_recovered_from_adjacent_ocr_and_tesseract() -> None:
+    image = Path(
+        "tests/fixtures/image_to_slice_benchmark_2026-11-02/" "IMG-FLEXWEAVER-ADMIN.png"
+    ).resolve()
+    graph = {
+        "image": str(image),
+        "elements": [
+            {
+                "id": 1,
+                "type": "checkbox",
+                "controlType": "checkbox",
+                "controlValue": "true",
+                "controlState": "checked",
+                "bbox": [1644, 290, 24, 23],
+            },
+            {
+                "id": 2,
+                "type": "text",
+                "text": "Wauto用户身份执行",
+                "bbox": [1480, 288, 158, 26],
+                "source": "ocr-supplement:easyocr",
+            },
+        ],
+    }
+    ocr = {
+        "observations": [
+            {
+                "text": "Wauto用户身份执行",
+                "bbox": [1480, 288, 158, 26],
+                "confidence": 0.95,
+            }
+        ]
+    }
+
+    with patch(
+        "src.app.services.structure.fidelity.form_evidence."
+        "_recognize_checkbox_label",
+        return_value="以auto用户身份执行",
+    ):
+        reconciled = reconcile_form_evidence(
+            graph,
+            ocr,
+            width=1920,
+            height=826,
+        )
+
+    by_id = {element["id"]: element for element in reconciled["elements"]}
+    assert by_id[1]["controlValue"] == "以auto用户身份执行"
+    assert by_id[1]["label"] == "以auto用户身份执行"
+    assert by_id[2]["text"] == "以auto用户身份执行"
+    assert by_id[2]["role"] == "control-label"
