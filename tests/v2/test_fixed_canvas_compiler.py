@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from PIL import Image, ImageDraw
 
+from src.app.services.rendering.adapter_base import paint_order
 from src.app.services.structure.fidelity.fixed_canvas_compiler import (
     compile_scene_plan_to_design,
 )
@@ -567,7 +568,12 @@ def test_compiler_groups_adjacent_same_fill_buttons(tmp_path: Path) -> None:
                 "parent_id": None,
                 "type": "control",
                 "role": "control",
-                "bbox": [x, 190, 60, 30],
+                "bbox": [
+                    x,
+                    191 if node_id == "control:export" else 190,
+                    60,
+                    29 if node_id == "control:export" else 30,
+                ],
                 "content_ref": node_id,
                 "geometry_ref": f"geometry:{node_id}",
                 "children": [],
@@ -590,15 +596,38 @@ def test_compiler_groups_adjacent_same_fill_buttons(tmp_path: Path) -> None:
         for element in design["elements"]
         if element.get("contentRef") in {"control:copy", "control:export"}
     ]
+    outline = next(
+        element
+        for element in design["elements"]
+        if element.get("role") == "control-group-outline"
+    )
+    separators = [
+        element
+        for element in design["elements"]
+        if element.get("role") == "control-group-separator"
+    ]
 
     assert group["x"] == 20
     assert group["width"] == 120
+    assert group["style"]["borderWidth"] == 0
     assert len(members) == 2
     assert all(member["style"]["borderWidth"] == 0 for member in members)
     assert all(member["style"]["borderRadius"] == 0 for member in members)
+    assert outline["style"]["fillColor"] == "transparent"
+    assert outline["style"]["borderWidth"] == 1
+    assert len(separators) == 1
+    assert separators[0]["x"] == 79
     assert max(design["elements"].index(member) for member in members) > (
         design["elements"].index(group)
     )
+    ordered_ids = [
+        element.get("id") for _index, element in paint_order(design["elements"])
+    ]
+    assert all(
+        ordered_ids.index(member["id"]) < ordered_ids.index(outline["id"])
+        for member in members
+    )
+    assert ordered_ids.index(outline["id"]) < ordered_ids.index(separators[0]["id"])
 
 
 def test_compiler_adds_table_decoration_without_text_copy(tmp_path: Path) -> None:

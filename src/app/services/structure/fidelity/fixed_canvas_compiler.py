@@ -438,7 +438,12 @@ def _button_groups(
     image_path: str,
     width: int,
     height: int,
-) -> tuple[dict[str, str], dict[str, str], list[dict[str, Any]]]:
+) -> tuple[
+    dict[str, str],
+    dict[str, str],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+]:
     from src.app.services.structure.image_contract import (
         _dominant_color,
         _sample_border_color,
@@ -464,9 +469,28 @@ def _button_groups(
             )
         )
     candidates.sort(key=lambda item: (item[1][1], item[1][0]))
+    rows: list[list[tuple[dict[str, Any], list[int], str]]] = []
+    for candidate in candidates:
+        row = next(
+            (
+                existing
+                for existing in rows
+                if abs(existing[0][1][1] - candidate[1][1]) <= 2
+            ),
+            None,
+        )
+        if row is None:
+            rows.append([candidate])
+        else:
+            row.append(candidate)
+    ordered_candidates = [
+        candidate
+        for row in sorted(rows, key=lambda items: min(item[1][1] for item in items))
+        for candidate in sorted(row, key=lambda item: item[1][0])
+    ]
 
     runs: list[list[tuple[dict[str, Any], list[int], str]]] = []
-    for candidate in candidates:
+    for candidate in ordered_candidates:
         if not runs:
             runs.append([candidate])
             continue
@@ -487,6 +511,7 @@ def _button_groups(
     grouped: dict[str, str] = {}
     grouped_fill: dict[str, str] = {}
     group_elements: list[dict[str, Any]] = []
+    group_decorations: list[dict[str, Any]] = []
     for run in runs:
         if len(run) < 2:
             continue
@@ -497,6 +522,11 @@ def _button_groups(
         bottom = max(box[1] + box[3] for box in boxes)
         group_id = f"control-group:{run[0][0].get('id')}"
         fill = run[0][2]
+        border = _sample_border_color(
+            image_path,
+            [left, top, right - left, bottom - top],
+            fill,
+        )
         for node, _bbox, _fill in run:
             node_id = str(node.get("id") or "")
             grouped[node_id] = group_id
@@ -512,12 +542,8 @@ def _button_groups(
                 "text": "",
                 "style": {
                     "fillColor": fill,
-                    "borderColor": _sample_border_color(
-                        image_path,
-                        [left, top, right - left, bottom - top],
-                        fill,
-                    ),
-                    "borderWidth": 1,
+                    "borderColor": border,
+                    "borderWidth": 0,
                     "borderRadius": 6,
                 },
                 "role": "control-group",
@@ -531,7 +557,113 @@ def _button_groups(
                 },
             }
         )
-    return grouped, grouped_fill, group_elements
+        group_decorations.append(
+            {
+                "id": f"control-group-outline:{run[0][0].get('id')}",
+                "type": "rectangle",
+                "x": left,
+                "y": top,
+                "width": right - left,
+                "height": bottom - top,
+                "text": "",
+                "style": {
+                    "fillColor": "transparent",
+                    "borderColor": border,
+                    "borderWidth": 1,
+                    "borderRadius": 6,
+                },
+                "role": "control-group-outline",
+                "name": "control-group-outline",
+                "contentRef": None,
+                "sceneOwnerId": group_id,
+            }
+        )
+        for index in range(1, len(run)):
+            group_decorations.append(
+                {
+                    "id": f"control-group-separator:{run[0][0].get('id')}:{index}",
+                    "type": "rectangle",
+                    "x": max(left, run[index][1][0] - 1),
+                    "y": top + 1,
+                    "width": 1,
+                    "height": max(1, bottom - top - 2),
+                    "text": "",
+                    "style": {"fillColor": border},
+                    "role": "control-group-separator",
+                    "name": "control-group-separator",
+                    "contentRef": None,
+                    "sceneOwnerId": group_id,
+                }
+            )
+    return grouped, grouped_fill, group_elements, group_decorations
+
+
+def _apply_group_decoration_depths(
+    elements: list[dict[str, Any]],
+    groups: list[dict[str, Any]],
+) -> None:
+    rects: list[tuple[int, int, int, int] | None] = []
+    for element in elements:
+        try:
+            x = int(element.get("x", 0))
+            y = int(element.get("y", 0))
+            width = int(element.get("width", 0))
+            height = int(element.get("height", 0))
+        except (TypeError, ValueError):
+            rects.append(None)
+            continue
+        rects.append((x, y, width, height) if width > 0 and height > 0 else None)
+
+    unique: list[tuple[int, int, int, int]] = []
+    for rect in rects:
+        if rect is not None and rect not in unique:
+            unique.append(rect)
+
+    def covers(
+        outer: tuple[int, int, int, int],
+        inner: tuple[int, int, int, int],
+        eps: int = 1,
+    ) -> bool:
+        return (
+            outer[0] <= inner[0] + eps
+            and outer[1] <= inner[1] + eps
+            and inner[0] + inner[2] <= outer[0] + outer[2] + eps
+            and inner[1] + inner[3] <= outer[1] + outer[3] + eps
+        )
+
+    group_depths: dict[str, int] = {}
+    for group in groups:
+        try:
+            group_rect = (
+                int(group.get("x", 0)),
+                int(group.get("y", 0)),
+                int(group.get("width", 0)),
+                int(group.get("height", 0)),
+            )
+        except (TypeError, ValueError):
+            continue
+        members = [
+            rect for rect in unique if rect != group_rect and covers(group_rect, rect)
+        ]
+        if not members:
+            continue
+        member_depths = [
+            sum(1 for other in unique if other != member and covers(other, member))
+            for member in members
+        ]
+        group_depths[str(group.get("id") or "")] = max(member_depths) + 1
+    for element in elements:
+        if str(element.get("role") or "") not in {
+            "control-group-outline",
+            "control-group-separator",
+        }:
+            continue
+        depth = group_depths.get(str(element.get("sceneOwnerId") or ""))
+        if depth is None:
+            continue
+        element["paintDepth"] = depth + (
+            1 if str(element.get("role") or "") == "control-group-separator" else 0
+        )
 
 
 def _container_element(
@@ -689,7 +821,12 @@ def compile_scene_plan_to_design(
     containers: list[dict[str, Any]] = []
     decorations: list[dict[str, Any]] = []
     leaves: list[dict[str, Any]] = []
-    grouped_controls, grouped_fill, control_groups = _button_groups(
+    (
+        grouped_controls,
+        grouped_fill,
+        control_groups,
+        control_group_decorations,
+    ) = _button_groups(
         nodes,
         image_path=image_path,
         width=width,
@@ -766,7 +903,9 @@ def compile_scene_plan_to_design(
                 )
             )
     containers.extend(control_groups)
+    decorations.extend(control_group_decorations)
     elements = [*containers, *decorations, *leaves]
+    _apply_group_decoration_depths(elements, control_groups)
     text_count = sum(
         element.get("type") == "text" and bool(element.get("text"))
         for element in elements
