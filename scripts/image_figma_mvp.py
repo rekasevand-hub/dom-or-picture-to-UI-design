@@ -88,11 +88,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--calibration-mode",
         choices=("legacy", "residual"),
-        default="legacy",
+        default="residual",
         help=(
-            "legacy preserves the historical fifteen-stage order. 'residual' "
-            "selects strategy groups from the measured native-text residual "
-            "profile; keep legacy until a real Figma A/B validates residual mode."
+            "residual (default) selects strategy groups from the measured "
+            "native-text residual profile and recomputes the profile after each "
+            "render. 'legacy' preserves the historical fifteen-stage order."
         ),
     )
     parser.add_argument(

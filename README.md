@@ -277,9 +277,12 @@ C:\Users\lzq\.conda\envs\omni\python.exe scripts/image_figma_mvp.py `
 
 - `--emission-contract repair` 为默认；它只登记“Figma 中确实存在但缺少 ink
   证据”的 native owner，不改变任何冻结门禁或阈值。
-- `--calibration-mode legacy` 为默认，保持历史 15 段校准顺序；
-  `residual` 模式会用 native-text 残差画像选择策略组，需先跑真实 Figma A/B
-  再考虑切换默认。
+- `--calibration-mode residual` 为默认，使用 native-text 残差画像选择策略组，
+  并在每次渲染后重新计算画像；`legacy` 保留历史 15 段顺序作为回退。
+- 2026-11-08 的 FlexWeaver / ACCTOKEN Models 真实 Figma A/B 中，两种模式的
+  critical text、native gate、chrome、within30 和 blockers 完全一致；ACCTOKEN
+  的 residual 模式少评估 7 个无收益策略组。证据见
+  `docs/v2_mentor/CALIBRATION_MODE_AB_2026-11-08.md`。
 - short-unit 逻辑标签（例如 `5.8` + `折`）会在 OCR 补充阶段合并到相邻数值
   owner，再进入 inventory / ScenePlan。
 
