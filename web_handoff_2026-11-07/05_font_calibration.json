@@ -1,0 +1,1897 @@
+{
+  "adjusted_count": 174,
+  "adjustments": [
+    {
+      "contentRef": "control:e30ee1993aa00dde",
+      "previous": 15.25,
+      "rendered_width": 61.0,
+      "target_width": 66.0,
+      "text": "自动备份",
+      "updated": 16.5
+    },
+    {
+      "contentRef": "control:ccf320547f641275",
+      "previous": 11.5,
+      "rendered_width": 59.0,
+      "target_width": 80.0,
+      "text": "0 30 3 * * ?",
+      "updated": 14.5
+    },
+    {
+      "contentRef": "control:9f07dc49b3a98cab",
+      "previous": 8.5,
+      "rendered_width": 19.0,
+      "target_width": 33.0,
+      "text": "auto",
+      "updated": 10.5
+    },
+    {
+      "contentRef": "control:5632794c7fcb404d",
+      "previous": 11.5,
+      "rendered_width": 102.0,
+      "target_width": 142.0,
+      "text": "2026-11-02 3:30:00",
+      "updated": 14.5
+    },
+    {
+      "contentRef": "control:7fff67ad309dc449",
+      "previous": 11.5,
+      "rendered_width": 102.0,
+      "target_width": 142.0,
+      "text": "2026-11-01 3:30:00",
+      "updated": 14.5
+    },
+    {
+      "contentRef": "control:8574be571b0599c5",
+      "previous": 15.25,
+      "rendered_width": 61.0,
+      "target_width": 68.0,
+      "text": "手动执行",
+      "updated": 17.0
+    },
+    {
+      "contentRef": "control:0ce6c79fbecd8647",
+      "previous": 15.25,
+      "rendered_width": 307.0,
+      "target_width": 335.0,
+      "text": "2023年12月16日：修改成凌晨3：30执行备份",
+      "updated": 16.75
+    },
+    {
+      "contentRef": "control:2e179c6dc2747840",
+      "previous": 14.25,
+      "rendered_width": 29.0,
+      "target_width": 34.0,
+      "text": "复制",
+      "updated": 16.75
+    },
+    {
+      "contentRef": "control:c43d6b367002ee26",
+      "previous": 15.25,
+      "rendered_width": 31.0,
+      "target_width": 35.0,
+      "text": "刷新",
+      "updated": 17.25
+    },
+    {
+      "contentRef": "control:ca6d415e41f0a023",
+      "previous": 14.25,
+      "rendered_width": 29.0,
+      "target_width": 33.0,
+      "text": "导出",
+      "updated": 16.25
+    }
+  ],
+  "form_fonts_post": {
+    "adjusted_count": 23,
+    "adjustments": [
+      {
+        "contentRef": "control:0dd605083247b446",
+        "previous": 16.25,
+        "script": "latin",
+        "text": "auto_backup",
+        "type": "input",
+        "updated": 16.5
+      },
+      {
+        "contentRef": "control:7552182b0f33204a",
+        "previous": 16.25,
+        "script": "latin",
+        "text": "/devops/service/backup",
+        "type": "input",
+        "updated": 16.5
+      },
+      {
+        "contentRef": "control:e30ee1993aa00dde",
+        "previous": 16.5,
+        "script": "cjk",
+        "text": "自动备份",
+        "type": "input",
+        "updated": 17.5
+      },
+      {
+        "contentRef": "control:ccf320547f641275",
+        "previous": 14.5,
+        "script": "latin",
+        "text": "0 30 3 * * ?",
+        "type": "input",
+        "updated": 16.5
+      },
+      {
+        "contentRef": "control:5632794c7fcb404d",
+        "previous": 14.5,
+        "script": "latin",
+        "text": "2026-11-02 3:30:00",
+        "type": "input",
+        "updated": 16.5
+      },
+      {
+        "contentRef": "control:7fff67ad309dc449",
+        "previous": 14.5,
+        "script": "latin",
+        "text": "2026-11-01 3:30:00",
+        "type": "input",
+        "updated": 16.5
+      },
+      {
+        "contentRef": "text:cf174da815d4a6a2",
+        "previous": 15.25,
+        "script": "cjk",
+        "text": "执行时间",
+        "type": "text",
+        "updated": 18.0
+      },
+      {
+        "contentRef": "text:7eeab1eb9faa8a22",
+        "previous": 15.25,
+        "script": "cjk",
+        "text": "名称",
+        "type": "text",
+        "updated": 18.0
+      },
+      {
+        "contentRef": "text:881c5f84f0b27403",
+        "previous": 15.25,
+        "script": "cjk",
+        "text": "显示名称",
+        "type": "text",
+        "updated": 18.0
+      },
+      {
+        "contentRef": "text:619b0d3828b27f84",
+        "previous": 15.25,
+        "script": "cjk",
+        "text": "禁用",
+        "type": "text",
+        "updated": 18.0
+      },
+      {
+        "contentRef": "text:cbb8d0c748357510",
+        "previous": 15.25,
+        "script": "cjk",
+        "text": "执行者",
+        "type": "text",
+        "updated": 18.0
+      },
+      {
+        "contentRef": "text:3d682d3ab19a21eb",
+        "previous": 15.25,
+        "script": "cjk",
+        "text": "下次执行时间",
+        "type": "text",
+        "updated": 18.0
+      },
+      {
+        "contentRef": "text:51baf6db69eb6a80",
+        "previous": 15.25,
+        "script": "cjk",
+        "text": "托管",
+        "type": "text",
+        "updated": 18.0
+      },
+      {
+        "contentRef": "text:9b9eb0f8ac750788",
+        "previous": 15.25,
+        "script": "cjk",
+        "text": "执行成功",
+        "type": "text",
+        "updated": 18.0
+      },
+      {
+        "contentRef": "text:6e45d428c33a977d",
+        "previous": 15.25,
+        "script": "cjk",
+        "text": "执行",
+        "type": "text",
+        "updated": 18.0
+      },
+      {
+        "contentRef": "text:f94705d0aa853665",
+        "previous": 15.25,
+        "script": "cjk",
+        "text": "任务执行历史:",
+        "type": "text",
+        "updated": 18.0
+      },
+      {
+        "contentRef": "text:78022a6bf423a671",
+        "previous": 11.5,
+        "script": "latin",
+        "text": "SUCCESS",
+        "type": "text",
+        "updated": 16.5
+      },
+      {
+        "contentRef": "text:e66dcb6153eaf40b",
+        "previous": 16.25,
+        "script": "cjk",
+        "text": "以auto用户身份执行",
+        "type": "text",
+        "updated": 18.0
+      },
+      {
+        "contentRef": "text:2a8bd1312b5e7262",
+        "previous": 16.25,
+        "script": "cjk",
+        "text": "备注",
+        "type": "text",
+        "updated": 18.0
+      },
+      {
+        "contentRef": "control:8574be571b0599c5",
+        "previous": 17.0,
+        "script": "cjk",
+        "text": "手动执行",
+        "type": "button",
+        "updated": 17.5
+      },
+      {
+        "contentRef": "control:7b8ba83544927ceb",
+        "previous": 16.25,
+        "script": "cjk",
+        "text": "暂停自动刷新",
+        "type": "button",
+        "updated": 17.5
+      },
+      {
+        "contentRef": "control:ca6d415e41f0a023",
+        "previous": 16.25,
+        "script": "cjk",
+        "text": "导出",
+        "type": "button",
+        "updated": 17.5
+      },
+      {
+        "contentRef": "text:ecea07cf522c1104",
+        "previous": 11.5,
+        "script": "cjk",
+        "text": "表内搜索",
+        "type": "text",
+        "updated": 16.0
+      }
+    ],
+    "schema_version": "grounding-form-font-render-calibration/1.0",
+    "status": "applied"
+  },
+  "form_positions_post": {
+    "adjusted_count": 24,
+    "adjustments": [
+      {
+        "contentRef": "control:0dd605083247b446",
+        "text": "auto_backup",
+        "type": "input",
+        "x_delta": -2.0,
+        "y_delta": 0.0
+      },
+      {
+        "contentRef": "control:e30ee1993aa00dde",
+        "text": "自动备份",
+        "type": "input",
+        "x_delta": 3.0,
+        "y_delta": 0.0
+      },
+      {
+        "contentRef": "control:ccf320547f641275",
+        "text": "0 30 3 * * ?",
+        "type": "input",
+        "x_delta": 0.0,
+        "y_delta": 1.0
+      },
+      {
+        "contentRef": "text:cf174da815d4a6a2",
+        "text": "执行时间",
+        "type": "text",
+        "x_delta": -1.0,
+        "y_delta": -3.0
+      },
+      {
+        "contentRef": "text:7eeab1eb9faa8a22",
+        "text": "名称",
+        "type": "text",
+        "x_delta": -1.0,
+        "y_delta": -1.0
+      },
+      {
+        "contentRef": "text:881c5f84f0b27403",
+        "text": "显示名称",
+        "type": "text",
+        "x_delta": -2.0,
+        "y_delta": -1.0
+      },
+      {
+        "contentRef": "control:9f07dc49b3a98cab",
+        "text": "auto",
+        "type": "input",
+        "x_delta": -2.0,
+        "y_delta": -2.0
+      },
+      {
+        "contentRef": "text:619b0d3828b27f84",
+        "text": "禁用",
+        "type": "text",
+        "x_delta": 0.0,
+        "y_delta": 2.0
+      },
+      {
+        "contentRef": "text:cbb8d0c748357510",
+        "text": "执行者",
+        "type": "text",
+        "x_delta": -1.0,
+        "y_delta": -3.0
+      },
+      {
+        "contentRef": "text:3d682d3ab19a21eb",
+        "text": "下次执行时间",
+        "type": "text",
+        "x_delta": -2.0,
+        "y_delta": -1.0
+      },
+      {
+        "contentRef": "control:7fff67ad309dc449",
+        "text": "2026-11-01 3:30:00",
+        "type": "input",
+        "x_delta": 1.0,
+        "y_delta": 0.0
+      },
+      {
+        "contentRef": "text:51baf6db69eb6a80",
+        "text": "托管",
+        "type": "text",
+        "x_delta": 1.0,
+        "y_delta": 5.0
+      },
+      {
+        "contentRef": "text:78022a6bf423a671",
+        "text": "SUCCESS",
+        "type": "text",
+        "x_delta": -1.0,
+        "y_delta": -5.0
+      },
+      {
+        "contentRef": "text:9b9eb0f8ac750788",
+        "text": "执行成功",
+        "type": "text",
+        "x_delta": 0.0,
+        "y_delta": 2.0
+      },
+      {
+        "contentRef": "control:7552182b0f33204a",
+        "text": "/devops/service/backup",
+        "type": "input",
+        "x_delta": 1.0,
+        "y_delta": 0.0
+      },
+      {
+        "contentRef": "text:e66dcb6153eaf40b",
+        "text": "以auto用户身份执行",
+        "type": "text",
+        "x_delta": 2.0,
+        "y_delta": 1.0
+      },
+      {
+        "contentRef": "text:6e45d428c33a977d",
+        "text": "执行",
+        "type": "text",
+        "x_delta": 2.0,
+        "y_delta": 5.0
+      },
+      {
+        "contentRef": "control:0ce6c79fbecd8647",
+        "text": "2023年12月16日：修改成凌晨3：30执行备份",
+        "type": "input",
+        "x_delta": -3.0,
+        "y_delta": -3.0
+      },
+      {
+        "contentRef": "text:2a8bd1312b5e7262",
+        "text": "备注",
+        "type": "text",
+        "x_delta": -1.0,
+        "y_delta": 3.0
+      },
+      {
+        "contentRef": "text:f94705d0aa853665",
+        "text": "任务执行历史:",
+        "type": "text",
+        "x_delta": -1.0,
+        "y_delta": 2.0
+      },
+      {
+        "contentRef": "control:7b8ba83544927ceb",
+        "text": "暂停自动刷新",
+        "type": "button",
+        "x_delta": 0.0,
+        "y_delta": -1.0
+      },
+      {
+        "contentRef": "control:c43d6b367002ee26",
+        "text": "刷新",
+        "type": "button",
+        "x_delta": 0.0,
+        "y_delta": -1.0
+      },
+      {
+        "contentRef": "control:ca6d415e41f0a023",
+        "text": "导出",
+        "type": "button",
+        "x_delta": -1.0,
+        "y_delta": 1.0
+      },
+      {
+        "contentRef": "text:ecea07cf522c1104",
+        "text": "表内搜索",
+        "type": "text",
+        "x_delta": -1.0,
+        "y_delta": 1.0
+      }
+    ],
+    "schema_version": "grounding-form-render-position-calibration/1.0",
+    "status": "applied"
+  },
+  "form_positions_post_2": {
+    "adjusted_count": 19,
+    "adjustments": [
+      {
+        "contentRef": "control:0dd605083247b446",
+        "text": "auto_backup",
+        "type": "input",
+        "x_delta": -2.0,
+        "y_delta": 0.0
+      },
+      {
+        "contentRef": "text:7eeab1eb9faa8a22",
+        "text": "名称",
+        "type": "text",
+        "x_delta": -1.0,
+        "y_delta": -1.0
+      },
+      {
+        "contentRef": "text:881c5f84f0b27403",
+        "text": "显示名称",
+        "type": "text",
+        "x_delta": -2.0,
+        "y_delta": -1.0
+      },
+      {
+        "contentRef": "control:9f07dc49b3a98cab",
+        "text": "auto",
+        "type": "input",
+        "x_delta": -3.0,
+        "y_delta": 0.0
+      },
+      {
+        "contentRef": "text:cbb8d0c748357510",
+        "text": "执行者",
+        "type": "text",
+        "x_delta": 0.0,
+        "y_delta": -1.0
+      },
+      {
+        "contentRef": "text:3d682d3ab19a21eb",
+        "text": "下次执行时间",
+        "type": "text",
+        "x_delta": -2.0,
+        "y_delta": -1.0
+      },
+      {
+        "contentRef": "control:7fff67ad309dc449",
+        "text": "2026-11-01 3:30:00",
+        "type": "input",
+        "x_delta": 1.0,
+        "y_delta": 0.0
+      },
+      {
+        "contentRef": "text:51baf6db69eb6a80",
+        "text": "托管",
+        "type": "text",
+        "x_delta": 1.0,
+        "y_delta": 0.0
+      },
+      {
+        "contentRef": "text:78022a6bf423a671",
+        "text": "SUCCESS",
+        "type": "text",
+        "x_delta": -1.0,
+        "y_delta": 0.0
+      },
+      {
+        "contentRef": "control:7552182b0f33204a",
+        "text": "/devops/service/backup",
+        "type": "input",
+        "x_delta": 1.0,
+        "y_delta": 0.0
+      },
+      {
+        "contentRef": "text:e66dcb6153eaf40b",
+        "text": "以auto用户身份执行",
+        "type": "text",
+        "x_delta": 1.0,
+        "y_delta": 0.0
+      },
+      {
+        "contentRef": "text:6e45d428c33a977d",
+        "text": "执行",
+        "type": "text",
+        "x_delta": 2.0,
+        "y_delta": 0.0
+      },
+      {
+        "contentRef": "control:0ce6c79fbecd8647",
+        "text": "2023年12月16日：修改成凌晨3：30执行备份",
+        "type": "input",
+        "x_delta": -3.0,
+        "y_delta": -3.0
+      },
+      {
+        "contentRef": "text:2a8bd1312b5e7262",
+        "text": "备注",
+        "type": "text",
+        "x_delta": -1.0,
+        "y_delta": 0.0
+      },
+      {
+        "contentRef": "text:f94705d0aa853665",
+        "text": "任务执行历史:",
+        "type": "text",
+        "x_delta": -1.0,
+        "y_delta": 0.0
+      },
+      {
+        "contentRef": "control:7b8ba83544927ceb",
+        "text": "暂停自动刷新",
+        "type": "button",
+        "x_delta": 0.0,
+        "y_delta": -1.0
+      },
+      {
+        "contentRef": "control:c43d6b367002ee26",
+        "text": "刷新",
+        "type": "button",
+        "x_delta": 0.0,
+        "y_delta": -1.0
+      },
+      {
+        "contentRef": "control:ca6d415e41f0a023",
+        "text": "导出",
+        "type": "button",
+        "x_delta": -1.0,
+        "y_delta": 1.0
+      },
+      {
+        "contentRef": "text:ecea07cf522c1104",
+        "text": "表内搜索",
+        "type": "text",
+        "x_delta": -1.0,
+        "y_delta": 0.0
+      }
+    ],
+    "schema_version": "grounding-form-render-position-calibration/1.0",
+    "status": "applied"
+  },
+  "form_text_positions": {
+    "adjusted_count": 3,
+    "adjustments": [
+      {
+        "contentRef": "text:cf174da815d4a6a2",
+        "role": "form-label",
+        "text": "执行时间",
+        "x_delta": 5.0,
+        "y_delta": 5.0
+      },
+      {
+        "contentRef": "text:cbb8d0c748357510",
+        "role": "form-label",
+        "text": "执行者",
+        "x_delta": 4.0,
+        "y_delta": 2.0
+      },
+      {
+        "contentRef": "text:78022a6bf423a671",
+        "role": "form-status",
+        "text": "SUCCESS",
+        "x_delta": 2.0,
+        "y_delta": 5.0
+      }
+    ],
+    "schema_version": "grounding-form-text-position-calibration/1.0",
+    "status": "applied"
+  },
+  "form_text_weight": {
+    "adjusted_count": 6,
+    "adjustments": [
+      {
+        "contentRef": "text:619b0d3828b27f84",
+        "inkCoverageRatio": 1.3655913978494623,
+        "previous": "normal",
+        "text": "禁用",
+        "updated": 300
+      },
+      {
+        "contentRef": "text:51baf6db69eb6a80",
+        "inkCoverageRatio": 1.1957671957671958,
+        "previous": "normal",
+        "text": "托管",
+        "updated": 300
+      },
+      {
+        "contentRef": "text:e66dcb6153eaf40b",
+        "inkCoverageRatio": 1.244956772334294,
+        "previous": "normal",
+        "text": "以auto用户身份执行",
+        "updated": 300
+      },
+      {
+        "contentRef": "text:6e45d428c33a977d",
+        "inkCoverageRatio": 1.1962025316455696,
+        "previous": "normal",
+        "text": "执行",
+        "updated": 300
+      },
+      {
+        "contentRef": "text:2a8bd1312b5e7262",
+        "inkCoverageRatio": 1.3777777777777778,
+        "previous": "normal",
+        "text": "备注",
+        "updated": 300
+      },
+      {
+        "contentRef": "text:f94705d0aa853665",
+        "inkCoverageRatio": 1.208924949290061,
+        "previous": "normal",
+        "text": "任务执行历史:",
+        "updated": 300
+      }
+    ],
+    "schema_version": "grounding-form-text-weight/1.0",
+    "status": "applied"
+  },
+  "schema_version": "grounding-control-font-calibration/1.0",
+  "status": "applied",
+  "table_fonts": {
+    "adjusted_count": 47,
+    "adjustments": [
+      {
+        "contentRef": "table-header:85314e304c4106a9",
+        "group": "table-header",
+        "previous": 15.25,
+        "text": "执行时间",
+        "updated": 17.0
+      },
+      {
+        "contentRef": "table-header:148f93419bf897ac",
+        "group": "table-header",
+        "previous": 15.25,
+        "text": "持续时长",
+        "updated": 17.0
+      },
+      {
+        "contentRef": "table-header:aafd93a150351232",
+        "group": "table-header",
+        "previous": 15.25,
+        "text": "执行者",
+        "updated": 17.0
+      },
+      {
+        "contentRef": "table-header:357a6bb8f6fca4a0",
+        "group": "table-header",
+        "previous": 15.25,
+        "text": "启动时间",
+        "updated": 17.0
+      },
+      {
+        "contentRef": "table-header:f6fc294dd9303ad9",
+        "group": "table-header",
+        "previous": 15.25,
+        "text": "状态",
+        "updated": 17.0
+      },
+      {
+        "contentRef": "table-header:dca0225b71ab0424",
+        "group": "table-header",
+        "previous": 15.25,
+        "text": "执行结果",
+        "updated": 17.0
+      },
+      {
+        "contentRef": "table-header:682c50329bf4d1e3",
+        "group": "table-header",
+        "previous": 10.5,
+        "text": "#",
+        "updated": 17.0
+      },
+      {
+        "contentRef": "table-cell:7a29f50a7708919a",
+        "group": "table-body",
+        "previous": 11.5,
+        "text": "1",
+        "updated": 16.0
+      },
+      {
+        "contentRef": "table-cell:117cc6e8a9dc6ec0",
+        "group": "table-body",
+        "previous": 11.5,
+        "text": "2026-11-01 03:30:00",
+        "updated": 16.0
+      },
+      {
+        "contentRef": "table-cell:3ccd74a0dbeb3df5",
+        "group": "table-body",
+        "previous": 11.5,
+        "text": "31649",
+        "updated": 16.0
+      },
+      {
+        "contentRef": "table-cell:f58a817c6075e89f",
+        "group": "table-body",
+        "previous": 11.5,
+        "text": "auto",
+        "updated": 16.0
+      },
+      {
+        "contentRef": "table-cell:f03b581960249f19",
+        "group": "table-body",
+        "previous": 11.5,
+        "text": "2026-10-31 11:16:00",
+        "updated": 16.0
+      },
+      {
+        "contentRef": "table-cell:fe38c0725a56e087",
+        "group": "table-body",
+        "previous": 11.5,
+        "text": "2",
+        "updated": 16.0
+      },
+      {
+        "contentRef": "table-cell:58302b5a19735314",
+        "group": "table-body",
+        "previous": 11.5,
+        "text": "2",
+        "updated": 16.0
+      },
+      {
+        "contentRef": "table-cell:8b2e628f84f7c288",
+        "group": "table-body",
+        "previous": 11.5,
+        "text": "2026-10-31 03:30:00",
+        "updated": 16.0
+      },
+      {
+        "contentRef": "table-cell:1a8409f6626fbc42",
+        "group": "table-body",
+        "previous": 11.5,
+        "text": "31374",
+        "updated": 16.0
+      },
+      {
+        "contentRef": "table-cell:0170cf9927968e67",
+        "group": "table-body",
+        "previous": 11.5,
+        "text": "auto",
+        "updated": 16.0
+      },
+      {
+        "contentRef": "table-cell:5d9e068b6b1d7b7c",
+        "group": "table-body",
+        "previous": 11.5,
+        "text": "2026-10-30 19:10:43",
+        "updated": 16.0
+      },
+      {
+        "contentRef": "table-cell:e612040d1a37d8e7",
+        "group": "table-body",
+        "previous": 11.5,
+        "text": "2",
+        "updated": 16.0
+      },
+      {
+        "contentRef": "table-cell:50af7a76b205bb84",
+        "group": "table-body",
+        "previous": 11.5,
+        "text": "3",
+        "updated": 16.0
+      },
+      {
+        "contentRef": "table-cell:10dbabb8c6d4666c",
+        "group": "table-body",
+        "previous": 11.5,
+        "text": "2026-10-30 03:30:00",
+        "updated": 16.0
+      },
+      {
+        "contentRef": "table-cell:5a4a95cfacbbc1ad",
+        "group": "table-body",
+        "previous": 11.5,
+        "text": "94608",
+        "updated": 16.0
+      },
+      {
+        "contentRef": "table-cell:3757205038168f14",
+        "group": "table-body",
+        "previous": 11.5,
+        "text": "auto",
+        "updated": 16.0
+      },
+      {
+        "contentRef": "table-cell:7f6035e9f26320bd",
+        "group": "table-body",
+        "previous": 11.5,
+        "text": "2026-10-26 11:22:28",
+        "updated": 16.0
+      },
+      {
+        "contentRef": "table-cell:1f2c4ded9058925b",
+        "group": "table-body",
+        "previous": 11.5,
+        "text": "2",
+        "updated": 16.0
+      },
+      {
+        "contentRef": "table-cell:13ce272f603bc572",
+        "group": "table-body",
+        "previous": 11.5,
+        "text": "4",
+        "updated": 16.0
+      },
+      {
+        "contentRef": "table-cell:89f1d2f324dd1015",
+        "group": "table-body",
+        "previous": 11.5,
+        "text": "2026-10-29 03:30:00",
+        "updated": 16.0
+      },
+      {
+        "contentRef": "table-cell:7202381b58f263ac",
+        "group": "table-body",
+        "previous": 11.5,
+        "text": "30939",
+        "updated": 16.0
+      },
+      {
+        "contentRef": "table-cell:b62f5807ef8d7e92",
+        "group": "table-body",
+        "previous": 11.5,
+        "text": "auto",
+        "updated": 16.0
+      },
+      {
+        "contentRef": "table-cell:35a34f39735cb31b",
+        "group": "table-body",
+        "previous": 11.5,
+        "text": "2026-10-26 11:22:28",
+        "updated": 16.0
+      },
+      {
+        "contentRef": "table-cell:46e1d5d547cbf446",
+        "group": "table-body",
+        "previous": 11.5,
+        "text": "2",
+        "updated": 16.0
+      },
+      {
+        "contentRef": "table-cell:5e58729c355ef876",
+        "group": "table-body",
+        "previous": 11.5,
+        "text": "5",
+        "updated": 16.0
+      },
+      {
+        "contentRef": "table-cell:65cfd05b3e2ce849",
+        "group": "table-body",
+        "previous": 11.5,
+        "text": "2026-10-28 03:30:00",
+        "updated": 16.0
+      },
+      {
+        "contentRef": "table-cell:9e6d127883907424",
+        "group": "table-body",
+        "previous": 11.5,
+        "text": "61508",
+        "updated": 16.0
+      },
+      {
+        "contentRef": "table-cell:64b44033c9bc8f10",
+        "group": "table-body",
+        "previous": 11.5,
+        "text": "auto",
+        "updated": 16.0
+      },
+      {
+        "contentRef": "table-cell:e3e46f60ebd4869c",
+        "group": "table-body",
+        "previous": 11.5,
+        "text": "2026-10-26 11:22:28",
+        "updated": 16.0
+      },
+      {
+        "contentRef": "table-cell:aa1dfda0b1e312cf",
+        "group": "table-body",
+        "previous": 11.5,
+        "text": "2",
+        "updated": 16.0
+      },
+      {
+        "contentRef": "table-cell:7a29f50a7708919a",
+        "previous": 11.5,
+        "referenceInk": [
+          369,
+          614,
+          5,
+          12
+        ],
+        "renderedInk": [
+          382,
+          618,
+          3,
+          8
+        ],
+        "text": "1",
+        "updated": 19.25
+      },
+      {
+        "contentRef": "table-cell:fe38c0725a56e087",
+        "previous": 11.5,
+        "referenceInk": [
+          1117,
+          614,
+          8,
+          12
+        ],
+        "renderedInk": [
+          1131,
+          618,
+          3,
+          8
+        ],
+        "text": "2",
+        "updated": 24.0
+      },
+      {
+        "contentRef": "table-cell:58302b5a19735314",
+        "previous": 11.5,
+        "referenceInk": [
+          368,
+          658,
+          8,
+          12
+        ],
+        "renderedInk": [
+          382,
+          662,
+          3,
+          8
+        ],
+        "text": "2",
+        "updated": 24.0
+      },
+      {
+        "contentRef": "table-cell:e612040d1a37d8e7",
+        "previous": 11.5,
+        "referenceInk": [
+          1117,
+          658,
+          8,
+          12
+        ],
+        "renderedInk": [
+          1131,
+          662,
+          3,
+          8
+        ],
+        "text": "2",
+        "updated": 24.0
+      },
+      {
+        "contentRef": "table-cell:50af7a76b205bb84",
+        "previous": 11.5,
+        "referenceInk": [
+          368,
+          703,
+          8,
+          12
+        ],
+        "renderedInk": [
+          382,
+          707,
+          3,
+          8
+        ],
+        "text": "3",
+        "updated": 24.0
+      },
+      {
+        "contentRef": "table-cell:1f2c4ded9058925b",
+        "previous": 11.5,
+        "referenceInk": [
+          1117,
+          703,
+          8,
+          12
+        ],
+        "renderedInk": [
+          1131,
+          707,
+          3,
+          8
+        ],
+        "text": "2",
+        "updated": 24.0
+      },
+      {
+        "contentRef": "table-cell:13ce272f603bc572",
+        "previous": 11.5,
+        "referenceInk": [
+          367,
+          747,
+          9,
+          12
+        ],
+        "renderedInk": [
+          381,
+          752,
+          4,
+          5
+        ],
+        "text": "4",
+        "updated": 24.0
+      },
+      {
+        "contentRef": "table-cell:46e1d5d547cbf446",
+        "previous": 11.5,
+        "referenceInk": [
+          1117,
+          747,
+          8,
+          12
+        ],
+        "renderedInk": [
+          1131,
+          751,
+          3,
+          8
+        ],
+        "text": "2",
+        "updated": 24.0
+      },
+      {
+        "contentRef": "table-cell:5e58729c355ef876",
+        "previous": 11.5,
+        "referenceInk": [
+          368,
+          791,
+          8,
+          12
+        ],
+        "renderedInk": [
+          382,
+          795,
+          3,
+          8
+        ],
+        "text": "5",
+        "updated": 24.0
+      },
+      {
+        "contentRef": "table-cell:aa1dfda0b1e312cf",
+        "previous": 11.5,
+        "referenceInk": [
+          1117,
+          791,
+          8,
+          12
+        ],
+        "renderedInk": [
+          1131,
+          795,
+          3,
+          8
+        ],
+        "text": "2",
+        "updated": 24.0
+      }
+    ],
+    "schema_version": "grounding-table-font-render-calibration/1.0",
+    "status": "applied"
+  },
+  "table_positions": {
+    "adjusted_count": 42,
+    "adjustments": [
+      {
+        "contentRef": "table-header:682c50329bf4d1e3",
+        "referenceInk": [
+          344,
+          568,
+          10,
+          11
+        ],
+        "renderedInk": [
+          343,
+          574,
+          10,
+          12
+        ],
+        "text": "#",
+        "x_delta": 1.0,
+        "y_delta": -6.0
+      },
+      {
+        "contentRef": "table-header:85314e304c4106a9",
+        "referenceInk": [
+          449,
+          566,
+          67,
+          16
+        ],
+        "renderedInk": [
+          449,
+          568,
+          67,
+          17
+        ],
+        "text": "执行时间",
+        "x_delta": 0.0,
+        "y_delta": -2.0
+      },
+      {
+        "contentRef": "table-header:148f93419bf897ac",
+        "referenceInk": [
+          614,
+          566,
+          67,
+          16
+        ],
+        "renderedInk": [
+          613,
+          568,
+          67,
+          17
+        ],
+        "text": "持续时长",
+        "x_delta": 1.0,
+        "y_delta": -2.0
+      },
+      {
+        "contentRef": "table-header:aafd93a150351232",
+        "referenceInk": [
+          762,
+          566,
+          51,
+          16
+        ],
+        "renderedInk": [
+          762,
+          568,
+          50,
+          17
+        ],
+        "text": "执行者",
+        "x_delta": 0.0,
+        "y_delta": -2.0
+      },
+      {
+        "contentRef": "table-header:357a6bb8f6fca4a0",
+        "referenceInk": [
+          918,
+          566,
+          67,
+          16
+        ],
+        "renderedInk": [
+          918,
+          569,
+          66,
+          16
+        ],
+        "text": "启动时间",
+        "x_delta": 0.0,
+        "y_delta": -3.0
+      },
+      {
+        "contentRef": "table-header:f6fc294dd9303ad9",
+        "referenceInk": [
+          1075,
+          566,
+          34,
+          16
+        ],
+        "renderedInk": [
+          1075,
+          568,
+          32,
+          17
+        ],
+        "text": "状态",
+        "x_delta": 0.0,
+        "y_delta": -2.0
+      },
+      {
+        "contentRef": "table-header:dca0225b71ab0424",
+        "referenceInk": [
+          1479,
+          566,
+          67,
+          16
+        ],
+        "renderedInk": [
+          1479,
+          568,
+          66,
+          17
+        ],
+        "text": "执行结果",
+        "x_delta": 0.0,
+        "y_delta": -2.0
+      },
+      {
+        "contentRef": "table-cell:7a29f50a7708919a",
+        "referenceInk": [
+          369,
+          614,
+          5,
+          12
+        ],
+        "renderedInk": [
+          378,
+          620,
+          5,
+          14
+        ],
+        "text": "1",
+        "x_delta": -9.0,
+        "y_delta": -6.0
+      },
+      {
+        "contentRef": "table-cell:117cc6e8a9dc6ec0",
+        "referenceInk": [
+          413,
+          614,
+          151,
+          12
+        ],
+        "renderedInk": [
+          407,
+          619,
+          150,
+          12
+        ],
+        "text": "2026-11-01 03:30:00",
+        "x_delta": 6.0,
+        "y_delta": -5.0
+      },
+      {
+        "contentRef": "table-cell:3ccd74a0dbeb3df5",
+        "referenceInk": [
+          660,
+          614,
+          45,
+          12
+        ],
+        "renderedInk": [
+          658,
+          613,
+          56,
+          18
+        ],
+        "text": "31649",
+        "x_delta": 2.0,
+        "y_delta": 1.0
+      },
+      {
+        "contentRef": "table-cell:f58a817c6075e89f",
+        "referenceInk": [
+          730,
+          614,
+          33,
+          12
+        ],
+        "renderedInk": [
+          731,
+          621,
+          32,
+          10
+        ],
+        "text": "auto",
+        "x_delta": -1.0,
+        "y_delta": -7.0
+      },
+      {
+        "contentRef": "table-cell:f03b581960249f19",
+        "referenceInk": [
+          882,
+          614,
+          151,
+          12
+        ],
+        "renderedInk": [
+          876,
+          619,
+          149,
+          12
+        ],
+        "text": "2026-10-31 11:16:00",
+        "x_delta": 6.0,
+        "y_delta": -5.0
+      },
+      {
+        "contentRef": "table-cell:fe38c0725a56e087",
+        "referenceInk": [
+          1117,
+          614,
+          8,
+          12
+        ],
+        "renderedInk": [
+          1124,
+          623,
+          10,
+          16
+        ],
+        "text": "2",
+        "x_delta": -7.0,
+        "y_delta": -9.0
+      },
+      {
+        "contentRef": "table-cell:df27e443958d5e5f",
+        "referenceInk": [
+          1151,
+          614,
+          308,
+          16
+        ],
+        "renderedInk": [
+          1151,
+          619,
+          298,
+          15
+        ],
+        "text": "{\"error\":\"SUCCESS\",\"message\":\"SUCCESS\"}",
+        "x_delta": 0.0,
+        "y_delta": -5.0
+      },
+      {
+        "contentRef": "table-cell:58302b5a19735314",
+        "referenceInk": [
+          368,
+          658,
+          8,
+          12
+        ],
+        "renderedInk": [
+          375,
+          667,
+          10,
+          16
+        ],
+        "text": "2",
+        "x_delta": -7.0,
+        "y_delta": -9.0
+      },
+      {
+        "contentRef": "table-cell:8b2e628f84f7c288",
+        "referenceInk": [
+          413,
+          658,
+          151,
+          12
+        ],
+        "renderedInk": [
+          407,
+          654,
+          150,
+          21
+        ],
+        "text": "2026-10-31 03:30:00",
+        "x_delta": 6.0,
+        "y_delta": 4.0
+      },
+      {
+        "contentRef": "table-cell:1a8409f6626fbc42",
+        "referenceInk": [
+          660,
+          658,
+          45,
+          12
+        ],
+        "renderedInk": [
+          658,
+          657,
+          56,
+          18
+        ],
+        "text": "31374",
+        "x_delta": 2.0,
+        "y_delta": 1.0
+      },
+      {
+        "contentRef": "table-cell:0170cf9927968e67",
+        "referenceInk": [
+          730,
+          658,
+          33,
+          12
+        ],
+        "renderedInk": [
+          731,
+          665,
+          32,
+          10
+        ],
+        "text": "auto",
+        "x_delta": -1.0,
+        "y_delta": -7.0
+      },
+      {
+        "contentRef": "table-cell:5d9e068b6b1d7b7c",
+        "referenceInk": [
+          882,
+          658,
+          150,
+          12
+        ],
+        "renderedInk": [
+          876,
+          663,
+          149,
+          12
+        ],
+        "text": "2026-10-30 19:10:43",
+        "x_delta": 6.0,
+        "y_delta": -5.0
+      },
+      {
+        "contentRef": "table-cell:e612040d1a37d8e7",
+        "referenceInk": [
+          1117,
+          658,
+          8,
+          12
+        ],
+        "renderedInk": [
+          1124,
+          667,
+          10,
+          16
+        ],
+        "text": "2",
+        "x_delta": -7.0,
+        "y_delta": -9.0
+      },
+      {
+        "contentRef": "table-cell:3390eeac73271f46",
+        "referenceInk": [
+          1151,
+          658,
+          308,
+          16
+        ],
+        "renderedInk": [
+          1151,
+          663,
+          298,
+          15
+        ],
+        "text": "{\"error\":\"SUCCESS\",\"message\":\"SUCCESS\"}",
+        "x_delta": 0.0,
+        "y_delta": -5.0
+      },
+      {
+        "contentRef": "table-cell:50af7a76b205bb84",
+        "referenceInk": [
+          368,
+          703,
+          8,
+          12
+        ],
+        "renderedInk": [
+          375,
+          712,
+          10,
+          15
+        ],
+        "text": "3",
+        "x_delta": -7.0,
+        "y_delta": -9.0
+      },
+      {
+        "contentRef": "table-cell:10dbabb8c6d4666c",
+        "referenceInk": [
+          413,
+          703,
+          151,
+          12
+        ],
+        "renderedInk": [
+          407,
+          708,
+          150,
+          12
+        ],
+        "text": "2026-10-30 03:30:00",
+        "x_delta": 6.0,
+        "y_delta": -5.0
+      },
+      {
+        "contentRef": "table-cell:5a4a95cfacbbc1ad",
+        "referenceInk": [
+          660,
+          703,
+          45,
+          12
+        ],
+        "renderedInk": [
+          672,
+          708,
+          42,
+          12
+        ],
+        "text": "94608",
+        "x_delta": -12.0,
+        "y_delta": -5.0
+      },
+      {
+        "contentRef": "table-cell:3757205038168f14",
+        "referenceInk": [
+          730,
+          703,
+          33,
+          12
+        ],
+        "renderedInk": [
+          731,
+          710,
+          32,
+          10
+        ],
+        "text": "auto",
+        "x_delta": -1.0,
+        "y_delta": -7.0
+      },
+      {
+        "contentRef": "table-cell:7f6035e9f26320bd",
+        "referenceInk": [
+          882,
+          703,
+          151,
+          12
+        ],
+        "renderedInk": [
+          876,
+          708,
+          149,
+          12
+        ],
+        "text": "2026-10-26 11:22:28",
+        "x_delta": 6.0,
+        "y_delta": -5.0
+      },
+      {
+        "contentRef": "table-cell:1f2c4ded9058925b",
+        "referenceInk": [
+          1117,
+          703,
+          8,
+          12
+        ],
+        "renderedInk": [
+          1125,
+          712,
+          9,
+          15
+        ],
+        "text": "2",
+        "x_delta": -8.0,
+        "y_delta": -9.0
+      },
+      {
+        "contentRef": "table-cell:27b9a7ffd8a03df0",
+        "referenceInk": [
+          1151,
+          703,
+          308,
+          16
+        ],
+        "renderedInk": [
+          1151,
+          708,
+          298,
+          15
+        ],
+        "text": "{\"error\":\"SUCCESS\",\"message\":\"SUCCESS\"}",
+        "x_delta": 0.0,
+        "y_delta": -5.0
+      },
+      {
+        "contentRef": "table-cell:13ce272f603bc572",
+        "referenceInk": [
+          367,
+          747,
+          9,
+          12
+        ],
+        "renderedInk": [
+          374,
+          756,
+          11,
+          15
+        ],
+        "text": "4",
+        "x_delta": -7.0,
+        "y_delta": -9.0
+      },
+      {
+        "contentRef": "table-cell:89f1d2f324dd1015",
+        "referenceInk": [
+          413,
+          747,
+          151,
+          12
+        ],
+        "renderedInk": [
+          407,
+          752,
+          150,
+          12
+        ],
+        "text": "2026-10-29 03:30:00",
+        "x_delta": 6.0,
+        "y_delta": -5.0
+      },
+      {
+        "contentRef": "table-cell:7202381b58f263ac",
+        "referenceInk": [
+          660,
+          747,
+          45,
+          12
+        ],
+        "renderedInk": [
+          672,
+          752,
+          42,
+          12
+        ],
+        "text": "30939",
+        "x_delta": -12.0,
+        "y_delta": -5.0
+      },
+      {
+        "contentRef": "table-cell:b62f5807ef8d7e92",
+        "referenceInk": [
+          730,
+          747,
+          33,
+          12
+        ],
+        "renderedInk": [
+          731,
+          754,
+          32,
+          10
+        ],
+        "text": "auto",
+        "x_delta": -1.0,
+        "y_delta": -7.0
+      },
+      {
+        "contentRef": "table-cell:35a34f39735cb31b",
+        "referenceInk": [
+          882,
+          747,
+          151,
+          12
+        ],
+        "renderedInk": [
+          876,
+          752,
+          149,
+          12
+        ],
+        "text": "2026-10-26 11:22:28",
+        "x_delta": 6.0,
+        "y_delta": -5.0
+      },
+      {
+        "contentRef": "table-cell:46e1d5d547cbf446",
+        "referenceInk": [
+          1117,
+          747,
+          8,
+          12
+        ],
+        "renderedInk": [
+          1125,
+          756,
+          9,
+          15
+        ],
+        "text": "2",
+        "x_delta": -8.0,
+        "y_delta": -9.0
+      },
+      {
+        "contentRef": "table-cell:894189d67e572959",
+        "referenceInk": [
+          1151,
+          747,
+          308,
+          16
+        ],
+        "renderedInk": [
+          1151,
+          752,
+          298,
+          15
+        ],
+        "text": "{\"error\":\"SUCCESS\",\"message\":\"SUCCESS\"}",
+        "x_delta": 0.0,
+        "y_delta": -5.0
+      },
+      {
+        "contentRef": "table-cell:5e58729c355ef876",
+        "referenceInk": [
+          368,
+          791,
+          8,
+          12
+        ],
+        "renderedInk": [
+          375,
+          800,
+          10,
+          16
+        ],
+        "text": "5",
+        "x_delta": -7.0,
+        "y_delta": -9.0
+      },
+      {
+        "contentRef": "table-cell:65cfd05b3e2ce849",
+        "referenceInk": [
+          413,
+          791,
+          151,
+          12
+        ],
+        "renderedInk": [
+          407,
+          796,
+          150,
+          12
+        ],
+        "text": "2026-10-28 03:30:00",
+        "x_delta": 6.0,
+        "y_delta": -5.0
+      },
+      {
+        "contentRef": "table-cell:9e6d127883907424",
+        "referenceInk": [
+          660,
+          791,
+          45,
+          12
+        ],
+        "renderedInk": [
+          672,
+          796,
+          42,
+          12
+        ],
+        "text": "61508",
+        "x_delta": -12.0,
+        "y_delta": -5.0
+      },
+      {
+        "contentRef": "table-cell:64b44033c9bc8f10",
+        "referenceInk": [
+          730,
+          791,
+          33,
+          12
+        ],
+        "renderedInk": [
+          731,
+          798,
+          32,
+          10
+        ],
+        "text": "auto",
+        "x_delta": -1.0,
+        "y_delta": -7.0
+      },
+      {
+        "contentRef": "table-cell:e3e46f60ebd4869c",
+        "referenceInk": [
+          882,
+          791,
+          151,
+          12
+        ],
+        "renderedInk": [
+          876,
+          796,
+          149,
+          12
+        ],
+        "text": "2026-10-26 11:22:28",
+        "x_delta": 6.0,
+        "y_delta": -5.0
+      },
+      {
+        "contentRef": "table-cell:aa1dfda0b1e312cf",
+        "referenceInk": [
+          1117,
+          791,
+          8,
+          12
+        ],
+        "renderedInk": [
+          1124,
+          800,
+          10,
+          16
+        ],
+        "text": "2",
+        "x_delta": -7.0,
+        "y_delta": -9.0
+      },
+      {
+        "contentRef": "table-cell:bae750eab17cea68",
+        "referenceInk": [
+          1151,
+          791,
+          308,
+          16
+        ],
+        "renderedInk": [
+          1151,
+          796,
+          298,
+          15
+        ],
+        "text": "{\"error\":\"SUCCESS\",\"message\":\"SUCCESS\"}",
+        "x_delta": 0.0,
+        "y_delta": -5.0
+      }
+    ],
+    "schema_version": "grounding-table-render-position-calibration/1.0",
+    "status": "applied"
+  },
+  "toolbar_font_weight": {
+    "adjusted_count": 0,
+    "adjustments": [],
+    "schema_version": "grounding-toolbar-font-weight/1.0",
+    "status": "not-needed"
+  },
+  "toolbar_letter_spacing": {
+    "adjusted_count": 0,
+    "adjustments": [],
+    "schema_version": "grounding-toolbar-letter-spacing/1.0",
+    "status": "not-needed"
+  },
+  "toolbar_letter_spacing_2": {
+    "adjusted_count": 0,
+    "adjustments": [],
+    "schema_version": "grounding-toolbar-letter-spacing/1.0",
+    "status": "not-needed"
+  }
+}

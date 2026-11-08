@@ -1,0 +1,3413 @@
+{
+  "artifact_sha256": {
+    "export.png": "b0ab41ad49dcc21b1df03089acd0590ef97bd88fb704c3441f476b0e90a64290",
+    "reference.png": "c01805877d68c86b2465d675c323f51e68a1ecd8226583dbdb129d5017eced55"
+  },
+  "artifacts": {
+    "acceptance": "acceptance.json",
+    "content_inventory": "pipeline/10_content_inventory.json",
+    "design": "figma_design.json",
+    "evidence_bundle": "pipeline/09_evidence_bundle.json",
+    "export": "figma_form_calibrated_2\\export.png",
+    "fidelity_report": "pipeline/13_fidelity_report.json",
+    "figma_run": "figma_form_calibrated_2\\summary.json",
+    "font_calibration": "font_calibration.json",
+    "geometry_manifest": "pipeline/10_geometry_manifest.json",
+    "image_ir": "pipeline/image_ir.json",
+    "image_reference": "pipeline/image_reference.json",
+    "image_region_recovery": "pipeline/image_region_recovery.json",
+    "native_text_quality": "native_text_quality.json",
+    "ocr_supplement": "pipeline/ocr_supplement.json",
+    "readback": "figma_form_calibrated_2\\readback.json",
+    "region_quality": "region_quality.json",
+    "repair_history": "pipeline/14_repair_history.json",
+    "scene_plan": "pipeline/11_scene_plan.json"
+  },
+  "asset_claims": {
+    "display_replacement_claimed": true,
+    "generated_asset": false,
+    "original_asset": false,
+    "reference_only_display": true
+  },
+  "blockers": [
+    "native-text:owner:text:cf174da815d4a6a2",
+    "native-text:owner:text:7eeab1eb9faa8a22",
+    "native-text:owner:text:881c5f84f0b27403",
+    "native-text:owner:text:619b0d3828b27f84",
+    "native-text:owner:text:cbb8d0c748357510",
+    "native-text:owner:text:3d682d3ab19a21eb",
+    "native-text:owner:text:51baf6db69eb6a80",
+    "native-text:owner:text:e66dcb6153eaf40b",
+    "native-text:owner:control:0ce6c79fbecd8647",
+    "native-text:owner:text:2a8bd1312b5e7262",
+    "native-text:owner:text:f94705d0aa853665",
+    "native-text:owner:control:7b8ba83544927ceb",
+    "native-text:owner:control:2e179c6dc2747840",
+    "native-text:owner:control:c43d6b367002ee26",
+    "native-text:owner:control:ca6d415e41f0a023",
+    "native-text:owner:text:ecea07cf522c1104",
+    "native-text:owner:table-header:148f93419bf897ac",
+    "native-text:owner:table-header:357a6bb8f6fca4a0",
+    "native-text:owner:table-cell:df27e443958d5e5f",
+    "native-text:owner:table-cell:3390eeac73271f46",
+    "native-text:owner:table-cell:27b9a7ffd8a03df0",
+    "native-text:owner:table-cell:894189d67e572959",
+    "native-text:owner:table-cell:bae750eab17cea68"
+  ],
+  "critical_text": {
+    "matched_count": 24,
+    "required_count": 24,
+    "rows": [
+      {
+        "present": true,
+        "text": "自动备份"
+      },
+      {
+        "present": true,
+        "text": "名称"
+      },
+      {
+        "present": true,
+        "text": "显示名称"
+      },
+      {
+        "present": true,
+        "text": "执行时间"
+      },
+      {
+        "present": true,
+        "text": "禁用"
+      },
+      {
+        "present": true,
+        "text": "执行者"
+      },
+      {
+        "present": true,
+        "text": "下次执行时间"
+      },
+      {
+        "present": true,
+        "text": "托管"
+      },
+      {
+        "present": true,
+        "text": "执行成功"
+      },
+      {
+        "present": true,
+        "text": "SUCCESS"
+      },
+      {
+        "present": true,
+        "text": "执行"
+      },
+      {
+        "present": true,
+        "text": "以auto用户身份执行"
+      },
+      {
+        "present": true,
+        "text": "手动执行"
+      },
+      {
+        "present": true,
+        "text": "备注"
+      },
+      {
+        "present": true,
+        "text": "任务执行历史"
+      },
+      {
+        "present": true,
+        "text": "暂停自动刷新"
+      },
+      {
+        "present": true,
+        "text": "复制"
+      },
+      {
+        "present": true,
+        "text": "导出"
+      },
+      {
+        "present": true,
+        "text": "刷新"
+      },
+      {
+        "present": true,
+        "text": "表内搜索"
+      },
+      {
+        "present": true,
+        "text": "持续时长"
+      },
+      {
+        "present": true,
+        "text": "启动时间"
+      },
+      {
+        "present": true,
+        "text": "状态"
+      },
+      {
+        "present": true,
+        "text": "执行结果"
+      }
+    ],
+    "status": "pass"
+  },
+  "dimensions": {
+    "asset": {
+      "source": "reference-only-display-probe",
+      "status": "pass"
+    },
+    "chrome_visual": {
+      "source": "text-masked-chrome-metrics",
+      "status": "pass"
+    },
+    "edit": {
+      "source": "native-text-probe",
+      "status": "pass"
+    },
+    "fidelity": {
+      "source": "content-geometry-native-audit",
+      "status": "pass"
+    },
+    "legacy_raw_region_visual": {
+      "mode": "informational",
+      "source": "same-size-raw-region-metrics",
+      "status": "fail"
+    },
+    "native_text_visual": {
+      "source": "critical-native-text-ink-metrics",
+      "status": "fail"
+    },
+    "repair_budget": {
+      "source": "bounded-repair-history",
+      "status": "pass"
+    },
+    "structure": {
+      "source": "text-and-asset-nodes",
+      "status": "pass"
+    },
+    "text": {
+      "source": "critical-text",
+      "status": "pass"
+    },
+    "visual": {
+      "source": "within30-product-metric",
+      "status": "pass",
+      "within30_pct": 96.55310482243745
+    }
+  },
+  "evidence_hash_inputs": {
+    "design_sha256": "443b7a49e26ccf41dfe7aeceff11d6fec5d03df5079be1cba61770cc5fdf2b00",
+    "image_ir_sha256": "43fffdbcf71b4a4b217f67b109cc088fd27db02e547a7a8422857c8ce65e1da7",
+    "readback_sha256": "cc063b1a0db7ac9a73618666693a1be27360fc851db840a7910b95267b6f1e0a"
+  },
+  "export": {
+    "byte_length": 118327,
+    "exists": true,
+    "path": "D:\\LLM-Data\\Figma_auto_agent\\output\\_grounding_manual_20261107_high_v2\\figma_form_calibrated_2\\export.png",
+    "sha256": "b0ab41ad49dcc21b1df03089acd0590ef97bd88fb704c3441f476b0e90a64290",
+    "status": "pass"
+  },
+  "fidelity": {
+    "blockers": [],
+    "content": {
+      "missing_content_refs": [],
+      "unknown_count": 0
+    },
+    "counts": {
+      "design_control_nodes": 15,
+      "design_image_nodes": 34,
+      "design_text_nodes": 64,
+      "geometry_items": 237,
+      "inventory_items": 142,
+      "owned_items": 142,
+      "scene_nodes": 117,
+      "suppressed_items": 31,
+      "table_rows": 5,
+      "unknown_items": 0,
+      "visible_underlay_count": 0
+    },
+    "geometry": {
+      "coordinate_basis": "source-pixel-top-left",
+      "image_size": [
+        1920,
+        826
+      ]
+    },
+    "mode": "high",
+    "preflight": {
+      "blockers": [],
+      "counts": {
+        "geometry_items": 237,
+        "inventory_items": 142,
+        "owned_items": 142,
+        "scene_nodes": 117,
+        "suppressed_items": 31,
+        "table_rows": 5,
+        "unknown_items": 0
+      },
+      "missing_content_refs": [],
+      "status": "pass"
+    },
+    "repair": {
+      "extra_calls": 0,
+      "rounds": 0,
+      "status": "not-needed"
+    },
+    "schema_version": "grounding-fidelity-report/1.0",
+    "status": "pass",
+    "structure": {
+      "native_text_actual": 64,
+      "native_text_expected": 64,
+      "scene_plan_schema": "grounding-scene-plan/1.0",
+      "visible_underlay_elements": []
+    }
+  },
+  "figma_runtime": "observed",
+  "frame_id": "1:2187",
+  "limitations": [
+    "Original asset identity is unavailable from a flat screenshot.",
+    "Original DPR, viewport and font identity are unknown.",
+    "Flow is a fixed-coordinate candidate, not verified adaptive layout.",
+    "Grounding text remains a candidate until checked against supplied truth.",
+    "Hidden regions cannot be recovered from one screenshot."
+  ],
+  "native_text_quality": {
+    "acceptance_effect": "native-text-and-chrome-gate",
+    "badPixelThreshold": 30,
+    "chromeRegions": [
+      {
+        "bbox": [
+          0,
+          0,
+          1920,
+          826
+        ],
+        "chromeBadPixelCount": 13360,
+        "chromeBadPixelRatio": 0.009124997438717036,
+        "chromePixelCount": 1464110,
+        "id": "page",
+        "role": "page",
+        "status": "pass"
+      },
+      {
+        "bbox": [
+          0,
+          0,
+          276,
+          826
+        ],
+        "chromeBadPixelCount": 1031,
+        "chromeBadPixelRatio": 0.0046056393395754415,
+        "chromePixelCount": 223856,
+        "id": "sidebar",
+        "role": "sidebar",
+        "status": "pass"
+      },
+      {
+        "bbox": [
+          276,
+          0,
+          1644,
+          64
+        ],
+        "chromeBadPixelCount": 2719,
+        "chromeBadPixelRatio": 0.025842077250608272,
+        "chromePixelCount": 105216,
+        "id": "header",
+        "role": "header",
+        "status": "pass"
+      },
+      {
+        "bbox": [
+          276,
+          64,
+          1644,
+          762
+        ],
+        "chromeBadPixelCount": 9610,
+        "chromeBadPixelRatio": 0.008466676886588819,
+        "chromePixelCount": 1135038,
+        "id": "main-content",
+        "role": "main-content",
+        "status": "pass"
+      },
+      {
+        "bbox": [
+          307,
+          96,
+          1613,
+          512
+        ],
+        "chromeBadPixelCount": 1066,
+        "chromeBadPixelRatio": 0.0013791889954691183,
+        "chromePixelCount": 772918,
+        "id": "form-section",
+        "role": "form-section",
+        "status": "pass"
+      },
+      {
+        "bbox": [
+          307,
+          544,
+          1613,
+          232
+        ],
+        "chromeBadPixelCount": 957,
+        "chromeBadPixelRatio": 0.0030412426829035766,
+        "chromePixelCount": 314674,
+        "id": "table-section",
+        "role": "table-section",
+        "status": "pass"
+      },
+      {
+        "bbox": [
+          308,
+          549,
+          1579,
+          270
+        ],
+        "chromeBadPixelCount": 1024,
+        "chromeBadPixelRatio": 0.0028940615214171858,
+        "chromePixelCount": 353828,
+        "id": "table",
+        "role": "table",
+        "status": "pass"
+      },
+      {
+        "bbox": [
+          308,
+          549,
+          1579,
+          49
+        ],
+        "chromeBadPixelCount": 0,
+        "chromeBadPixelRatio": 0.0,
+        "chromePixelCount": 69621,
+        "id": "table-header",
+        "role": "table-header",
+        "status": "pass"
+      }
+    ],
+    "gate": {
+      "baseline": {
+        "evidenceCount": 0,
+        "required": false,
+        "status": "not-evaluated"
+      },
+      "blockers": [
+        "native-text:owner:text:cf174da815d4a6a2",
+        "native-text:owner:text:7eeab1eb9faa8a22",
+        "native-text:owner:text:881c5f84f0b27403",
+        "native-text:owner:text:619b0d3828b27f84",
+        "native-text:owner:text:cbb8d0c748357510",
+        "native-text:owner:text:3d682d3ab19a21eb",
+        "native-text:owner:text:51baf6db69eb6a80",
+        "native-text:owner:text:e66dcb6153eaf40b",
+        "native-text:owner:control:0ce6c79fbecd8647",
+        "native-text:owner:text:2a8bd1312b5e7262",
+        "native-text:owner:text:f94705d0aa853665",
+        "native-text:owner:control:7b8ba83544927ceb",
+        "native-text:owner:control:2e179c6dc2747840",
+        "native-text:owner:control:c43d6b367002ee26",
+        "native-text:owner:control:ca6d415e41f0a023",
+        "native-text:owner:text:ecea07cf522c1104",
+        "native-text:owner:table-header:148f93419bf897ac",
+        "native-text:owner:table-header:357a6bb8f6fca4a0",
+        "native-text:owner:table-cell:df27e443958d5e5f",
+        "native-text:owner:table-cell:3390eeac73271f46",
+        "native-text:owner:table-cell:27b9a7ffd8a03df0",
+        "native-text:owner:table-cell:894189d67e572959",
+        "native-text:owner:table-cell:bae750eab17cea68"
+      ],
+      "chrome": {
+        "blockers": [],
+        "regionCount": 8,
+        "status": "pass"
+      },
+      "criticalText": {
+        "matchedCount": 24,
+        "missing": [],
+        "requiredCount": 24
+      },
+      "nativeText": {
+        "blockers": [
+          "native-text:owner:text:cf174da815d4a6a2",
+          "native-text:owner:text:7eeab1eb9faa8a22",
+          "native-text:owner:text:881c5f84f0b27403",
+          "native-text:owner:text:619b0d3828b27f84",
+          "native-text:owner:text:cbb8d0c748357510",
+          "native-text:owner:text:3d682d3ab19a21eb",
+          "native-text:owner:text:51baf6db69eb6a80",
+          "native-text:owner:text:e66dcb6153eaf40b",
+          "native-text:owner:control:0ce6c79fbecd8647",
+          "native-text:owner:text:2a8bd1312b5e7262",
+          "native-text:owner:text:f94705d0aa853665",
+          "native-text:owner:control:7b8ba83544927ceb",
+          "native-text:owner:control:2e179c6dc2747840",
+          "native-text:owner:control:c43d6b367002ee26",
+          "native-text:owner:control:ca6d415e41f0a023",
+          "native-text:owner:text:ecea07cf522c1104",
+          "native-text:owner:table-header:148f93419bf897ac",
+          "native-text:owner:table-header:357a6bb8f6fca4a0",
+          "native-text:owner:table-cell:df27e443958d5e5f",
+          "native-text:owner:table-cell:3390eeac73271f46",
+          "native-text:owner:table-cell:27b9a7ffd8a03df0",
+          "native-text:owner:table-cell:894189d67e572959",
+          "native-text:owner:table-cell:bae750eab17cea68"
+        ],
+        "ownerCount": 32,
+        "ownerPassCount": 9,
+        "ownerPassRatio": 0.28125,
+        "status": "fail"
+      },
+      "schema_version": "grounding-native-text-gate/2.0",
+      "scope": "critical-text-owners",
+      "status": "fail",
+      "thresholds": {
+        "chromeBadPixelRatioMax": 0.05,
+        "edgeF1Min": 0.95,
+        "inkCoverageRatioMax": 1.1,
+        "inkCoverageRatioMin": 0.9,
+        "positionPxMax": 1.0
+      }
+    },
+    "haloPx": 2,
+    "limitations": [
+      "Baseline evidence is unavailable for every owner in this diagnostic.",
+      "Native text and chrome use independent quality gates in policy 2.0.",
+      "Reference ink masks are screenshot-derived candidates, not original glyph outlines."
+    ],
+    "owners": [
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": true,
+          "edgeF1": false,
+          "position": true,
+          "size": true
+        },
+        "contentRef": "control:0dd605083247b446",
+        "deltaX": -1,
+        "deltaY": 0,
+        "edgeF1": 0.8004545102393927,
+        "geometryStatus": "fail",
+        "heightDelta": 0,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 0.925414364640884,
+        "nativeText": true,
+        "referenceInkBBox": [
+          442,
+          148,
+          94,
+          17
+        ],
+        "renderedInkBBox": [
+          441,
+          148,
+          94,
+          17
+        ],
+        "status": "fail",
+        "text": "auto_backup",
+        "type": "input",
+        "widthDelta": 0,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": true,
+          "edgeF1": true,
+          "position": true,
+          "size": true
+        },
+        "contentRef": "control:e30ee1993aa00dde",
+        "deltaX": 0,
+        "deltaY": -1,
+        "edgeF1": 0.9814032074274904,
+        "geometryStatus": "pass",
+        "heightDelta": 1,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 1.0982800982800982,
+        "nativeText": true,
+        "referenceInkBBox": [
+          888,
+          147,
+          66,
+          16
+        ],
+        "renderedInkBBox": [
+          888,
+          146,
+          66,
+          17
+        ],
+        "status": "pass",
+        "text": "自动备份",
+        "type": "input",
+        "widthDelta": 0,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": true,
+          "edgeF1": false,
+          "position": false,
+          "size": false
+        },
+        "contentRef": "control:ccf320547f641275",
+        "deltaX": -2,
+        "deltaY": 0,
+        "edgeF1": 0.7873015873015874,
+        "geometryStatus": "fail",
+        "heightDelta": 1,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 1.0945945945945945,
+        "nativeText": true,
+        "referenceInkBBox": [
+          1464,
+          149,
+          80,
+          12
+        ],
+        "renderedInkBBox": [
+          1462,
+          149,
+          83,
+          13
+        ],
+        "status": "fail",
+        "text": "0 30 3 * * ?",
+        "type": "input",
+        "widthDelta": 3,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": false,
+          "edgeF1": false,
+          "position": true,
+          "size": false
+        },
+        "contentRef": "text:cf174da815d4a6a2",
+        "deltaX": 0,
+        "deltaY": 0,
+        "edgeF1": 0.8696469224719566,
+        "geometryStatus": "fail",
+        "heightDelta": 1,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 1.2757575757575759,
+        "nativeText": true,
+        "referenceInkBBox": [
+          1371,
+          147,
+          67,
+          16
+        ],
+        "renderedInkBBox": [
+          1371,
+          147,
+          70,
+          17
+        ],
+        "status": "fail",
+        "text": "执行时间",
+        "type": "text",
+        "widthDelta": 3,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": false,
+          "edgeF1": false,
+          "position": false,
+          "size": true
+        },
+        "contentRef": "text:7eeab1eb9faa8a22",
+        "deltaX": -2,
+        "deltaY": -1,
+        "edgeF1": 0.7497742550416373,
+        "geometryStatus": "fail",
+        "heightDelta": 1,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 1.1105263157894736,
+        "nativeText": true,
+        "referenceInkBBox": [
+          383,
+          147,
+          34,
+          16
+        ],
+        "renderedInkBBox": [
+          381,
+          146,
+          33,
+          17
+        ],
+        "status": "fail",
+        "text": "名称",
+        "type": "text",
+        "widthDelta": -1,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": false,
+          "edgeF1": false,
+          "position": true,
+          "size": true
+        },
+        "contentRef": "text:881c5f84f0b27403",
+        "deltaX": -1,
+        "deltaY": -1,
+        "edgeF1": 0.8237129485179407,
+        "geometryStatus": "fail",
+        "heightDelta": 1,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 1.185595567867036,
+        "nativeText": true,
+        "referenceInkBBox": [
+          794,
+          147,
+          67,
+          16
+        ],
+        "renderedInkBBox": [
+          793,
+          146,
+          67,
+          17
+        ],
+        "status": "fail",
+        "text": "显示名称",
+        "type": "text",
+        "widthDelta": 0,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": false,
+          "edgeF1": false,
+          "position": false,
+          "size": false
+        },
+        "contentRef": "text:7dbf8cf1e74693ed",
+        "deltaX": -1,
+        "deltaY": -2,
+        "edgeF1": 0.6662831634414045,
+        "geometryStatus": "fail",
+        "heightDelta": -2,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 0.6371308016877637,
+        "nativeText": true,
+        "referenceInkBBox": [
+          52,
+          178,
+          34,
+          16
+        ],
+        "renderedInkBBox": [
+          51,
+          176,
+          29,
+          14
+        ],
+        "status": "fail",
+        "text": "首页",
+        "type": "text",
+        "widthDelta": -5,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": false,
+          "edgeF1": false,
+          "position": false,
+          "size": false
+        },
+        "contentRef": "control:9f07dc49b3a98cab",
+        "deltaX": 0,
+        "deltaY": -3,
+        "edgeF1": 0.5975022126069427,
+        "geometryStatus": "fail",
+        "heightDelta": 1,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 0.35664335664335667,
+        "nativeText": true,
+        "referenceInkBBox": [
+          886,
+          204,
+          33,
+          9
+        ],
+        "renderedInkBBox": [
+          886,
+          201,
+          22,
+          10
+        ],
+        "status": "fail",
+        "text": "auto",
+        "type": "input",
+        "widthDelta": -11,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": true,
+          "edgeF1": false,
+          "position": false,
+          "size": true
+        },
+        "contentRef": "control:5632794c7fcb404d",
+        "deltaX": -2,
+        "deltaY": 0,
+        "edgeF1": 0.8310612404877307,
+        "geometryStatus": "fail",
+        "heightDelta": 0,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 1.0113851992409868,
+        "nativeText": true,
+        "referenceInkBBox": [
+          1464,
+          201,
+          142,
+          12
+        ],
+        "renderedInkBBox": [
+          1462,
+          201,
+          145,
+          12
+        ],
+        "status": "fail",
+        "text": "2026-11-02 3:30:00",
+        "type": "input",
+        "widthDelta": 3,
+        "widthTolerance": 3
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": true,
+          "edgeF1": false,
+          "position": false,
+          "size": true
+        },
+        "contentRef": "text:619b0d3828b27f84",
+        "deltaX": -2,
+        "deltaY": 0,
+        "edgeF1": 0.8189216683621567,
+        "geometryStatus": "fail",
+        "heightDelta": 1,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 1.0149253731343284,
+        "nativeText": true,
+        "referenceInkBBox": [
+          383,
+          199,
+          33,
+          16
+        ],
+        "renderedInkBBox": [
+          381,
+          199,
+          33,
+          17
+        ],
+        "status": "fail",
+        "text": "禁用",
+        "type": "text",
+        "widthDelta": 0,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": false,
+          "edgeF1": false,
+          "position": true,
+          "size": true
+        },
+        "contentRef": "text:cbb8d0c748357510",
+        "deltaX": 0,
+        "deltaY": -1,
+        "edgeF1": 0.9340599313286858,
+        "geometryStatus": "fail",
+        "heightDelta": 1,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 1.2834645669291338,
+        "nativeText": true,
+        "referenceInkBBox": [
+          811,
+          199,
+          50,
+          16
+        ],
+        "renderedInkBBox": [
+          811,
+          198,
+          50,
+          17
+        ],
+        "status": "fail",
+        "text": "执行者",
+        "type": "text",
+        "widthDelta": 0,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": false,
+          "edgeF1": false,
+          "position": true,
+          "size": false
+        },
+        "contentRef": "text:3d682d3ab19a21eb",
+        "deltaX": -1,
+        "deltaY": -1,
+        "edgeF1": 0.8477507526871744,
+        "geometryStatus": "fail",
+        "heightDelta": 1,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 1.2934537246049662,
+        "nativeText": true,
+        "referenceInkBBox": [
+          1338,
+          199,
+          98,
+          16
+        ],
+        "renderedInkBBox": [
+          1337,
+          198,
+          103,
+          17
+        ],
+        "status": "fail",
+        "text": "下次执行时间",
+        "type": "text",
+        "widthDelta": 5,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": false,
+          "edgeF1": false,
+          "position": false,
+          "size": false
+        },
+        "contentRef": "text:b1b1ab1af2da4ddd",
+        "deltaX": -4,
+        "deltaY": -2,
+        "edgeF1": 0.6758649839985508,
+        "geometryStatus": "fail",
+        "heightDelta": -2,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 0.6808080808080809,
+        "nativeText": true,
+        "referenceInkBBox": [
+          53,
+          228,
+          67,
+          16
+        ],
+        "renderedInkBBox": [
+          49,
+          226,
+          59,
+          14
+        ],
+        "status": "fail",
+        "text": "系统管理",
+        "type": "text",
+        "widthDelta": -8,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": true,
+          "edgeF1": true,
+          "position": true,
+          "size": true
+        },
+        "contentRef": "control:7fff67ad309dc449",
+        "deltaX": -1,
+        "deltaY": 0,
+        "edgeF1": 0.9675976775560076,
+        "geometryStatus": "pass",
+        "heightDelta": 0,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 1.0019047619047619,
+        "nativeText": true,
+        "referenceInkBBox": [
+          887,
+          251,
+          142,
+          12
+        ],
+        "renderedInkBBox": [
+          886,
+          251,
+          145,
+          12
+        ],
+        "status": "pass",
+        "text": "2026-11-01 3:30:00",
+        "type": "input",
+        "widthDelta": 3,
+        "widthTolerance": 3
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": true,
+          "edgeF1": false,
+          "position": true,
+          "size": true
+        },
+        "contentRef": "text:51baf6db69eb6a80",
+        "deltaX": -1,
+        "deltaY": 0,
+        "edgeF1": 0.933345524366828,
+        "geometryStatus": "fail",
+        "heightDelta": 1,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 0.9841269841269841,
+        "nativeText": true,
+        "referenceInkBBox": [
+          383,
+          249,
+          34,
+          16
+        ],
+        "renderedInkBBox": [
+          382,
+          249,
+          33,
+          17
+        ],
+        "status": "fail",
+        "text": "托管",
+        "type": "text",
+        "widthDelta": -1,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": true,
+          "edgeF1": true,
+          "position": true,
+          "size": true
+        },
+        "contentRef": "text:78022a6bf423a671",
+        "deltaX": -1,
+        "deltaY": 0,
+        "edgeF1": 0.9762100082034455,
+        "geometryStatus": "pass",
+        "heightDelta": 0,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 0.9784615384615385,
+        "nativeText": true,
+        "referenceInkBBox": [
+          1241,
+          246,
+          67,
+          12
+        ],
+        "renderedInkBBox": [
+          1240,
+          246,
+          68,
+          12
+        ],
+        "status": "pass",
+        "text": "SUCCESS",
+        "type": "text",
+        "widthDelta": 1,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": true,
+          "edgeF1": true,
+          "position": true,
+          "size": true
+        },
+        "contentRef": "text:9b9eb0f8ac750788",
+        "deltaX": 0,
+        "deltaY": 0,
+        "edgeF1": 0.9813520329159845,
+        "geometryStatus": "pass",
+        "heightDelta": 1,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 1.0636792452830188,
+        "nativeText": true,
+        "referenceInkBBox": [
+          794,
+          249,
+          67,
+          16
+        ],
+        "renderedInkBBox": [
+          794,
+          249,
+          67,
+          17
+        ],
+        "status": "pass",
+        "text": "执行成功",
+        "type": "text",
+        "widthDelta": 0,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": false,
+          "edgeF1": false,
+          "position": false,
+          "size": false
+        },
+        "contentRef": "text:84e32873d6e4ab2d",
+        "deltaX": -4,
+        "deltaY": -2,
+        "edgeF1": 0.5636856368563686,
+        "geometryStatus": "fail",
+        "heightDelta": -2,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 0.7123893805309734,
+        "nativeText": true,
+        "referenceInkBBox": [
+          53,
+          278,
+          37,
+          16
+        ],
+        "renderedInkBBox": [
+          49,
+          276,
+          33,
+          14
+        ],
+        "status": "fail",
+        "text": "PC端",
+        "type": "text",
+        "widthDelta": -4,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": true,
+          "edgeF1": false,
+          "position": false,
+          "size": false
+        },
+        "contentRef": "control:7552182b0f33204a",
+        "deltaX": -2,
+        "deltaY": 0,
+        "edgeF1": 0.8817435729225875,
+        "geometryStatus": "fail",
+        "heightDelta": 0,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 0.9888111888111888,
+        "nativeText": true,
+        "referenceInkBBox": [
+          447,
+          300,
+          177,
+          17
+        ],
+        "renderedInkBBox": [
+          445,
+          300,
+          182,
+          17
+        ],
+        "status": "fail",
+        "text": "/devops/service/backup",
+        "type": "input",
+        "widthDelta": 5,
+        "widthTolerance": 4
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": false,
+          "edgeF1": false,
+          "position": true,
+          "size": true
+        },
+        "contentRef": "text:e66dcb6153eaf40b",
+        "deltaX": 0,
+        "deltaY": 0,
+        "edgeF1": 0.754255816360779,
+        "geometryStatus": "fail",
+        "heightDelta": 0,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 0.874820143884892,
+        "nativeText": true,
+        "referenceInkBBox": [
+          1485,
+          292,
+          151,
+          17
+        ],
+        "renderedInkBBox": [
+          1485,
+          292,
+          153,
+          17
+        ],
+        "status": "fail",
+        "text": "以auto用户身份执行",
+        "type": "text",
+        "widthDelta": 2,
+        "widthTolerance": 3
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": true,
+          "edgeF1": true,
+          "position": true,
+          "size": true
+        },
+        "contentRef": "control:8574be571b0599c5",
+        "deltaX": 0,
+        "deltaY": 0,
+        "edgeF1": 0.9780077619663649,
+        "geometryStatus": "pass",
+        "heightDelta": 0,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 0.9376443418013857,
+        "nativeText": true,
+        "referenceInkBBox": [
+          1713,
+          300,
+          68,
+          16
+        ],
+        "renderedInkBBox": [
+          1713,
+          300,
+          68,
+          16
+        ],
+        "status": "pass",
+        "text": "手动执行",
+        "type": "button",
+        "widthDelta": 0,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": true,
+          "edgeF1": true,
+          "position": true,
+          "size": true
+        },
+        "contentRef": "text:6e45d428c33a977d",
+        "deltaX": 0,
+        "deltaY": 0,
+        "edgeF1": 0.9773808747800014,
+        "geometryStatus": "pass",
+        "heightDelta": 1,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 0.9430379746835443,
+        "nativeText": true,
+        "referenceInkBBox": [
+          388,
+          299,
+          34,
+          16
+        ],
+        "renderedInkBBox": [
+          388,
+          299,
+          34,
+          17
+        ],
+        "status": "pass",
+        "text": "执行",
+        "type": "text",
+        "widthDelta": 0,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": false,
+          "edgeF1": false,
+          "position": false,
+          "size": false
+        },
+        "contentRef": "text:eca78f2889b8636b",
+        "deltaX": -3,
+        "deltaY": -2,
+        "edgeF1": 0.7060477787705243,
+        "geometryStatus": "fail",
+        "heightDelta": -2,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 0.639386189258312,
+        "nativeText": true,
+        "referenceInkBBox": [
+          52,
+          328,
+          52,
+          16
+        ],
+        "renderedInkBBox": [
+          49,
+          326,
+          44,
+          14
+        ],
+        "status": "fail",
+        "text": "移动端",
+        "type": "text",
+        "widthDelta": -8,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": false,
+          "edgeF1": false,
+          "position": true,
+          "size": false
+        },
+        "contentRef": "control:0ce6c79fbecd8647",
+        "deltaX": 0,
+        "deltaY": 0,
+        "edgeF1": 0.6322446587107143,
+        "geometryStatus": "fail",
+        "heightDelta": -5,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 0.7151702786377709,
+        "nativeText": true,
+        "referenceInkBBox": [
+          447,
+          352,
+          335,
+          16
+        ],
+        "renderedInkBBox": [
+          447,
+          352,
+          330,
+          11
+        ],
+        "status": "fail",
+        "text": "2023年12月16日：修改成凌晨3：30执行备份",
+        "type": "input",
+        "widthDelta": -5,
+        "widthTolerance": 7
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": true,
+          "edgeF1": false,
+          "position": false,
+          "size": true
+        },
+        "contentRef": "text:2a8bd1312b5e7262",
+        "deltaX": -2,
+        "deltaY": 0,
+        "edgeF1": 0.7943163289075238,
+        "geometryStatus": "fail",
+        "heightDelta": -1,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 1.0714285714285714,
+        "nativeText": true,
+        "referenceInkBBox": [
+          388,
+          350,
+          34,
+          17
+        ],
+        "renderedInkBBox": [
+          386,
+          350,
+          33,
+          16
+        ],
+        "status": "fail",
+        "text": "备注",
+        "type": "text",
+        "widthDelta": -1,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": true,
+          "edgeF1": false,
+          "position": false,
+          "size": false
+        },
+        "contentRef": "text:f94705d0aa853665",
+        "deltaX": -2,
+        "deltaY": 0,
+        "edgeF1": 0.8648713536873274,
+        "geometryStatus": "fail",
+        "heightDelta": 1,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 0.9434343434343434,
+        "nativeText": true,
+        "referenceInkBBox": [
+          318,
+          465,
+          106,
+          16
+        ],
+        "renderedInkBBox": [
+          316,
+          465,
+          109,
+          17
+        ],
+        "status": "fail",
+        "text": "任务执行历史:",
+        "type": "text",
+        "widthDelta": 3,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": false,
+          "edgeF1": false,
+          "position": false,
+          "size": true
+        },
+        "contentRef": "control:7b8ba83544927ceb",
+        "deltaX": -2,
+        "deltaY": -2,
+        "edgeF1": 0.7842698723324946,
+        "geometryStatus": "fail",
+        "heightDelta": 0,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 1.2347560975609757,
+        "nativeText": true,
+        "referenceInkBBox": [
+          321,
+          512,
+          102,
+          17
+        ],
+        "renderedInkBBox": [
+          319,
+          510,
+          103,
+          17
+        ],
+        "status": "fail",
+        "text": "暂停自动刷新",
+        "type": "button",
+        "widthDelta": 1,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": false,
+          "edgeF1": false,
+          "position": true,
+          "size": true
+        },
+        "contentRef": "control:2e179c6dc2747840",
+        "deltaX": 1,
+        "deltaY": 0,
+        "edgeF1": 0.9384965831435079,
+        "geometryStatus": "fail",
+        "heightDelta": 1,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 1.2595744680851064,
+        "nativeText": true,
+        "referenceInkBBox": [
+          462,
+          513,
+          34,
+          15
+        ],
+        "renderedInkBBox": [
+          463,
+          513,
+          32,
+          16
+        ],
+        "status": "fail",
+        "text": "复制",
+        "type": "button",
+        "widthDelta": -2,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": false,
+          "edgeF1": false,
+          "position": false,
+          "size": true
+        },
+        "contentRef": "control:c43d6b367002ee26",
+        "deltaX": 0,
+        "deltaY": -2,
+        "edgeF1": 0.7766871523024497,
+        "geometryStatus": "fail",
+        "heightDelta": 0,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 0.8164556962025317,
+        "nativeText": true,
+        "referenceInkBBox": [
+          588,
+          512,
+          35,
+          16
+        ],
+        "renderedInkBBox": [
+          588,
+          510,
+          33,
+          16
+        ],
+        "status": "fail",
+        "text": "刷新",
+        "type": "button",
+        "widthDelta": -2,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": true,
+          "edgeF1": false,
+          "position": false,
+          "size": true
+        },
+        "contentRef": "control:ca6d415e41f0a023",
+        "deltaX": -2,
+        "deltaY": 0,
+        "edgeF1": 0.5943416294405447,
+        "geometryStatus": "fail",
+        "heightDelta": 1,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 1.0833333333333333,
+        "nativeText": true,
+        "referenceInkBBox": [
+          525,
+          514,
+          33,
+          15
+        ],
+        "renderedInkBBox": [
+          523,
+          514,
+          32,
+          16
+        ],
+        "status": "fail",
+        "text": "导出",
+        "type": "button",
+        "widthDelta": -1,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": false,
+          "edgeF1": false,
+          "position": false,
+          "size": false
+        },
+        "contentRef": "text:ecea07cf522c1104",
+        "deltaX": -2,
+        "deltaY": 0,
+        "edgeF1": 0.883495145631068,
+        "geometryStatus": "fail",
+        "heightDelta": 2,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 1.2666666666666666,
+        "nativeText": true,
+        "referenceInkBBox": [
+          1729,
+          515,
+          58,
+          12
+        ],
+        "renderedInkBBox": [
+          1727,
+          515,
+          61,
+          14
+        ],
+        "status": "fail",
+        "text": "表内搜索",
+        "type": "text",
+        "widthDelta": 3,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": false,
+          "edgeF1": true,
+          "position": true,
+          "size": true
+        },
+        "contentRef": "table-header:682c50329bf4d1e3",
+        "deltaX": 0,
+        "deltaY": 0,
+        "edgeF1": 1.0,
+        "geometryStatus": "fail",
+        "heightDelta": 1,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 1.4705882352941178,
+        "nativeText": true,
+        "referenceInkBBox": [
+          344,
+          568,
+          10,
+          11
+        ],
+        "renderedInkBBox": [
+          344,
+          568,
+          10,
+          12
+        ],
+        "status": "fail",
+        "text": "#",
+        "type": "text",
+        "widthDelta": 0,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": true,
+          "edgeF1": true,
+          "position": true,
+          "size": true
+        },
+        "contentRef": "table-header:85314e304c4106a9",
+        "deltaX": 0,
+        "deltaY": 0,
+        "edgeF1": 0.9971563981042654,
+        "geometryStatus": "pass",
+        "heightDelta": 1,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 0.9864864864864865,
+        "nativeText": true,
+        "referenceInkBBox": [
+          449,
+          566,
+          67,
+          16
+        ],
+        "renderedInkBBox": [
+          449,
+          566,
+          67,
+          17
+        ],
+        "status": "pass",
+        "text": "执行时间",
+        "type": "text",
+        "widthDelta": 0,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": false,
+          "edgeF1": true,
+          "position": true,
+          "size": true
+        },
+        "contentRef": "table-header:148f93419bf897ac",
+        "deltaX": 0,
+        "deltaY": 0,
+        "edgeF1": 0.9761282498831094,
+        "geometryStatus": "fail",
+        "heightDelta": 1,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 0.884437596302003,
+        "nativeText": true,
+        "referenceInkBBox": [
+          614,
+          566,
+          67,
+          16
+        ],
+        "renderedInkBBox": [
+          614,
+          566,
+          67,
+          17
+        ],
+        "status": "fail",
+        "text": "持续时长",
+        "type": "text",
+        "widthDelta": 0,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": true,
+          "edgeF1": true,
+          "position": true,
+          "size": true
+        },
+        "contentRef": "table-header:aafd93a150351232",
+        "deltaX": 0,
+        "deltaY": 0,
+        "edgeF1": 0.9903448275862069,
+        "geometryStatus": "pass",
+        "heightDelta": 1,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 0.9440860215053763,
+        "nativeText": true,
+        "referenceInkBBox": [
+          762,
+          566,
+          51,
+          16
+        ],
+        "renderedInkBBox": [
+          762,
+          566,
+          50,
+          17
+        ],
+        "status": "pass",
+        "text": "执行者",
+        "type": "text",
+        "widthDelta": -1,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": false,
+          "edgeF1": true,
+          "position": true,
+          "size": true
+        },
+        "contentRef": "table-header:357a6bb8f6fca4a0",
+        "deltaX": 0,
+        "deltaY": -1,
+        "edgeF1": 0.9919137466307278,
+        "geometryStatus": "fail",
+        "heightDelta": 1,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 0.818830242510699,
+        "nativeText": true,
+        "referenceInkBBox": [
+          918,
+          566,
+          67,
+          16
+        ],
+        "renderedInkBBox": [
+          918,
+          565,
+          66,
+          17
+        ],
+        "status": "fail",
+        "text": "启动时间",
+        "type": "text",
+        "widthDelta": -1,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": true,
+          "edgeF1": true,
+          "position": true,
+          "size": true
+        },
+        "contentRef": "table-header:f6fc294dd9303ad9",
+        "deltaX": -1,
+        "deltaY": 0,
+        "edgeF1": 0.9922927840627395,
+        "geometryStatus": "pass",
+        "heightDelta": 1,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 0.9601328903654485,
+        "nativeText": true,
+        "referenceInkBBox": [
+          1075,
+          566,
+          34,
+          16
+        ],
+        "renderedInkBBox": [
+          1074,
+          566,
+          33,
+          17
+        ],
+        "status": "pass",
+        "text": "状态",
+        "type": "text",
+        "widthDelta": -1,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": true,
+          "edgeF1": true,
+          "position": true,
+          "size": true
+        },
+        "contentRef": "table-header:dca0225b71ab0424",
+        "deltaX": -1,
+        "deltaY": 0,
+        "edgeF1": 0.9881710646041857,
+        "geometryStatus": "pass",
+        "heightDelta": 1,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 0.9968253968253968,
+        "nativeText": true,
+        "referenceInkBBox": [
+          1479,
+          566,
+          67,
+          16
+        ],
+        "renderedInkBBox": [
+          1478,
+          566,
+          68,
+          17
+        ],
+        "status": "pass",
+        "text": "执行结果",
+        "type": "text",
+        "widthDelta": 1,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": false,
+          "edgeF1": true,
+          "position": true,
+          "size": true
+        },
+        "contentRef": "table-cell:7a29f50a7708919a",
+        "deltaX": 0,
+        "deltaY": 0,
+        "edgeF1": 0.9696969696969697,
+        "geometryStatus": "fail",
+        "heightDelta": 2,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 2.125,
+        "nativeText": true,
+        "referenceInkBBox": [
+          369,
+          614,
+          5,
+          12
+        ],
+        "renderedInkBBox": [
+          369,
+          614,
+          5,
+          14
+        ],
+        "status": "fail",
+        "text": "1",
+        "type": "text",
+        "widthDelta": 0,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": false,
+          "edgeF1": false,
+          "position": true,
+          "size": true
+        },
+        "contentRef": "table-cell:117cc6e8a9dc6ec0",
+        "deltaX": 0,
+        "deltaY": 0,
+        "edgeF1": 0.8041853644552741,
+        "geometryStatus": "fail",
+        "heightDelta": 0,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 1.1007905138339922,
+        "nativeText": true,
+        "referenceInkBBox": [
+          413,
+          614,
+          151,
+          12
+        ],
+        "renderedInkBBox": [
+          413,
+          614,
+          150,
+          12
+        ],
+        "status": "fail",
+        "text": "2026-11-01 03:30:00",
+        "type": "text",
+        "widthDelta": -1,
+        "widthTolerance": 3
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": false,
+          "edgeF1": false,
+          "position": false,
+          "size": false
+        },
+        "contentRef": "table-cell:3ccd74a0dbeb3df5",
+        "deltaX": -3,
+        "deltaY": -2,
+        "edgeF1": 0.5013467550085523,
+        "geometryStatus": "fail",
+        "heightDelta": 8,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 1.7724550898203593,
+        "nativeText": true,
+        "referenceInkBBox": [
+          660,
+          614,
+          45,
+          12
+        ],
+        "renderedInkBBox": [
+          657,
+          612,
+          60,
+          20
+        ],
+        "status": "fail",
+        "text": "31649",
+        "type": "text",
+        "widthDelta": 15,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": false,
+          "edgeF1": false,
+          "position": false,
+          "size": false
+        },
+        "contentRef": "table-cell:f58a817c6075e89f",
+        "deltaX": -13,
+        "deltaY": 0,
+        "edgeF1": 0.8333089846603361,
+        "geometryStatus": "fail",
+        "heightDelta": 3,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 1.3333333333333333,
+        "nativeText": true,
+        "referenceInkBBox": [
+          730,
+          614,
+          33,
+          12
+        ],
+        "renderedInkBBox": [
+          717,
+          614,
+          45,
+          15
+        ],
+        "status": "fail",
+        "text": "auto",
+        "type": "text",
+        "widthDelta": 12,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": false,
+          "edgeF1": false,
+          "position": true,
+          "size": true
+        },
+        "contentRef": "table-cell:f03b581960249f19",
+        "deltaX": 0,
+        "deltaY": 0,
+        "edgeF1": 0.7793494987784627,
+        "geometryStatus": "fail",
+        "heightDelta": 0,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 1.2027972027972027,
+        "nativeText": true,
+        "referenceInkBBox": [
+          882,
+          614,
+          151,
+          12
+        ],
+        "renderedInkBBox": [
+          882,
+          614,
+          149,
+          12
+        ],
+        "status": "fail",
+        "text": "2026-10-31 11:16:00",
+        "type": "text",
+        "widthDelta": -2,
+        "widthTolerance": 3
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": false,
+          "edgeF1": false,
+          "position": true,
+          "size": false
+        },
+        "contentRef": "table-cell:fe38c0725a56e087",
+        "deltaX": 0,
+        "deltaY": -1,
+        "edgeF1": 0.4054054054054054,
+        "geometryStatus": "fail",
+        "heightDelta": 6,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 2.7586206896551726,
+        "nativeText": true,
+        "referenceInkBBox": [
+          1117,
+          614,
+          8,
+          12
+        ],
+        "renderedInkBBox": [
+          1117,
+          613,
+          12,
+          18
+        ],
+        "status": "fail",
+        "text": "2",
+        "type": "text",
+        "widthDelta": 4,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": true,
+          "edgeF1": false,
+          "position": true,
+          "size": false
+        },
+        "contentRef": "table-cell:df27e443958d5e5f",
+        "deltaX": 0,
+        "deltaY": 0,
+        "edgeF1": 0.8394159321765939,
+        "geometryStatus": "fail",
+        "heightDelta": -1,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 1.0040816326530613,
+        "nativeText": true,
+        "referenceInkBBox": [
+          1151,
+          614,
+          308,
+          16
+        ],
+        "renderedInkBBox": [
+          1151,
+          614,
+          299,
+          15
+        ],
+        "status": "fail",
+        "text": "{\"error\":\"SUCCESS\",\"message\":\"SUCCESS\"}",
+        "type": "text",
+        "widthDelta": -9,
+        "widthTolerance": 6
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": false,
+          "edgeF1": false,
+          "position": false,
+          "size": false
+        },
+        "contentRef": "text:588481e38e3a86e0",
+        "deltaX": -3,
+        "deltaY": -2,
+        "edgeF1": 0.6102668421682422,
+        "geometryStatus": "fail",
+        "heightDelta": 5,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 1.2335329341317365,
+        "nativeText": true,
+        "referenceInkBBox": [
+          660,
+          614,
+          45,
+          12
+        ],
+        "renderedInkBBox": [
+          657,
+          612,
+          50,
+          17
+        ],
+        "status": "fail",
+        "text": "31649",
+        "type": "text",
+        "widthDelta": 5,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": false,
+          "edgeF1": false,
+          "position": true,
+          "size": false
+        },
+        "contentRef": "table-cell:58302b5a19735314",
+        "deltaX": 0,
+        "deltaY": -1,
+        "edgeF1": 0.4,
+        "geometryStatus": "fail",
+        "heightDelta": 6,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 2.6666666666666665,
+        "nativeText": true,
+        "referenceInkBBox": [
+          368,
+          658,
+          8,
+          12
+        ],
+        "renderedInkBBox": [
+          368,
+          657,
+          12,
+          18
+        ],
+        "status": "fail",
+        "text": "2",
+        "type": "text",
+        "widthDelta": 4,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": false,
+          "edgeF1": false,
+          "position": false,
+          "size": false
+        },
+        "contentRef": "table-cell:8b2e628f84f7c288",
+        "deltaX": -4,
+        "deltaY": -5,
+        "edgeF1": 0.3705957693280361,
+        "geometryStatus": "fail",
+        "heightDelta": 14,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 1.8264299802761341,
+        "nativeText": true,
+        "referenceInkBBox": [
+          413,
+          658,
+          151,
+          12
+        ],
+        "renderedInkBBox": [
+          409,
+          653,
+          154,
+          26
+        ],
+        "status": "fail",
+        "text": "2026-10-31 03:30:00",
+        "type": "text",
+        "widthDelta": 3,
+        "widthTolerance": 3
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": false,
+          "edgeF1": false,
+          "position": false,
+          "size": false
+        },
+        "contentRef": "table-cell:1a8409f6626fbc42",
+        "deltaX": -3,
+        "deltaY": -2,
+        "edgeF1": 0.4534239048998551,
+        "geometryStatus": "fail",
+        "heightDelta": 8,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 1.86,
+        "nativeText": true,
+        "referenceInkBBox": [
+          660,
+          658,
+          45,
+          12
+        ],
+        "renderedInkBBox": [
+          657,
+          656,
+          60,
+          20
+        ],
+        "status": "fail",
+        "text": "31374",
+        "type": "text",
+        "widthDelta": 15,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": false,
+          "edgeF1": false,
+          "position": false,
+          "size": false
+        },
+        "contentRef": "table-cell:0170cf9927968e67",
+        "deltaX": -13,
+        "deltaY": 0,
+        "edgeF1": 0.8446616318673182,
+        "geometryStatus": "fail",
+        "heightDelta": 4,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 1.2972972972972974,
+        "nativeText": true,
+        "referenceInkBBox": [
+          730,
+          658,
+          33,
+          12
+        ],
+        "renderedInkBBox": [
+          717,
+          658,
+          45,
+          16
+        ],
+        "status": "fail",
+        "text": "auto",
+        "type": "text",
+        "widthDelta": 12,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": false,
+          "edgeF1": false,
+          "position": true,
+          "size": true
+        },
+        "contentRef": "table-cell:5d9e068b6b1d7b7c",
+        "deltaX": 0,
+        "deltaY": 0,
+        "edgeF1": 0.8126975665413464,
+        "geometryStatus": "fail",
+        "heightDelta": 0,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 1.2434782608695651,
+        "nativeText": true,
+        "referenceInkBBox": [
+          882,
+          658,
+          150,
+          12
+        ],
+        "renderedInkBBox": [
+          882,
+          658,
+          149,
+          12
+        ],
+        "status": "fail",
+        "text": "2026-10-30 19:10:43",
+        "type": "text",
+        "widthDelta": -1,
+        "widthTolerance": 3
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": false,
+          "edgeF1": false,
+          "position": true,
+          "size": false
+        },
+        "contentRef": "table-cell:e612040d1a37d8e7",
+        "deltaX": 0,
+        "deltaY": -1,
+        "edgeF1": 0.4054054054054054,
+        "geometryStatus": "fail",
+        "heightDelta": 6,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 2.7586206896551726,
+        "nativeText": true,
+        "referenceInkBBox": [
+          1117,
+          658,
+          8,
+          12
+        ],
+        "renderedInkBBox": [
+          1117,
+          657,
+          12,
+          18
+        ],
+        "status": "fail",
+        "text": "2",
+        "type": "text",
+        "widthDelta": 4,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": true,
+          "edgeF1": false,
+          "position": true,
+          "size": false
+        },
+        "contentRef": "table-cell:3390eeac73271f46",
+        "deltaX": 0,
+        "deltaY": 0,
+        "edgeF1": 0.8394159321765939,
+        "geometryStatus": "fail",
+        "heightDelta": -1,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 1.0040816326530613,
+        "nativeText": true,
+        "referenceInkBBox": [
+          1151,
+          658,
+          308,
+          16
+        ],
+        "renderedInkBBox": [
+          1151,
+          658,
+          299,
+          15
+        ],
+        "status": "fail",
+        "text": "{\"error\":\"SUCCESS\",\"message\":\"SUCCESS\"}",
+        "type": "text",
+        "widthDelta": -9,
+        "widthTolerance": 6
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": false,
+          "edgeF1": false,
+          "position": false,
+          "size": false
+        },
+        "contentRef": "text:844b279d22cc8b0c",
+        "deltaX": -4,
+        "deltaY": -5,
+        "edgeF1": 0.41595018999221717,
+        "geometryStatus": "fail",
+        "heightDelta": 11,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 1.504930966469428,
+        "nativeText": true,
+        "referenceInkBBox": [
+          413,
+          658,
+          151,
+          12
+        ],
+        "renderedInkBBox": [
+          409,
+          653,
+          154,
+          23
+        ],
+        "status": "fail",
+        "text": "2026-10-31 03:30:00",
+        "type": "text",
+        "widthDelta": 3,
+        "widthTolerance": 3
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": false,
+          "edgeF1": false,
+          "position": false,
+          "size": false
+        },
+        "contentRef": "text:0af82315816686f3",
+        "deltaX": -3,
+        "deltaY": -2,
+        "edgeF1": 0.5559944878272853,
+        "geometryStatus": "fail",
+        "heightDelta": 5,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 1.3,
+        "nativeText": true,
+        "referenceInkBBox": [
+          660,
+          658,
+          45,
+          12
+        ],
+        "renderedInkBBox": [
+          657,
+          656,
+          50,
+          17
+        ],
+        "status": "fail",
+        "text": "31374",
+        "type": "text",
+        "widthDelta": 5,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": false,
+          "edgeF1": false,
+          "position": true,
+          "size": false
+        },
+        "contentRef": "table-cell:50af7a76b205bb84",
+        "deltaX": 0,
+        "deltaY": -1,
+        "edgeF1": 0.40716305372290296,
+        "geometryStatus": "fail",
+        "heightDelta": 6,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 2.7333333333333334,
+        "nativeText": true,
+        "referenceInkBBox": [
+          368,
+          703,
+          8,
+          12
+        ],
+        "renderedInkBBox": [
+          368,
+          702,
+          11,
+          18
+        ],
+        "status": "fail",
+        "text": "3",
+        "type": "text",
+        "widthDelta": 3,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": false,
+          "edgeF1": false,
+          "position": true,
+          "size": true
+        },
+        "contentRef": "table-cell:10dbabb8c6d4666c",
+        "deltaX": 0,
+        "deltaY": 0,
+        "edgeF1": 0.857334977025664,
+        "geometryStatus": "fail",
+        "heightDelta": 0,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 1.1414913957934991,
+        "nativeText": true,
+        "referenceInkBBox": [
+          413,
+          703,
+          151,
+          12
+        ],
+        "renderedInkBBox": [
+          413,
+          703,
+          150,
+          12
+        ],
+        "status": "fail",
+        "text": "2026-10-30 03:30:00",
+        "type": "text",
+        "widthDelta": -1,
+        "widthTolerance": 3
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": false,
+          "edgeF1": true,
+          "position": true,
+          "size": true
+        },
+        "contentRef": "table-cell:5a4a95cfacbbc1ad",
+        "deltaX": 0,
+        "deltaY": 0,
+        "edgeF1": 1.0,
+        "geometryStatus": "fail",
+        "heightDelta": 0,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 1.2043010752688172,
+        "nativeText": true,
+        "referenceInkBBox": [
+          660,
+          703,
+          45,
+          12
+        ],
+        "renderedInkBBox": [
+          660,
+          703,
+          44,
+          12
+        ],
+        "status": "fail",
+        "text": "94608",
+        "type": "text",
+        "widthDelta": -1,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": false,
+          "edgeF1": false,
+          "position": true,
+          "size": true
+        },
+        "contentRef": "table-cell:3757205038168f14",
+        "deltaX": 0,
+        "deltaY": 0,
+        "edgeF1": 0.8533812088569719,
+        "geometryStatus": "fail",
+        "heightDelta": -2,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 1.2702702702702702,
+        "nativeText": true,
+        "referenceInkBBox": [
+          730,
+          703,
+          33,
+          12
+        ],
+        "renderedInkBBox": [
+          730,
+          703,
+          32,
+          10
+        ],
+        "status": "fail",
+        "text": "auto",
+        "type": "text",
+        "widthDelta": -1,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": false,
+          "edgeF1": false,
+          "position": true,
+          "size": true
+        },
+        "contentRef": "table-cell:7f6035e9f26320bd",
+        "deltaX": 0,
+        "deltaY": 0,
+        "edgeF1": 0.8335164401169012,
+        "geometryStatus": "fail",
+        "heightDelta": 0,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 1.1895424836601307,
+        "nativeText": true,
+        "referenceInkBBox": [
+          882,
+          703,
+          151,
+          12
+        ],
+        "renderedInkBBox": [
+          882,
+          703,
+          149,
+          12
+        ],
+        "status": "fail",
+        "text": "2026-10-26 11:22:28",
+        "type": "text",
+        "widthDelta": -2,
+        "widthTolerance": 3
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": false,
+          "edgeF1": false,
+          "position": true,
+          "size": false
+        },
+        "contentRef": "table-cell:1f2c4ded9058925b",
+        "deltaX": -1,
+        "deltaY": -1,
+        "edgeF1": 0.5144694533762059,
+        "geometryStatus": "fail",
+        "heightDelta": 6,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 2.7586206896551726,
+        "nativeText": true,
+        "referenceInkBBox": [
+          1117,
+          703,
+          8,
+          12
+        ],
+        "renderedInkBBox": [
+          1116,
+          702,
+          12,
+          18
+        ],
+        "status": "fail",
+        "text": "2",
+        "type": "text",
+        "widthDelta": 4,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": true,
+          "edgeF1": false,
+          "position": true,
+          "size": false
+        },
+        "contentRef": "table-cell:27b9a7ffd8a03df0",
+        "deltaX": 0,
+        "deltaY": 0,
+        "edgeF1": 0.8394159321765939,
+        "geometryStatus": "fail",
+        "heightDelta": -1,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 1.0040816326530613,
+        "nativeText": true,
+        "referenceInkBBox": [
+          1151,
+          703,
+          308,
+          16
+        ],
+        "renderedInkBBox": [
+          1151,
+          703,
+          299,
+          15
+        ],
+        "status": "fail",
+        "text": "{\"error\":\"SUCCESS\",\"message\":\"SUCCESS\"}",
+        "type": "text",
+        "widthDelta": -9,
+        "widthTolerance": 6
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": false,
+          "edgeF1": false,
+          "position": true,
+          "size": false
+        },
+        "contentRef": "table-cell:13ce272f603bc572",
+        "deltaX": 0,
+        "deltaY": 0,
+        "edgeF1": 0.5423728813559321,
+        "geometryStatus": "fail",
+        "heightDelta": 5,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 1.975,
+        "nativeText": true,
+        "referenceInkBBox": [
+          367,
+          747,
+          9,
+          12
+        ],
+        "renderedInkBBox": [
+          367,
+          747,
+          13,
+          17
+        ],
+        "status": "fail",
+        "text": "4",
+        "type": "text",
+        "widthDelta": 4,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": false,
+          "edgeF1": false,
+          "position": true,
+          "size": true
+        },
+        "contentRef": "table-cell:89f1d2f324dd1015",
+        "deltaX": 0,
+        "deltaY": 0,
+        "edgeF1": 0.8696095895494693,
+        "geometryStatus": "fail",
+        "heightDelta": 0,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 1.1502890173410405,
+        "nativeText": true,
+        "referenceInkBBox": [
+          413,
+          747,
+          151,
+          12
+        ],
+        "renderedInkBBox": [
+          413,
+          747,
+          150,
+          12
+        ],
+        "status": "fail",
+        "text": "2026-10-29 03:30:00",
+        "type": "text",
+        "widthDelta": -1,
+        "widthTolerance": 3
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": false,
+          "edgeF1": true,
+          "position": true,
+          "size": true
+        },
+        "contentRef": "table-cell:7202381b58f263ac",
+        "deltaX": 0,
+        "deltaY": 0,
+        "edgeF1": 1.0,
+        "geometryStatus": "fail",
+        "heightDelta": 0,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 1.2427745664739884,
+        "nativeText": true,
+        "referenceInkBBox": [
+          660,
+          747,
+          45,
+          12
+        ],
+        "renderedInkBBox": [
+          660,
+          747,
+          44,
+          12
+        ],
+        "status": "fail",
+        "text": "30939",
+        "type": "text",
+        "widthDelta": -1,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": false,
+          "edgeF1": false,
+          "position": true,
+          "size": true
+        },
+        "contentRef": "table-cell:b62f5807ef8d7e92",
+        "deltaX": 0,
+        "deltaY": 0,
+        "edgeF1": 0.8533812088569719,
+        "geometryStatus": "fail",
+        "heightDelta": -2,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 1.2702702702702702,
+        "nativeText": true,
+        "referenceInkBBox": [
+          730,
+          747,
+          33,
+          12
+        ],
+        "renderedInkBBox": [
+          730,
+          747,
+          32,
+          10
+        ],
+        "status": "fail",
+        "text": "auto",
+        "type": "text",
+        "widthDelta": -1,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": false,
+          "edgeF1": false,
+          "position": true,
+          "size": true
+        },
+        "contentRef": "table-cell:35a34f39735cb31b",
+        "deltaX": 0,
+        "deltaY": 0,
+        "edgeF1": 0.8335164401169012,
+        "geometryStatus": "fail",
+        "heightDelta": 0,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 1.1895424836601307,
+        "nativeText": true,
+        "referenceInkBBox": [
+          882,
+          747,
+          151,
+          12
+        ],
+        "renderedInkBBox": [
+          882,
+          747,
+          149,
+          12
+        ],
+        "status": "fail",
+        "text": "2026-10-26 11:22:28",
+        "type": "text",
+        "widthDelta": -2,
+        "widthTolerance": 3
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": false,
+          "edgeF1": false,
+          "position": true,
+          "size": false
+        },
+        "contentRef": "table-cell:46e1d5d547cbf446",
+        "deltaX": -1,
+        "deltaY": -1,
+        "edgeF1": 0.5144694533762059,
+        "geometryStatus": "fail",
+        "heightDelta": 6,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 2.7586206896551726,
+        "nativeText": true,
+        "referenceInkBBox": [
+          1117,
+          747,
+          8,
+          12
+        ],
+        "renderedInkBBox": [
+          1116,
+          746,
+          12,
+          18
+        ],
+        "status": "fail",
+        "text": "2",
+        "type": "text",
+        "widthDelta": 4,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": true,
+          "edgeF1": false,
+          "position": true,
+          "size": false
+        },
+        "contentRef": "table-cell:894189d67e572959",
+        "deltaX": 0,
+        "deltaY": 0,
+        "edgeF1": 0.8394159321765939,
+        "geometryStatus": "fail",
+        "heightDelta": -1,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 1.0040816326530613,
+        "nativeText": true,
+        "referenceInkBBox": [
+          1151,
+          747,
+          308,
+          16
+        ],
+        "renderedInkBBox": [
+          1151,
+          747,
+          299,
+          15
+        ],
+        "status": "fail",
+        "text": "{\"error\":\"SUCCESS\",\"message\":\"SUCCESS\"}",
+        "type": "text",
+        "widthDelta": -9,
+        "widthTolerance": 6
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": false,
+          "edgeF1": false,
+          "position": true,
+          "size": false
+        },
+        "contentRef": "table-cell:5e58729c355ef876",
+        "deltaX": 0,
+        "deltaY": 0,
+        "edgeF1": 0.5361672951662667,
+        "geometryStatus": "fail",
+        "heightDelta": 5,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 2.6129032258064515,
+        "nativeText": true,
+        "referenceInkBBox": [
+          368,
+          791,
+          8,
+          12
+        ],
+        "renderedInkBBox": [
+          368,
+          791,
+          12,
+          17
+        ],
+        "status": "fail",
+        "text": "5",
+        "type": "text",
+        "widthDelta": 4,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": false,
+          "edgeF1": false,
+          "position": true,
+          "size": true
+        },
+        "contentRef": "table-cell:65cfd05b3e2ce849",
+        "deltaX": 0,
+        "deltaY": 0,
+        "edgeF1": 0.8699612427913237,
+        "geometryStatus": "fail",
+        "heightDelta": 0,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 1.1573896353166986,
+        "nativeText": true,
+        "referenceInkBBox": [
+          413,
+          791,
+          151,
+          12
+        ],
+        "renderedInkBBox": [
+          413,
+          791,
+          150,
+          12
+        ],
+        "status": "fail",
+        "text": "2026-10-28 03:30:00",
+        "type": "text",
+        "widthDelta": -1,
+        "widthTolerance": 3
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": false,
+          "edgeF1": true,
+          "position": true,
+          "size": true
+        },
+        "contentRef": "table-cell:9e6d127883907424",
+        "deltaX": 0,
+        "deltaY": 0,
+        "edgeF1": 1.0,
+        "geometryStatus": "fail",
+        "heightDelta": 0,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 1.2071005917159763,
+        "nativeText": true,
+        "referenceInkBBox": [
+          660,
+          791,
+          45,
+          12
+        ],
+        "renderedInkBBox": [
+          660,
+          791,
+          44,
+          12
+        ],
+        "status": "fail",
+        "text": "61508",
+        "type": "text",
+        "widthDelta": -1,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": false,
+          "edgeF1": false,
+          "position": true,
+          "size": true
+        },
+        "contentRef": "table-cell:64b44033c9bc8f10",
+        "deltaX": 0,
+        "deltaY": 0,
+        "edgeF1": 0.8533812088569719,
+        "geometryStatus": "fail",
+        "heightDelta": -2,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 1.2702702702702702,
+        "nativeText": true,
+        "referenceInkBBox": [
+          730,
+          791,
+          33,
+          12
+        ],
+        "renderedInkBBox": [
+          730,
+          791,
+          32,
+          10
+        ],
+        "status": "fail",
+        "text": "auto",
+        "type": "text",
+        "widthDelta": -1,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": false,
+          "edgeF1": false,
+          "position": true,
+          "size": true
+        },
+        "contentRef": "table-cell:e3e46f60ebd4869c",
+        "deltaX": 0,
+        "deltaY": 0,
+        "edgeF1": 0.8335164401169012,
+        "geometryStatus": "fail",
+        "heightDelta": 0,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 1.1895424836601307,
+        "nativeText": true,
+        "referenceInkBBox": [
+          882,
+          791,
+          151,
+          12
+        ],
+        "renderedInkBBox": [
+          882,
+          791,
+          149,
+          12
+        ],
+        "status": "fail",
+        "text": "2026-10-26 11:22:28",
+        "type": "text",
+        "widthDelta": -2,
+        "widthTolerance": 3
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": false,
+          "edgeF1": false,
+          "position": true,
+          "size": false
+        },
+        "contentRef": "table-cell:aa1dfda0b1e312cf",
+        "deltaX": 0,
+        "deltaY": -1,
+        "edgeF1": 0.4054054054054054,
+        "geometryStatus": "fail",
+        "heightDelta": 6,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 2.7586206896551726,
+        "nativeText": true,
+        "referenceInkBBox": [
+          1117,
+          791,
+          8,
+          12
+        ],
+        "renderedInkBBox": [
+          1117,
+          790,
+          12,
+          18
+        ],
+        "status": "fail",
+        "text": "2",
+        "type": "text",
+        "widthDelta": 4,
+        "widthTolerance": 2
+      },
+      {
+        "baseline": "unknown",
+        "checks": {
+          "coverage": true,
+          "edgeF1": false,
+          "position": true,
+          "size": false
+        },
+        "contentRef": "table-cell:bae750eab17cea68",
+        "deltaX": 0,
+        "deltaY": 0,
+        "edgeF1": 0.8394159321765939,
+        "geometryStatus": "fail",
+        "heightDelta": -1,
+        "heightTolerance": 2,
+        "inkCoverageRatio": 1.0040816326530613,
+        "nativeText": true,
+        "referenceInkBBox": [
+          1151,
+          791,
+          308,
+          16
+        ],
+        "renderedInkBBox": [
+          1151,
+          791,
+          299,
+          15
+        ],
+        "status": "fail",
+        "text": "{\"error\":\"SUCCESS\",\"message\":\"SUCCESS\"}",
+        "type": "text",
+        "widthDelta": -9,
+        "widthTolerance": 6
+      }
+    ],
+    "proposedTextGate": {
+      "baselinePxMax": 1,
+      "edgeF1Min": 0.95,
+      "heightErrorPxMax": "max(2, 2% reference height)",
+      "inkCoverageRatioMax": 1.1,
+      "inkCoverageRatioMin": 0.9,
+      "positionPxMax": 1.0,
+      "widthErrorPxMax": "max(2, 2% reference width)"
+    },
+    "schema_version": "grounding-native-text-quality/2.0",
+    "status": "measured-gate",
+    "summary": {
+      "baselineEvidenceCount": 0,
+      "coveragePassCount": 24,
+      "edgeF1PassCount": 17,
+      "measuredOwnerCount": 76,
+      "nativeTextCount": 76,
+      "ownerCount": 76,
+      "positionPassCount": 52,
+      "sizePassCount": 42
+    }
+  },
+  "non_claims": [
+    "Original asset identity is not recovered.",
+    "Original font identity and glyph outlines are not verified.",
+    "Adaptive Auto Layout is not verified; flow remains candidate.",
+    "Hidden content outside the screenshot is unknown."
+  ],
+  "pipeline": {
+    "frame_design_elements": 138,
+    "grounding_fidelity": {
+      "repair_status": "not-needed",
+      "scene_nodes": 117,
+      "status": "pass"
+    },
+    "image_candidates": 32,
+    "image_region_recovery": {
+      "added_count": 0,
+      "status": "not-needed"
+    },
+    "input_kind": "image",
+    "ocr_supplement": {
+      "added_count": 38,
+      "languages": [
+        "ch_sim",
+        "en"
+      ],
+      "status": "applied"
+    },
+    "pipeline_output": "D:\\LLM-Data\\Figma_auto_agent\\output\\_grounding_manual_20261107_high_v2\\pipeline",
+    "route": "grounding",
+    "sample_id": "IMG-FLEXWEAVER-ADMIN",
+    "status": "prepared",
+    "text_candidates": 36
+  },
+  "policy": {
+    "adaptive_flow_required": false,
+    "chrome_bad_pixel_ratio_max": 0.05,
+    "claimed_asset_replacement_required": true,
+    "critical_text_required": true,
+    "frozen": true,
+    "legacy_raw_region_visual_informational": true,
+    "native_text_baseline_required": false,
+    "native_text_edge_f1_min": 0.95,
+    "native_text_gate_required": true,
+    "native_text_height_tolerance_floor_px": 2,
+    "native_text_height_tolerance_ratio": 0.02,
+    "native_text_ink_coverage_max": 1.1,
+    "native_text_ink_coverage_min": 0.9,
+    "native_text_position_px_max": 1,
+    "native_text_required": true,
+    "native_text_width_tolerance_floor_px": 2,
+    "native_text_width_tolerance_ratio": 0.02,
+    "original_asset_identity_required": false,
+    "policy_id": "image-figma-mvp-product/2.0",
+    "region_bad_pixel_ratio_max": 0.05,
+    "region_quality_required_for_high_fidelity": true,
+    "region_visual_mode": "native-text-and-chrome",
+    "repair_budget_required_for_high_fidelity": true,
+    "require_size_match": true,
+    "visual_within30_min_pct": 90.0
+  },
+  "region_quality": {
+    "bad_pixel_threshold": 30,
+    "invalid_regions": [],
+    "reference_size": [
+      1920,
+      826
+    ],
+    "regions": {
+      "form-section": {
+        "bad_pixel_count": 20798,
+        "bad_pixel_ratio": 0.025183567110973342,
+        "bad_pixel_threshold": 30,
+        "bbox": [
+          307,
+          96,
+          1613,
+          512
+        ],
+        "mae": 2.593638600433974,
+        "pixel_count": 825856,
+        "role": "form-section"
+      },
+      "header": {
+        "bad_pixel_count": 2719,
+        "bad_pixel_ratio": 0.025842077250608272,
+        "bad_pixel_threshold": 30,
+        "bbox": [
+          276,
+          0,
+          1644,
+          64
+        ],
+        "mae": 4.7149292883211675,
+        "pixel_count": 105216,
+        "role": "header"
+      },
+      "main-content": {
+        "bad_pixel_count": 48893,
+        "bad_pixel_ratio": 0.039029222624544196,
+        "bad_pixel_threshold": 30,
+        "bbox": [
+          276,
+          64,
+          1644,
+          762
+        ],
+        "mae": 4.565762879092668,
+        "pixel_count": 1252728,
+        "role": "main-content"
+      },
+      "page": {
+        "bad_pixel_count": 54665,
+        "bad_pixel_ratio": 0.034468951775625506,
+        "bad_pixel_threshold": 30,
+        "bbox": [
+          0,
+          0,
+          1920,
+          826
+        ],
+        "mae": 4.130364709443099,
+        "pixel_count": 1585920,
+        "role": "page"
+      },
+      "sidebar": {
+        "bad_pixel_count": 3053,
+        "bad_pixel_ratio": 0.013391760536196793,
+        "bad_pixel_threshold": 30,
+        "bbox": [
+          0,
+          0,
+          276,
+          826
+        ],
+        "mae": 1.4680624276239604,
+        "pixel_count": 227976,
+        "role": "sidebar"
+      },
+      "table": {
+        "bad_pixel_count": 23329,
+        "bad_pixel_ratio": 0.054720521661623625,
+        "bad_pixel_threshold": 30,
+        "bbox": [
+          308,
+          549,
+          1579,
+          270
+        ],
+        "mae": 5.470339877559637,
+        "pixel_count": 426330,
+        "role": "table"
+      },
+      "table-header": {
+        "bad_pixel_count": 2754,
+        "bad_pixel_ratio": 0.0355947318762844,
+        "bad_pixel_threshold": 30,
+        "bbox": [
+          308,
+          549,
+          1579,
+          49
+        ],
+        "mae": 3.237621330989647,
+        "pixel_count": 77371,
+        "role": "table-header"
+      },
+      "table-section": {
+        "bad_pixel_count": 19464,
+        "bad_pixel_ratio": 0.05201274130448725,
+        "bad_pixel_threshold": 30,
+        "bbox": [
+          307,
+          544,
+          1613,
+          232
+        ],
+        "mae": 5.227499625884516,
+        "pixel_count": 374216,
+        "role": "table-section"
+      }
+    },
+    "render_size": [
+      1920,
+      826
+    ],
+    "schema_version": "grounding-region-quality/1.0",
+    "size_match": true,
+    "status": "measured"
+  },
+  "repair_history": {
+    "artifacts": {
+      "content_inventory": "10_content_inventory.json",
+      "evidence_bundle": "09_evidence_bundle.json",
+      "geometry_manifest": "10_geometry_manifest.json",
+      "scene_plan": "11_scene_plan.json"
+    },
+    "extra_calls": 0,
+    "history": [],
+    "initial_report": {
+      "blockers": [],
+      "counts": {
+        "geometry_items": 237,
+        "inventory_items": 142,
+        "owned_items": 142,
+        "scene_nodes": 117,
+        "suppressed_items": 31,
+        "table_rows": 5,
+        "unknown_items": 0
+      },
+      "missing_content_refs": [],
+      "status": "pass"
+    },
+    "mode": "high",
+    "rounds": 0,
+    "schema_version": "grounding-repair-history/1.0",
+    "status": "not-needed"
+  },
+  "run_status": "captured-figma-evidence",
+  "sample_id": "IMG-FLEXWEAVER-ADMIN",
+  "schema_version": "image-figma-mvp-acceptance/2.0",
+  "status": "blocked-fail",
+  "visual": {
+    "bad_pixel_count": 54665,
+    "bad_pixel_ratio": 0.034468951775625506,
+    "ink_mean": 8.545771514598643,
+    "mean": 4.120937794256121,
+    "over30_pct": 3.4468951775625505,
+    "reference": "D:\\LLM-Data\\Figma_auto_agent\\tests\\fixtures\\image_to_slice_benchmark_2026-11-02\\IMG-FLEXWEAVER-ADMIN.png",
+    "reference_shape": [
+      826,
+      1920,
+      3
+    ],
+    "render": "D:\\LLM-Data\\Figma_auto_agent\\output\\_grounding_manual_20261107_high_v2\\figma_form_calibrated_2\\export.png",
+    "render_shape": [
+      826,
+      1920,
+      3
+    ],
+    "size_match": true,
+    "status": "measured",
+    "within30_pct": 96.55310482243745
+  }
+}
