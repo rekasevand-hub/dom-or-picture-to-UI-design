@@ -284,7 +284,10 @@ C:\Users\lzq\.conda\envs\omni\python.exe scripts/image_figma_mvp.py `
   的 residual 模式少评估 7 个无收益策略组。证据见
   `docs/v2_mentor/CALIBRATION_MODE_AB_2026-11-08.md`。
 - short-unit 逻辑标签（例如 `5.8` + `折`）会在 OCR 补充阶段合并到相邻数值
-  owner，再进入 inventory / ScenePlan。
+  owner，再进入 inventory / ScenePlan。2026-11-08 的真实 Figma 验证中，
+  ACCTOKEN Models 的 critical text 从 `24/27` 提升到 `25/27`，blockers
+  从 `32` 降到 `31`；证据见
+  `docs/v2_mentor/SHORT_UNIT_LOGICAL_LABEL_2026-11-08.md`。
 
 ## DOM 结构诊断
 
