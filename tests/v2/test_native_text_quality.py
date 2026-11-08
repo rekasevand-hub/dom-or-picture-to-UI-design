@@ -210,6 +210,200 @@ def test_native_text_quality_marks_gate_scope_and_diagnostic_only_owners(
     assert report["gate"]["nativeText"]["unscopedOwnerCount"] == 1
 
 
+def test_native_text_quality_matches_adjacent_logical_cluster(
+    tmp_path: Path,
+) -> None:
+    reference = tmp_path / "reference.png"
+    rendered = tmp_path / "rendered.png"
+    for path in (reference, rendered):
+        image = Image.new("RGB", (200, 100), "white")
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((20, 20, 49, 28), fill="black")
+        draw.rectangle((52, 20, 71, 28), fill="black")
+        image.save(path)
+    design = {
+        "elements": [
+            {
+                "type": "text",
+                "contentRef": "text:price",
+                "text": "5.8",
+                "styleEvidence": {
+                    "evidence": {
+                        "source_bbox": [15, 15, 35, 19],
+                        "ink_bbox": [20, 20, 30, 9],
+                    }
+                },
+            },
+            {
+                "type": "text",
+                "contentRef": "text:unit",
+                "text": "折",
+                "styleEvidence": {
+                    "evidence": {
+                        "source_bbox": [50, 15, 22, 19],
+                        "ink_bbox": [52, 20, 20, 9],
+                    }
+                },
+            },
+        ]
+    }
+    readback = {
+        "type": "FRAME",
+        "children": [
+            {"type": "TEXT", "characters": "5.8"},
+            {"type": "TEXT", "characters": "折"},
+        ],
+    }
+
+    report = build_native_text_quality(
+        design,
+        readback,
+        str(reference),
+        str(rendered),
+        [{"id": "page", "role": "page", "bbox": [0, 0, 200, 100]}],
+        gate_policy={
+            "policy_id": "image-figma-mvp-product/2.0",
+            "chrome_bad_pixel_ratio_max": 0.05,
+        },
+        critical_texts=["5.8折"],
+    )
+
+    assert report["gate"]["criticalText"]["matchedCount"] == 1
+    assert report["gate"]["criticalText"]["missing"] == []
+    assert report["gate"]["criticalText"]["logicalClusters"] == [
+        {
+            "text": "5.8折",
+            "ownerRefs": ["text:price", "text:unit"],
+        }
+    ]
+    assert report["gate"]["status"] == "pass"
+
+
+def test_native_text_quality_rejects_distant_logical_cluster(
+    tmp_path: Path,
+) -> None:
+    reference = tmp_path / "reference.png"
+    rendered = tmp_path / "rendered.png"
+    for path in (reference, rendered):
+        image = Image.new("RGB", (200, 100), "white")
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((20, 20, 49, 28), fill="black")
+        draw.rectangle((120, 20, 139, 28), fill="black")
+        image.save(path)
+    design = {
+        "elements": [
+            {
+                "type": "text",
+                "contentRef": "text:price",
+                "text": "5.8",
+                "styleEvidence": {
+                    "evidence": {
+                        "source_bbox": [15, 15, 35, 19],
+                        "ink_bbox": [20, 20, 30, 9],
+                    }
+                },
+            },
+            {
+                "type": "text",
+                "contentRef": "text:unit",
+                "text": "折",
+                "styleEvidence": {
+                    "evidence": {
+                        "source_bbox": [115, 15, 30, 19],
+                        "ink_bbox": [120, 20, 20, 9],
+                    }
+                },
+            },
+        ]
+    }
+    readback = {
+        "type": "FRAME",
+        "children": [
+            {"type": "TEXT", "characters": "5.8"},
+            {"type": "TEXT", "characters": "折"},
+        ],
+    }
+
+    report = build_native_text_quality(
+        design,
+        readback,
+        str(reference),
+        str(rendered),
+        [{"id": "page", "role": "page", "bbox": [0, 0, 200, 100]}],
+        gate_policy={
+            "policy_id": "image-figma-mvp-product/2.0",
+            "chrome_bad_pixel_ratio_max": 0.05,
+        },
+        critical_texts=["5.8折"],
+    )
+
+    assert report["gate"]["criticalText"]["matchedCount"] == 0
+    assert report["gate"]["criticalText"]["missing"] == ["5.8折"]
+    assert report["gate"]["criticalText"]["logicalClusters"] == []
+
+
+def test_native_text_quality_logical_cluster_requires_native_owners(
+    tmp_path: Path,
+) -> None:
+    reference = tmp_path / "reference.png"
+    rendered = tmp_path / "rendered.png"
+    for path in (reference, rendered):
+        image = Image.new("RGB", (200, 100), "white")
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((20, 20, 49, 28), fill="black")
+        draw.rectangle((52, 20, 71, 28), fill="black")
+        image.save(path)
+    design = {
+        "elements": [
+            {
+                "type": "text",
+                "contentRef": "text:price",
+                "text": "5.8",
+                "styleEvidence": {
+                    "evidence": {
+                        "source_bbox": [15, 15, 35, 19],
+                        "ink_bbox": [20, 20, 30, 9],
+                    }
+                },
+            },
+            {
+                "type": "text",
+                "contentRef": "text:unit",
+                "text": "折",
+                "styleEvidence": {
+                    "evidence": {
+                        "source_bbox": [50, 15, 22, 19],
+                        "ink_bbox": [52, 20, 20, 9],
+                    }
+                },
+            },
+        ]
+    }
+    readback = {
+        "type": "FRAME",
+        "children": [
+            {"type": "TEXT", "characters": "5.8"},
+        ],
+    }
+
+    report = build_native_text_quality(
+        design,
+        readback,
+        str(reference),
+        str(rendered),
+        [{"id": "page", "role": "page", "bbox": [0, 0, 200, 100]}],
+        gate_policy={
+            "policy_id": "image-figma-mvp-product/2.0",
+            "chrome_bad_pixel_ratio_max": 0.05,
+        },
+        critical_texts=["5.8折"],
+    )
+
+    assert report["gate"]["criticalText"]["matchedCount"] == 0
+    assert report["gate"]["criticalText"]["missing"] == ["5.8折"]
+    assert report["gate"]["criticalText"]["logicalClusters"] == []
+
+
 def test_native_text_quality_support_domain_excludes_nontext_ink(
     tmp_path: Path,
 ) -> None:

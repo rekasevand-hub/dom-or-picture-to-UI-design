@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
+from itertools import combinations
 from typing import Any
 
 
@@ -188,6 +189,112 @@ def _critical_text_matches(expected: Any, actual: Any) -> bool:
     return False
 
 
+def _boxes_adjacent(
+    left: Sequence[int],
+    right: Sequence[int],
+    *,
+    max_gap_px: int,
+) -> bool:
+    """Whether two ink boxes are close enough to form one logical label."""
+    left_x, left_y, left_width, left_height = left
+    right_x, right_y, right_width, right_height = right
+    horizontal_gap = max(
+        right_x - (left_x + left_width),
+        left_x - (right_x + right_width),
+    )
+    vertical_gap = max(
+        right_y - (left_y + left_height),
+        left_y - (right_y + right_height),
+    )
+    vertical_overlap = min(
+        left_y + left_height,
+        right_y + right_height,
+    ) - max(left_y, right_y)
+    horizontal_overlap = min(
+        left_x + left_width,
+        right_x + right_width,
+    ) - max(left_x, right_x)
+    same_line = horizontal_gap <= max_gap_px and vertical_overlap >= max(
+        1, min(left_height, right_height) // 2
+    )
+    stacked = vertical_gap <= max_gap_px and horizontal_overlap >= max(
+        1, min(left_width, right_width) // 2
+    )
+    return same_line or stacked
+
+
+def _cluster_is_adjacent(
+    indexes: Sequence[int],
+    owners: Sequence[Mapping[str, Any]],
+    *,
+    max_gap_px: int,
+) -> bool:
+    boxes = [owners[index].get("referenceInkBBox") for index in indexes]
+    if any(not isinstance(box, Sequence) or len(box) != 4 for box in boxes):
+        return False
+    count = len(indexes)
+    adjacency: list[list[int]] = [[] for _ in range(count)]
+    for left in range(count):
+        for right in range(left + 1, count):
+            if _boxes_adjacent(boxes[left], boxes[right], max_gap_px=max_gap_px):
+                adjacency[left].append(right)
+                adjacency[right].append(left)
+    visited: set[int] = set()
+    stack = [0]
+    while stack:
+        node = stack.pop()
+        if node in visited:
+            continue
+        visited.add(node)
+        stack.extend(adjacency[node])
+    return len(visited) == count
+
+
+def _logical_cluster_for_expected(
+    expected: Any,
+    owners: Sequence[Mapping[str, Any]],
+    *,
+    exclude: set[int],
+    max_cluster_size: int = 4,
+    max_gap_px: int = 8,
+) -> list[int] | None:
+    """Find adjacent native owners whose concatenated text equals ``expected``."""
+    expected_text = _normalize_gate_text(expected)
+    if not expected_text:
+        return None
+    candidates = [
+        index
+        for index, owner in enumerate(owners)
+        if index not in exclude
+        and owner.get("nativeText")
+        and _normalize_gate_text(owner.get("text"))
+        and isinstance(owner.get("referenceInkBBox"), Sequence)
+        and len(owner["referenceInkBBox"]) == 4
+    ]
+    compact_expected = re.sub(r"\s+", "", expected_text)
+    for size in range(2, min(max_cluster_size, len(candidates)) + 1):
+        for combo in combinations(candidates, size):
+            if not _cluster_is_adjacent(
+                combo,
+                owners,
+                max_gap_px=max_gap_px,
+            ):
+                continue
+            ordered = sorted(
+                combo,
+                key=lambda index: (
+                    owners[index]["referenceInkBBox"][1],
+                    owners[index]["referenceInkBBox"][0],
+                ),
+            )
+            combined = "".join(
+                _normalize_gate_text(owners[index]["text"]) for index in ordered
+            )
+            if re.sub(r"\s+", "", combined) == compact_expected:
+                return list(ordered)
+    return None
+
+
 def _unmeasurable_owner(
     element: Mapping[str, Any],
     text: str,
@@ -227,15 +334,34 @@ def _evaluate_native_text_gate(
     )
     matched_owner_indexes: set[int] = set()
     missing_critical: list[str] = []
+    logical_clusters: list[dict[str, Any]] = []
     for expected in critical:
         matches = [
             index
             for index, owner in enumerate(owners)
             if _critical_text_matches(expected, owner.get("text"))
         ]
-        if not matches:
-            missing_critical.append(expected)
-        matched_owner_indexes.update(matches)
+        if matches:
+            matched_owner_indexes.update(matches)
+            continue
+        cluster = _logical_cluster_for_expected(
+            expected,
+            owners,
+            exclude=matched_owner_indexes,
+        )
+        if cluster is not None:
+            matched_owner_indexes.update(cluster)
+            logical_clusters.append(
+                {
+                    "text": expected,
+                    "ownerRefs": [
+                        str(owners[index].get("contentRef") or f"owner-{index}")
+                        for index in cluster
+                    ],
+                }
+            )
+            continue
+        missing_critical.append(expected)
     if critical:
         scope_indexes = sorted(matched_owner_indexes)
         scope = "critical-text-owners"
@@ -320,6 +446,7 @@ def _evaluate_native_text_gate(
             "requiredCount": len(critical),
             "matchedCount": len(critical) - len(missing_critical),
             "missing": missing_critical,
+            "logicalClusters": logical_clusters,
         },
         "nativeText": {
             "status": "fail" if text_blockers else "pass",
@@ -387,9 +514,7 @@ def build_native_text_quality(
         policy.get("native_text_width_tolerance_ratio"),
         0.02,
     )
-    width_floor = int(
-        _number(policy.get("native_text_width_tolerance_floor_px"), 2.0)
-    )
+    width_floor = int(_number(policy.get("native_text_width_tolerance_floor_px"), 2.0))
     height_ratio = _number(
         policy.get("native_text_height_tolerance_ratio"),
         0.02,
@@ -518,8 +643,7 @@ def build_native_text_quality(
                 else None
             )
         geometry_checks = {
-            "position": abs(delta_x) <= position_max
-            and abs(delta_y) <= position_max,
+            "position": abs(delta_x) <= position_max and abs(delta_y) <= position_max,
             "size": abs(width_delta) <= width_tolerance
             and abs(height_delta) <= height_tolerance,
             "coverage": support_coverage is not None
@@ -629,11 +753,7 @@ def build_native_text_quality(
             if gate_enabled
             else "grounding-native-text-quality/1.0"
         ),
-        "status": (
-            "measured-gate"
-            if gate_enabled
-            else "measured-diagnostic-only"
-        ),
+        "status": ("measured-gate" if gate_enabled else "measured-diagnostic-only"),
         "acceptance_effect": (
             "native-text-and-chrome-gate" if gate_enabled else "none"
         ),
