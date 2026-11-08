@@ -273,6 +273,16 @@ C:\Users\lzq\.conda\envs\omni\python.exe scripts/image_figma_mvp.py `
 - `docs/v2_mentor/IMAGE_FIGMA_MVP_LEDGER_2026-10-25.md`
 - `output/_image_figma_mvp_2026-10-25_r4/acceptance.json`
 
+当前默认口径：
+
+- `--emission-contract repair` 为默认；它只登记“Figma 中确实存在但缺少 ink
+  证据”的 native owner，不改变任何冻结门禁或阈值。
+- `--calibration-mode legacy` 为默认，保持历史 15 段校准顺序；
+  `residual` 模式会用 native-text 残差画像选择策略组，需先跑真实 Figma A/B
+  再考虑切换默认。
+- short-unit 逻辑标签（例如 `5.8` + `折`）会在 OCR 补充阶段合并到相邻数值
+  owner，再进入 inventory / ScenePlan。
+
 ## DOM 结构诊断
 
 每次 URL 采集都会额外写 `00_dom_diagnostics.json`，用来区分两类问题：

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import sys
 from dataclasses import replace
@@ -32,24 +33,16 @@ from src.app.services.structure.image_contract import (  # noqa: E402
 from src.app.services.structure.fidelity.emission_contract import (  # noqa: E402
     audit_emission,
 )
+from src.app.services.structure.fidelity.calibration_profile import (  # noqa: E402
+    build_calibration_residual_profile,
+)
+from src.app.services.structure.fidelity.calibration_strategies import (  # noqa: E402
+    CalibrationRenderError,
+    run_calibration_pipeline,
+)
 from src.app.services.structure.fidelity.perception_contract import (  # noqa: E402
     evaluate_native_fidelity,
     run_perception_contract,
-)
-from src.app.services.structure.fidelity.text_calibration import (  # noqa: E402
-    calibrate_control_fonts,
-    calibrate_form_fonts_from_render,
-    calibrate_form_positions_from_render,
-    calibrate_form_text_shape_from_render,
-    calibrate_form_text_weight_from_render,
-    calibrate_form_text_positions,
-    calibrate_low_contrast_placeholder_from_render,
-    calibrate_search_control_from_render,
-    calibrate_table_fonts_from_render,
-    calibrate_table_letter_spacing_from_render,
-    calibrate_table_positions_from_render,
-    calibrate_toolbar_font_weight_from_render,
-    calibrate_toolbar_letter_spacing_from_render,
 )
 from src.main import load_config  # noqa: E402
 
@@ -91,6 +84,16 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=("1.0", "2.0"),
         default="1.0",
         help="Select the frozen raw-region gate or the split native-text/chrome gate.",
+    )
+    parser.add_argument(
+        "--calibration-mode",
+        choices=("legacy", "residual"),
+        default="legacy",
+        help=(
+            "legacy preserves the historical fifteen-stage order. 'residual' "
+            "selects strategy groups from the measured native-text residual "
+            "profile; keep legacy until a real Figma A/B validates residual mode."
+        ),
     )
     parser.add_argument(
         "--prepare-only",
@@ -373,384 +376,86 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
 
     initial_readback = _read_json(run_root / "readback.json")
-    calibrated_design, control_calibration = calibrate_control_fonts(
-        design,
-        initial_readback,
-    )
-    calibrated_design, table_font_calibration = calibrate_table_fonts_from_render(
-        calibrated_design,
-        str(image),
-        str(run_root / "export.png"),
-    )
-    calibrated_design, form_text_calibration = calibrate_form_text_positions(
-        calibrated_design,
-        initial_readback,
-    )
-    font_stage_adjusted = (
-        control_calibration["adjusted_count"]
-        + table_font_calibration["adjusted_count"]
-        + form_text_calibration["adjusted_count"]
-    )
-    wrote_initial_design = False
-    if font_stage_adjusted:
-        _write_json(output / "figma_design_initial.json", design)
-        wrote_initial_design = True
-        design = calibrated_design
-        _write_json(output / "figma_design.json", design)
-        run_root = output / "figma_font_calibrated"
-        run_summary = run_image_figma_evidence(
-            design,
-            output_dir=run_root,
+    regions = _fidelity_regions(geometry)
+    original_design = copy.deepcopy(design)
+    calibration_render_count = 0
+
+    def _render_calibration_design(
+        candidate_design: dict,
+        render_suffix: str,
+    ) -> tuple[Path, dict]:
+        nonlocal calibration_render_count
+        if calibration_render_count == 0:
+            _write_json(output / "figma_design_initial.json", original_design)
+        calibration_render_count += 1
+        _write_json(output / "figma_design.json", candidate_design)
+        calibration_root = output / render_suffix
+        summary = run_image_figma_evidence(
+            candidate_design,
+            output_dir=calibration_root,
             sample_id=str(truth.get("sample_id") or ""),
             adapter_factory=ImageMVFigmaAdapter,
             readback_depth=max(1, args.readback_depth),
         )
-        if run_summary.get("status") != "captured-figma-evidence":
-            _write_json(output / "acceptance.json", run_summary)
-            print(json.dumps(run_summary, ensure_ascii=True))
-            return 2
+        return calibration_root, summary
 
-    positioned_design, table_position_calibration = (
-        calibrate_table_positions_from_render(
-            design,
+    def _calibration_profile(
+        candidate_design: dict,
+        candidate_run_root: Path,
+        candidate_readback: dict,
+    ) -> dict:
+        export_path = candidate_run_root / "export.png"
+        if not export_path.is_file():
+            return {}
+        return build_calibration_residual_profile(
+            candidate_design,
+            candidate_readback,
             str(image),
-            str(run_root / "export.png"),
+            str(export_path),
+            regions,
         )
-    )
-    if table_position_calibration["adjusted_count"]:
-        if not wrote_initial_design:
-            _write_json(output / "figma_design_initial.json", design)
-            wrote_initial_design = True
-        design = positioned_design
-        _write_json(output / "figma_design.json", design)
-        run_root = output / "figma_calibrated"
-        run_summary = run_image_figma_evidence(
-            design,
-            output_dir=run_root,
-            sample_id=str(truth.get("sample_id") or ""),
-            adapter_factory=ImageMVFigmaAdapter,
-            readback_depth=max(1, args.readback_depth),
-        )
-        if run_summary.get("status") != "captured-figma-evidence":
-            _write_json(output / "acceptance.json", run_summary)
-            print(json.dumps(run_summary, ensure_ascii=True))
-            return 2
 
-    table_spacing_design, table_spacing_calibration = (
-        calibrate_table_letter_spacing_from_render(
-            design,
-            str(image),
-            str(run_root / "export.png"),
-        )
-    )
-    if table_spacing_calibration["adjusted_count"]:
-        design = table_spacing_design
-        _write_json(output / "figma_design.json", design)
-        run_root = output / "figma_table_spacing"
-        run_summary = run_image_figma_evidence(
-            design,
-            output_dir=run_root,
-            sample_id=str(truth.get("sample_id") or ""),
-            adapter_factory=ImageMVFigmaAdapter,
-            readback_depth=max(1, args.readback_depth),
-        )
-        if run_summary.get("status") != "captured-figma-evidence":
-            _write_json(output / "acceptance.json", run_summary)
-            print(json.dumps(run_summary, ensure_ascii=True))
-            return 2
-
-    form_font_design, form_font_calibration = calibrate_form_fonts_from_render(
-        design,
-        str(image),
-        str(run_root / "export.png"),
-    )
-    if form_font_calibration["adjusted_count"]:
-        if not wrote_initial_design:
-            _write_json(output / "figma_design_initial.json", design)
-            wrote_initial_design = True
-        design = form_font_design
-        _write_json(output / "figma_design.json", design)
-        run_root = output / "figma_form_font"
-        run_summary = run_image_figma_evidence(
-            design,
-            output_dir=run_root,
-            sample_id=str(truth.get("sample_id") or ""),
-            adapter_factory=ImageMVFigmaAdapter,
-            readback_depth=max(1, args.readback_depth),
-        )
-        if run_summary.get("status") != "captured-figma-evidence":
-            _write_json(output / "acceptance.json", run_summary)
-            print(json.dumps(run_summary, ensure_ascii=True))
-            return 2
-
-    form_weight_design, form_weight_calibration = (
-        calibrate_form_text_weight_from_render(
-            design,
-            str(image),
-            str(run_root / "export.png"),
-        )
-    )
-    if form_weight_calibration["adjusted_count"]:
-        design = form_weight_design
-        _write_json(output / "figma_design.json", design)
-        run_root = output / "figma_form_weight"
-        run_summary = run_image_figma_evidence(
-            design,
-            output_dir=run_root,
-            sample_id=str(truth.get("sample_id") or ""),
-            adapter_factory=ImageMVFigmaAdapter,
-            readback_depth=max(1, args.readback_depth),
-        )
-        if run_summary.get("status") != "captured-figma-evidence":
-            _write_json(output / "acceptance.json", run_summary)
-            print(json.dumps(run_summary, ensure_ascii=True))
-            return 2
-
-    form_shape_design, form_shape_calibration = calibrate_form_text_shape_from_render(
-        design,
-        str(image),
-        str(run_root / "export.png"),
-    )
-    if form_shape_calibration["adjusted_count"]:
-        design = form_shape_design
-        _write_json(output / "figma_design.json", design)
-        run_root = output / "figma_form_shape"
-        run_summary = run_image_figma_evidence(
-            design,
-            output_dir=run_root,
-            sample_id=str(truth.get("sample_id") or ""),
-            adapter_factory=ImageMVFigmaAdapter,
-            readback_depth=max(1, args.readback_depth),
-        )
-        if run_summary.get("status") != "captured-figma-evidence":
-            _write_json(output / "acceptance.json", run_summary)
-            print(json.dumps(run_summary, ensure_ascii=True))
-            return 2
-
-    form_position_design, form_position_calibration = (
-        calibrate_form_positions_from_render(
-            design,
-            _read_json(run_root / "readback.json"),
-            str(image),
-            str(run_root / "export.png"),
-        )
-    )
-    if form_position_calibration["adjusted_count"]:
-        if not wrote_initial_design:
-            _write_json(output / "figma_design_initial.json", design)
-            wrote_initial_design = True
-        design = form_position_design
-        _write_json(output / "figma_design.json", design)
-        run_root = output / "figma_form_calibrated"
-        run_summary = run_image_figma_evidence(
-            design,
-            output_dir=run_root,
-            sample_id=str(truth.get("sample_id") or ""),
-            adapter_factory=ImageMVFigmaAdapter,
-            readback_depth=max(1, args.readback_depth),
-        )
-        if run_summary.get("status") != "captured-figma-evidence":
-            _write_json(output / "acceptance.json", run_summary)
-            print(json.dumps(run_summary, ensure_ascii=True))
-            return 2
-
-    form_position_second_design, form_position_second_calibration = (
-        calibrate_form_positions_from_render(
-            design,
-            _read_json(run_root / "readback.json"),
-            str(image),
-            str(run_root / "export.png"),
-        )
-    )
-    if form_position_second_calibration["adjusted_count"]:
-        design = form_position_second_design
-        _write_json(output / "figma_design.json", design)
-        run_root = output / "figma_form_calibrated_2"
-        run_summary = run_image_figma_evidence(
-            design,
-            output_dir=run_root,
-            sample_id=str(truth.get("sample_id") or ""),
-            adapter_factory=ImageMVFigmaAdapter,
-            readback_depth=max(1, args.readback_depth),
-        )
-        if run_summary.get("status") != "captured-figma-evidence":
-            _write_json(output / "acceptance.json", run_summary)
-            print(json.dumps(run_summary, ensure_ascii=True))
-            return 2
-
-    placeholder_design, placeholder_calibration = (
-        calibrate_low_contrast_placeholder_from_render(
-            design,
-            str(image),
-            str(run_root / "export.png"),
+    try:
+        calibration = run_calibration_pipeline(
+            design=design,
+            image=str(image),
+            run_root=run_root,
+            readback=initial_readback,
             ocr_supplement=ocr_supplement,
+            render=_render_calibration_design,
+            mode=args.calibration_mode,
+            profile_builder=_calibration_profile,
         )
-    )
-    if placeholder_calibration["adjusted_count"]:
-        design = placeholder_design
-        _write_json(output / "figma_design.json", design)
-        run_root = output / "figma_placeholder"
-        run_summary = run_image_figma_evidence(
-            design,
-            output_dir=run_root,
-            sample_id=str(truth.get("sample_id") or ""),
-            adapter_factory=ImageMVFigmaAdapter,
-            readback_depth=max(1, args.readback_depth),
-        )
-        if run_summary.get("status") != "captured-figma-evidence":
-            _write_json(output / "acceptance.json", run_summary)
-            print(json.dumps(run_summary, ensure_ascii=True))
-            return 2
-
-    toolbar_spacing_design, toolbar_spacing_calibration = (
-        calibrate_toolbar_letter_spacing_from_render(
-            design,
-            str(image),
-            str(run_root / "export.png"),
-        )
-    )
-    if toolbar_spacing_calibration["adjusted_count"]:
-        design = toolbar_spacing_design
-        _write_json(output / "figma_design.json", design)
-        run_root = output / "figma_toolbar_calibrated"
-        run_summary = run_image_figma_evidence(
-            design,
-            output_dir=run_root,
-            sample_id=str(truth.get("sample_id") or ""),
-            adapter_factory=ImageMVFigmaAdapter,
-            readback_depth=max(1, args.readback_depth),
-        )
-        if run_summary.get("status") != "captured-figma-evidence":
-            _write_json(output / "acceptance.json", run_summary)
-            print(json.dumps(run_summary, ensure_ascii=True))
-            return 2
-
-    toolbar_weight_design, toolbar_weight_calibration = (
-        calibrate_toolbar_font_weight_from_render(
-            design,
-            str(image),
-            str(run_root / "export.png"),
-        )
-    )
-    if toolbar_weight_calibration["adjusted_count"]:
-        design = toolbar_weight_design
-        _write_json(output / "figma_design.json", design)
-        run_root = output / "figma_toolbar_weight"
-        run_summary = run_image_figma_evidence(
-            design,
-            output_dir=run_root,
-            sample_id=str(truth.get("sample_id") or ""),
-            adapter_factory=ImageMVFigmaAdapter,
-            readback_depth=max(1, args.readback_depth),
-        )
-        if run_summary.get("status") != "captured-figma-evidence":
-            _write_json(output / "acceptance.json", run_summary)
-            print(json.dumps(run_summary, ensure_ascii=True))
-            return 2
-
-    toolbar_respacing_design, toolbar_respacing_calibration = (
-        calibrate_toolbar_letter_spacing_from_render(
-            design,
-            str(image),
-            str(run_root / "export.png"),
-        )
-    )
-    if toolbar_respacing_calibration["adjusted_count"]:
-        design = toolbar_respacing_design
-        _write_json(output / "figma_design.json", design)
-        run_root = output / "figma_toolbar_calibrated_2"
-        run_summary = run_image_figma_evidence(
-            design,
-            output_dir=run_root,
-            sample_id=str(truth.get("sample_id") or ""),
-            adapter_factory=ImageMVFigmaAdapter,
-            readback_depth=max(1, args.readback_depth),
-        )
-        if run_summary.get("status") != "captured-figma-evidence":
-            _write_json(output / "acceptance.json", run_summary)
-            print(json.dumps(run_summary, ensure_ascii=True))
-            return 2
-
-    search_control_design, search_control_calibration = (
-        calibrate_search_control_from_render(
-            design,
-            str(image),
-            str(run_root / "export.png"),
-        )
-    )
-    if search_control_calibration["adjusted_count"]:
-        design = search_control_design
-        _write_json(output / "figma_design.json", design)
-        run_root = output / "figma_search_control"
-        run_summary = run_image_figma_evidence(
-            design,
-            output_dir=run_root,
-            sample_id=str(truth.get("sample_id") or ""),
-            adapter_factory=ImageMVFigmaAdapter,
-            readback_depth=max(1, args.readback_depth),
-        )
-        if run_summary.get("status") != "captured-figma-evidence":
-            _write_json(output / "acceptance.json", run_summary)
-            print(json.dumps(run_summary, ensure_ascii=True))
-            return 2
-
+    except CalibrationRenderError as exc:
+        failure = {**exc.summary, "calibrationGroup": exc.group_name}
+        _write_json(output / "acceptance.json", failure)
+        print(json.dumps(failure, ensure_ascii=True))
+        return 2
+    design = calibration.design
+    run_root = calibration.run_root
+    if calibration_render_count:
+        run_summary = _read_json(run_root / "summary.json")
     calibration_report = {
-        **control_calibration,
-        "table_fonts": table_font_calibration,
-        "table_positions": table_position_calibration,
-        "table_letter_spacing": table_spacing_calibration,
-        "form_text_positions": form_text_calibration,
-        "form_fonts_post": form_font_calibration,
-        "form_text_weight": form_weight_calibration,
-        "form_text_shape": form_shape_calibration,
-        "low_contrast_placeholder": placeholder_calibration,
-        "form_positions_post": form_position_calibration,
-        "form_positions_post_2": form_position_second_calibration,
-        "toolbar_letter_spacing": toolbar_spacing_calibration,
-        "toolbar_font_weight": toolbar_weight_calibration,
-        "toolbar_letter_spacing_2": toolbar_respacing_calibration,
-        "search_control": search_control_calibration,
-        "adjusted_count": (
-            control_calibration["adjusted_count"]
-            + table_font_calibration["adjusted_count"]
-            + table_position_calibration["adjusted_count"]
-            + table_spacing_calibration["adjusted_count"]
-            + form_text_calibration["adjusted_count"]
-            + form_font_calibration["adjusted_count"]
-            + form_weight_calibration["adjusted_count"]
-            + form_shape_calibration["adjusted_count"]
-            + placeholder_calibration["adjusted_count"]
-            + form_position_calibration["adjusted_count"]
-            + form_position_second_calibration["adjusted_count"]
-            + toolbar_spacing_calibration["adjusted_count"]
-            + toolbar_weight_calibration["adjusted_count"]
-            + toolbar_respacing_calibration["adjusted_count"]
-            + search_control_calibration["adjusted_count"]
-        ),
+        **calibration.reports,
         "status": (
             "applied"
-            if control_calibration["adjusted_count"]
-            or table_font_calibration["adjusted_count"]
-            or table_position_calibration["adjusted_count"]
-            or table_spacing_calibration["adjusted_count"]
-            or form_text_calibration["adjusted_count"]
-            or form_font_calibration["adjusted_count"]
-            or form_weight_calibration["adjusted_count"]
-            or form_shape_calibration["adjusted_count"]
-            or placeholder_calibration["adjusted_count"]
-            or form_position_calibration["adjusted_count"]
-            or form_position_second_calibration["adjusted_count"]
-            or toolbar_spacing_calibration["adjusted_count"]
-            or toolbar_weight_calibration["adjusted_count"]
-            or toolbar_respacing_calibration["adjusted_count"]
-            or search_control_calibration["adjusted_count"]
+            if any(
+                int(report.get("adjusted_count") or 0) > 0
+                for report in calibration.reports.values()
+            )
             else "not-needed"
         ),
+        "adjusted_count": sum(
+            int(report.get("adjusted_count") or 0)
+            for report in calibration.reports.values()
+        ),
+        "mode": args.calibration_mode,
+        "selected_groups": calibration.selected_groups,
+        "residual_profile": calibration.profile,
     }
     _write_json(output / "font_calibration.json", calibration_report)
 
     region_quality = None
-    regions = _fidelity_regions(geometry)
     if regions:
         region_quality = evaluate_region_quality(
             image,
