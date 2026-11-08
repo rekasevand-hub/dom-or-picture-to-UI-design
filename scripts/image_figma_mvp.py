@@ -125,11 +125,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--emission-contract",
         choices=("off", "report", "repair"),
-        default="report",
+        default="repair",
         help=(
             "Audit inventory->plan->design->gate-owner emission by contentRef. "
-            "'repair' additionally registers native owners that have no "
-            "measurable ink evidence (diagnostic, never counted as passing)."
+            "'repair' (default) additionally registers native owners that have "
+            "no measurable ink evidence (diagnostic, never counted as passing). "
+            "Use 'report' to keep the historical critical-text denominator."
         ),
     )
     parser.add_argument(
@@ -231,9 +232,7 @@ def _fidelity_regions(geometry: dict | None) -> list[dict]:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
-    acceptance_policy = (
-        IMAGE_MVP_POLICY_V2 if args.acceptance_policy == "2.0" else None
-    )
+    acceptance_policy = IMAGE_MVP_POLICY_V2 if args.acceptance_policy == "2.0" else None
     image = args.image.resolve()
     truth = _read_json(args.truth)
     if not image.is_file():
@@ -297,9 +296,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             drift_threshold=args.perception_drift_threshold,
         )
         if perception_report.get("repair", {}).get("applied"):
-            _write_json(
-                output / "figma_design_unrepaired.json", unrepaired_design
-            )
+            _write_json(output / "figma_design_unrepaired.json", unrepaired_design)
         _write_json(output / "perception_coverage.json", perception_report)
 
     prepared = {
@@ -337,9 +334,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "systematicCoordinateDrift"
             ],
             "recovered": perception_report["counts"]["recovered"],
-            "repairApplied": bool(
-                perception_report.get("repair", {}).get("applied")
-            ),
+            "repairApplied": bool(perception_report.get("repair", {}).get("applied")),
         }
     if args.prepare_only:
         _write_json(output / "prepared.json", prepared)
@@ -511,12 +506,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps(run_summary, ensure_ascii=True))
             return 2
 
-    form_shape_design, form_shape_calibration = (
-        calibrate_form_text_shape_from_render(
-            design,
-            str(image),
-            str(run_root / "export.png"),
-        )
+    form_shape_design, form_shape_calibration = calibrate_form_text_shape_from_render(
+        design,
+        str(image),
+        str(run_root / "export.png"),
     )
     if form_shape_calibration["adjusted_count"]:
         design = form_shape_design
