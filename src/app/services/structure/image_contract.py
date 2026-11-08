@@ -37,6 +37,38 @@ SCHEMA_VERSION = "image-figma-mvp/1.0"
 REFERENCE_SCHEMA_VERSION = "image-reference/1.0"
 IR_SCHEMA_VERSION = "image-ir/1.0"
 
+_SHORT_UNIT_SUFFIXES = frozenset(
+    {
+        "折",
+        "元",
+        "个",
+        "次",
+        "天",
+        "月",
+        "日",
+        "年",
+        "时",
+        "分",
+        "秒",
+        "人",
+        "项",
+        "条",
+        "张",
+        "套",
+        "台",
+        "件",
+        "份",
+        "%",
+        "％",
+        "kb",
+        "mb",
+        "gb",
+        "tb",
+        "ms",
+        "px",
+    }
+)
+
 _MIME_BY_FORMAT = {
     "PNG": "image/png",
     "JPEG": "image/jpeg",
@@ -218,11 +250,15 @@ def _enhance_low_confidence_ocr_observation(
             or score < confidence + 0.15
         ):
             continue
-        if normalized not in candidate_normalized and difflib.SequenceMatcher(
-            None,
-            normalized,
-            candidate_normalized,
-        ).ratio() < 0.6:
+        if (
+            normalized not in candidate_normalized
+            and difflib.SequenceMatcher(
+                None,
+                normalized,
+                candidate_normalized,
+            ).ratio()
+            < 0.6
+        ):
             continue
         candidates.append((score, value, polygon))
     if not candidates:
@@ -236,8 +272,16 @@ def _enhance_low_confidence_ocr_observation(
     crop_height = crop.shape[0] * scale
     x0 = left + int(max(0, np.floor(points[:, 0].min()))) * crop.shape[1] / crop_width
     y0 = top + int(max(0, np.floor(points[:, 1].min()))) * crop.shape[0] / crop_height
-    x1 = left + int(min(crop_width, np.ceil(points[:, 0].max()))) * crop.shape[1] / crop_width
-    y1 = top + int(min(crop_height, np.ceil(points[:, 1].max()))) * crop.shape[0] / crop_height
+    x1 = (
+        left
+        + int(min(crop_width, np.ceil(points[:, 0].max()))) * crop.shape[1] / crop_width
+    )
+    y1 = (
+        top
+        + int(min(crop_height, np.ceil(points[:, 1].max())))
+        * crop.shape[0]
+        / crop_height
+    )
     return {
         "text": best_text,
         "bbox": [int(x0), int(y0), max(1, int(x1 - x0)), max(1, int(y1 - y0))],
@@ -245,6 +289,127 @@ def _enhance_low_confidence_ocr_observation(
         "engine": "easyocr-enhanced",
         "rawText": text,
         "rawConfidence": confidence,
+    }
+
+
+def _box_center_distance(left: list[int], right: list[int]) -> float:
+    left_x = float(left[0]) + float(left[2]) / 2
+    left_y = float(left[1]) + float(left[3]) / 2
+    right_x = float(right[0]) + float(right[2]) / 2
+    right_y = float(right[1]) + float(right[3]) / 2
+    return ((left_x - right_x) ** 2 + (left_y - right_y) ** 2) ** 0.5
+
+
+def _boxes_close_for_logical_label(
+    left: list[int],
+    right: list[int],
+    *,
+    max_gap_px: int = 8,
+) -> bool:
+    left_x, left_y, left_width, left_height = left
+    right_x, right_y, right_width, right_height = right
+    horizontal_gap = max(
+        right_x - (left_x + left_width),
+        left_x - (right_x + right_width),
+    )
+    vertical_gap = max(
+        right_y - (left_y + left_height),
+        left_y - (right_y + right_height),
+    )
+    vertical_overlap = min(
+        left_y + left_height,
+        right_y + right_height,
+    ) - max(left_y, right_y)
+    horizontal_overlap = min(
+        left_x + left_width,
+        right_x + right_width,
+    ) - max(left_x, right_x)
+    same_line = horizontal_gap <= max_gap_px and vertical_overlap >= max(
+        1, min(left_height, right_height) // 2
+    )
+    stacked = vertical_gap <= max_gap_px and horizontal_overlap >= max(
+        1, min(left_width, right_width) // 2
+    )
+    return same_line or stacked
+
+
+def _union_bbox(left: list[int], right: list[int]) -> list[int]:
+    left_x, left_y, left_width, left_height = left
+    right_x, right_y, right_width, right_height = right
+    x = min(left_x, right_x)
+    y = min(left_y, right_y)
+    right_edge = max(left_x + left_width, right_x + right_width)
+    bottom_edge = max(left_y + left_height, right_y + right_height)
+    return [x, y, right_edge - x, bottom_edge - y]
+
+
+def _find_logical_numeric_owner(
+    existing: list[dict[str, Any]],
+    unit_bbox: list[int],
+) -> dict[str, Any] | None:
+    unit_area = max(1, int(unit_bbox[2]) * int(unit_bbox[3]))
+    candidates: list[dict[str, Any]] = []
+    for current in existing:
+        bbox = current.get("bbox") or []
+        if len(bbox) != 4:
+            continue
+        if not str(current.get("normalized") or "").isdigit():
+            continue
+        owner_area = max(1, int(bbox[2]) * int(bbox[3]))
+        if unit_area > owner_area * 0.6:
+            continue
+        if not _boxes_close_for_logical_label(bbox, unit_bbox):
+            continue
+        candidates.append(current)
+    if not candidates:
+        return None
+    return min(
+        candidates, key=lambda item: _box_center_distance(item["bbox"], unit_bbox)
+    )
+
+
+def _merge_short_unit_into_numeric_owner(
+    merged: dict[str, Any],
+    existing: list[dict[str, Any]],
+    line: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Attach a short unit token (e.g. ``折``) to an adjacent numeric owner."""
+    unit_text = str(line.get("text") or "").strip()
+    if unit_text.casefold() not in _SHORT_UNIT_SUFFIXES:
+        return None
+    unit_bbox = list(line.get("bbox") or [])
+    if len(unit_bbox) != 4:
+        return None
+    owner = _find_logical_numeric_owner(existing, unit_bbox)
+    if owner is None:
+        return None
+    owner_element = next(
+        (
+            item
+            for item in merged.get("elements") or []
+            if str(item.get("id")) == str(owner.get("id"))
+        ),
+        None,
+    )
+    if owner_element is None:
+        return None
+    before = str(owner_element.get("text") or "").strip()
+    merged_text = f"{before}{unit_text}"
+    merged_bbox = _union_bbox(list(owner["bbox"]), unit_bbox)
+    owner_element["text"] = merged_text
+    owner_element["bbox"] = merged_bbox
+    owner_element["logicalText"] = True
+    owner_element["logicalTextParts"] = [before, unit_text]
+    owner["text"] = merged_text
+    owner["bbox"] = list(merged_bbox)
+    owner["normalized"] = _normalize_candidate_text(merged_text)
+    owner["key"] = _ocr_candidate_key(owner_element)
+    return {
+        "ownerId": owner_element.get("id"),
+        "before": before,
+        "unit": unit_text,
+        "after": merged_text,
+        "bbox": list(merged_bbox),
     }
 
 
@@ -283,11 +448,20 @@ def merge_ocr_candidates(
     added: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
     replaced_covered: list[dict[str, Any]] = []
+    logical_merges: list[dict[str, Any]] = []
     replaced_keys: set[tuple[Any, ...]] = set()
     for line in lines:
         text = str(line.get("text") or "").strip()
         normalized = _normalize_candidate_text(text)
         if len(normalized) < 2:
+            logical_merge = _merge_short_unit_into_numeric_owner(
+                merged,
+                existing,
+                line,
+            )
+            if logical_merge is not None:
+                logical_merges.append(logical_merge)
+                continue
             skipped.append({"text": text, "reason": "text-too-short"})
             continue
         covered = [
@@ -380,9 +554,11 @@ def merge_ocr_candidates(
         "added_count": len(added),
         "skipped_count": len(skipped),
         "replaced_covered_count": len(replaced_covered),
+        "logical_merge_count": len(logical_merges),
         "added": added,
         "skipped": skipped,
         "replaced_covered": replaced_covered,
+        "logical_merges": logical_merges,
         "limitations": [
             "OCR text is a candidate and does not verify original font or hidden content.",
             "Grounding text is retained; OCR only fills missing candidate text.",

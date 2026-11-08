@@ -638,6 +638,75 @@ class ImageContractTests(unittest.TestCase):
         self.assertEqual(report["line_count"], 1)
         self.assertEqual(report["added_count"], 1)
 
+    def test_ocr_short_unit_merges_into_adjacent_numeric_owner(self) -> None:
+        graph = {
+            "image": "sample.png",
+            "image_w": 2544,
+            "image_h": 1336,
+            "route": "grounding",
+            "containers": [],
+            "elements": [],
+            "provenance": {"route": "grounding"},
+        }
+        observations = [
+            {
+                "text": "5.8",
+                "bbox": [1061, 660, 109, 74],
+                "confidence": 0.91,
+            },
+            {
+                "text": "折",
+                "bbox": [1097, 725, 42, 40],
+                "confidence": 0.99,
+            },
+        ]
+
+        merged, report = merge_ocr_candidates(graph, observations)
+
+        self.assertEqual(
+            [item["text"] for item in merged["elements"]],
+            ["5.8折"],
+        )
+        self.assertTrue(merged["elements"][0]["logicalText"])
+        self.assertEqual(report["added_count"], 1)
+        self.assertEqual(report["logical_merge_count"], 1)
+        self.assertEqual(report["skipped_count"], 0)
+        self.assertEqual(report["logical_merges"][0]["unit"], "折")
+
+    def test_ocr_short_unit_does_not_merge_across_large_gap(self) -> None:
+        graph = {
+            "image": "sample.png",
+            "image_w": 2544,
+            "image_h": 1336,
+            "route": "grounding",
+            "containers": [],
+            "elements": [],
+            "provenance": {"route": "grounding"},
+        }
+        observations = [
+            {
+                "text": "5.8",
+                "bbox": [1061, 660, 109, 74],
+                "confidence": 0.91,
+            },
+            {
+                "text": "折",
+                "bbox": [1300, 725, 42, 40],
+                "confidence": 0.99,
+            },
+        ]
+
+        merged, report = merge_ocr_candidates(graph, observations)
+
+        self.assertEqual(
+            [item["text"] for item in merged["elements"]],
+            ["5.8"],
+        )
+        self.assertEqual(report["logical_merge_count"], 0)
+        self.assertEqual(
+            report["skipped"], [{"text": "折", "reason": "text-too-short"}]
+        )
+
     def test_ocr_similar_spatially_overlapping_text_is_suppressed(self) -> None:
         graph = {
             "image": "sample.png",
