@@ -738,3 +738,161 @@ bridge server 已按用户要求停止）。
 Figma 写入或 formal acceptance 运行，因此**不产生新的通过/失败结论**。
 所有历史 `blocked-fail` 判定不变，`R5-P3 production-not-admitted` 不变。
 本轮只修正「如何判断两次运行看到的是不是同一份感知」这件事。
+
+---
+
+## 13. 后续落地：默认口径、上游逻辑标签与残差校准（2026-11-08 晚）
+
+### 13.1 `emission-contract repair` 设为默认
+
+`scripts/image_figma_mvp.py` 的 `--emission-contract` 默认值从 `report` 改为
+`repair`（commit `0a929ff`）。
+
+这不改变冻结门禁，只修正计量：
+
+- Figma 中确实存在、但缺少 `styleEvidence.ink_bbox` 的 native TEXT，会被登记为
+  `unmeasurable-missing-evidence`；
+- 不重算 gate，不把不可测 owner 计为 pass；
+- 需要复现历史分母时仍可显式传 `--emission-contract report`。
+
+结果是 FlexWeaver 的 native owner 分母从 32 变为 33（14/33），ACCTOKEN Models
+从 19 变为 26（0/26）；两者仍为 `blocked-fail`。
+
+### 13.2 short-unit 逻辑标签：`5.8` + `折` 在 OCR 补充阶段合并
+
+根因不是 inventory 层，而是 OCR 补充阶段先丢弃了单字单位：
+
+```text
+5.8  bbox=[1061, 660, 109, 74]
+折   bbox=[1097, 725, 42, 40]
+8.8  bbox=[2246, 660, 103, 74]
+折   bbox=[2279, 725, 42, 40]
+```
+
+旧逻辑要求 normalized 文本至少 2 字符，`折` 因此被记为
+`reason=text-too-short`，永远不会进入 inventory。
+
+`src/app/services/structure/image_contract.py` 现在在丢弃短 token 前尝试
+保守合并（commit `489a539`）：
+
+- 短 token 必须是已知单位后缀（`折`、`元`、`%`、`月`、`日`、`KB` 等）；
+- owner 必须是纯数值文本；
+- 两者必须同行相邻或上下堆叠；
+- 单位框面积不得超过 owner 框的 60%；
+- 合并后写回 owner 的 `text` / `bbox`，并记录
+  `logicalText`、`logicalTextParts`、`logical_merges`、`logical_merge_count`。
+
+#### 全新 `--prepare-only` 证据
+
+运行目录：`output/_calibration_shortunit_verify_20261108_acctoken`
+
+```yaml
+logical_merge_count: 2
+5.8 + 折 -> 5.8折  bbox=[1061, 660, 109, 105]
+8.8 + 折 -> 8.8折  bbox=[2246, 660, 103, 105]
+```
+
+`10_content_inventory.json` 只有 `5.8折` / `8.8折`，没有独立 `折`。
+
+#### 真实 Figma 验收
+
+同一目录，`residual` 模式，真实写入/回读/导出：
+
+| 指标 | 修复前 | 修复后 |
+| --- | ---: | ---: |
+| critical text | 24 / 27 | **25 / 27** |
+| blockers | 32 | **31** |
+| within30 | 94.121133% | **95.011687%** |
+| native gate | 0 / 26 | 0 / 26 |
+| chrome | fail | fail |
+| overall | blocked-fail | blocked-fail |
+
+关键行：
+
+```text
+5.8折  present=true
+8.8折  present=true
+本期好价  present=false
+查看详情  present=false
+```
+
+`5.8折` / `8.8折` 已进入最终 DesignSpec 的 native TEXT owner。剩余两项：
+
+- `本期好价`：独立的内容抑制/召回问题，仍是下一步 P1；
+- `查看详情`：派生 truth 写错，截图实际是 `看详情 →`，不应通过放宽 matcher
+  来「修复」。
+
+证据另见 `docs/v2_mentor/SHORT_UNIT_LOGICAL_LABEL_2026-11-08.md`。
+
+### 13.3 15 段校准阶梯改为残差驱动策略注册表
+
+旧实现是 `scripts/image_figma_mvp.py:292-667` 的 15 段顺序硬编码。现在拆成：
+
+- `src/app/services/structure/fidelity/calibration_profile.py`
+  - 复用 native-text 测量原语生成 `residuals`（position / size / coverage /
+    edgeF1）、`byRegion`、`byType`、`regions`；
+  - 只做诊断，不启用 frozen gate。
+- `src/app/services/structure/fidelity/calibration_strategies.py`
+  - 13 个渲染组、15 个声明式 `CalibrationStrategy`；
+  - 保持历史渲染分组，避免每段都写一次 Figma；
+  - `legacy` 完全复现旧顺序；
+  - `residual` 按残差画像选组，并在每次实际渲染后重新计算画像。
+
+期间发现并修复一个真实映射缺陷：profile 没有独立 `toolbar` 区域时，三个
+toolbar 组会被跳过。toolbar 策略的适用区域已放宽为
+`toolbar | table | form | page`（commit `137078a`）。
+
+#### 真实 Figma A/B
+
+FlexWeaver Admin：
+
+| 模式 | critical | native gate | chrome | within30 | blockers | adjusted | rendered |
+| --- | ---: | --- | --- | ---: | ---: | ---: | ---: |
+| legacy | 24/24 | 14/33 | pass | 96.766167% | 19 | 176 | 12 |
+| residual r1 | 24/24 | 13/33 | pass | 96.762258% | 20 | 170 | 11 |
+| residual r2 | 24/24 | **14/33** | pass | **96.766167%** | **19** | 176 | 12 |
+
+ACCTOKEN Models：
+
+| 模式 | critical | native gate | chrome | within30 | blockers | selected / rendered |
+| --- | ---: | --- | --- | ---: | ---: | ---: |
+| legacy | 24/27 | 0/26 | fail | 94.121133% | 32 | 13 / 1 |
+| residual | 24/27 | 0/26 | fail | 94.121133% | 32 | **6 / 1** |
+
+结论：residual 在两个样本上与 legacy **指标完全一致**，ACCTOKEN 少评估 7 个
+无收益策略组。`--calibration-mode residual` 已设为默认，`legacy` 保留为回退
+（commit `548e38f`）。
+
+### 13.4 检查
+
+```text
+pytest -q --ignore=output
+→ 1313 passed in 82.75s
+
+ruff check / ruff format --check / git diff --check
+→ pass
+```
+
+全量测试包含新增的 `test_calibration_strategies.py`、
+`test_image_figma_cli_defaults.py` 以及 short-unit OCR 合并测试。
+
+### 13.5 待办更新（取代 12.5）
+
+| 状态 | 项目 |
+| --- | --- |
+| **已完成** | `emission-contract repair` 设为默认 |
+| **已完成** | `5.8折` / `8.8折` 的 short-unit 上游合并；critical 24/27 → 25/27 |
+| **已完成** | 15 段校准阶梯 → 残差驱动策略注册表；residual 设为默认 |
+| **保留 P1** | `本期好价` 的抑制/召回修复（ACCTOKEN 唯一非 truth 错误的 critical 缺失） |
+| **保留 P1** | 修正派生 truth 的 `查看详情` 错字，标为 derived，不得冒充冻结 holdout |
+| 保留 P1 | 剩余 `ICP备2026030291号-1` 与逻辑标签泛化 |
+| 保留 P2 | native gate 仍为 FlexWeaver `14/33`、ACCTOKEN `0/26`；字形/face/edge 保真度是下一层 |
+| 保留 P2 | `_source_form_background` 位图兜底与分轨指标口径 |
+| 保留 P2 | 缓存覆盖 enrichment 的其他调用；provenance 继续传播到 som/design |
+
+### 13.6 口径
+
+本节所有真实 Figma 运行仍为 `blocked-fail`；`acceptance-policy 2.0`、truth、
+阈值和指标回填规则均未改。short-unit 与 residual calibration 的收益是
+**内容覆盖和策略执行效率**，不是 overall pass，也不改变
+`R5-P3 production-not-admitted`。
