@@ -306,7 +306,7 @@ CALIBRATION_GROUPS: tuple[CalibrationGroup, ...] = (
             _strategy(
                 "toolbar-letter-spacing",
                 ("size", "coverage", "edgeF1"),
-                ("toolbar",),
+                ("toolbar", "table", "form", "page"),
                 _toolbar_letter_spacing,
             ),
         ),
@@ -318,7 +318,7 @@ CALIBRATION_GROUPS: tuple[CalibrationGroup, ...] = (
             _strategy(
                 "toolbar-weight",
                 ("coverage", "edgeF1"),
-                ("toolbar",),
+                ("toolbar", "table", "form", "page"),
                 _toolbar_weight,
             ),
         ),
@@ -330,7 +330,7 @@ CALIBRATION_GROUPS: tuple[CalibrationGroup, ...] = (
             _strategy(
                 "toolbar-letter-spacing-second",
                 ("size", "coverage", "edgeF1"),
-                ("toolbar",),
+                ("toolbar", "table", "form", "page"),
                 _toolbar_letter_spacing,
             ),
         ),

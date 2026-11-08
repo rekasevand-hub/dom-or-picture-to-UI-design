@@ -82,6 +82,7 @@ def test_residual_selection_keeps_table_groups_for_size_residuals() -> None:
     assert "table-spacing" in names
     assert "table-positions" not in names
     assert "form-fonts" not in names
+    assert "toolbar-spacing" in names
 
 
 def test_residual_selection_falls_back_to_legacy_without_measurements() -> None:
