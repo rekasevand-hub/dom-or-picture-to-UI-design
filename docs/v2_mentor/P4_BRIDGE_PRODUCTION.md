@@ -78,7 +78,7 @@
 默认限制：
 
 - `max_inflight=64`；
-- `max_message_bytes=1 MiB`；
+- `max_message_bytes=16 MiB`，WebSocket transport 额外保留 `64 KiB` headroom；
 - `max_params_depth=16`；
 - `max_cache_entries=1024`；
 - `max_journal_events=4096`；

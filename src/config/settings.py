@@ -166,6 +166,28 @@ class Config:
     vision_cache_namespace: str = field(
         default_factory=lambda: os.getenv("VISION_CACHE_NAMESPACE", "default")
     )
+    # D: reproducibility contract.  A deterministic request plus a persistent
+    # content-addressed cache makes two full reruns of the same image produce
+    # the same perception artefacts.
+    vision_temperature: float = field(
+        default_factory=lambda: float(os.getenv("VISION_TEMPERATURE", "0.1"))
+    )
+    vision_seed: int = field(
+        default_factory=lambda: int(os.getenv("VISION_SEED", "20261108"))
+    )
+    vision_send_seed: bool = field(
+        default_factory=lambda: os.getenv("VISION_SEND_SEED", "false").lower()
+        in ("1", "true", "yes")
+    )
+    vision_persistent_cache: bool = field(
+        default_factory=lambda: os.getenv("VISION_PERSISTENT_CACHE", "true").lower()
+        in ("1", "true", "yes")
+    )
+    vision_persistent_cache_dir: str = field(
+        default_factory=lambda: os.getenv(
+            "VISION_PERSISTENT_CACHE_DIR", ".vision_cache"
+        )
+    )
     text_base_url: str = field(
         default_factory=lambda: os.getenv(
             "TEXT_BASE_URL", "https://www.acctoken.com/v1"

@@ -25,6 +25,19 @@
 3. Clear stale `figma.clientStorage` values when required.
 4. Reconnect only with the new token and record a new lease generation.
 
+## Plugin Offline During Cleanup
+
+1. Preserve the report, root/text ownership job ids and node ids.
+2. Stop the soak instead of declaring cleanup successful.
+3. Reopen the fixed development plugin and verify `/plugin` authentication.
+4. Run `ownership_report` for every retained job id before cleanup.
+5. Run exact `cleanup_owned_job` only for matching owner/job markers.
+6. Re-read ownership and require zero matches before another soak.
+
+The 2026-10-26 local Figma round 2 failed at this boundary: setup ownership was
+verified, but the plugin disconnected near the end of the run and did not return
+for cleanup. The report remains `fail`.
+
 ## Stale Lease Recovery
 
 1. Confirm the prior owner process is stopped.
@@ -61,8 +74,30 @@ Required metrics:
 - lease generation;
 - storage errors;
 - disclosure counts.
+- Grounding unavailable and fallback trigger counts;
+- fallback selection acceptance and write-before-block counts;
+- fallback latency p50/p95/p99 and token usage.
 
 No metric label or event may contain raw design text, secrets or action payload.
+
+Fallback selection acceptance means CV was selected after an availability
+trigger. It is not content, structure, visual or asset acceptance. Monetary cost
+stays unknown until a versioned pricing table is configured.
+
+## Grounding and Fallback Alerts
+
+1. `fallback_write_before_block_total > 0` is critical: stop writes and inspect
+   the pre-write fallback record.
+2. Repeated `grounding_unavailable_total` keeps CV fallback enabled while
+   endpoint health is investigated; do not widen retry bounds.
+3. Fallback latency p99 above `30s` is a warning and above `120s` is critical
+   for the local-pilot contract.
+4. Cache isolation mismatch requires a cache flush and stops image requests
+   until the namespace is corrected.
+5. Malformed Grounding output is a blocked route, not a CV-fallback trigger.
+
+Detailed configuration, taxonomy and operator actions are in
+`GROUNDING_RELIABILITY_RUNBOOK.md`.
 
 ## Evidence Collection
 

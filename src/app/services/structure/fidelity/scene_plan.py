@@ -13,6 +13,10 @@ from src.app.services.structure.fidelity.contracts import (
     normalize_match_text,
     owner_text_similarity,
 )
+from src.app.services.structure.fidelity.emission_contract import (
+    legacy_overlap_suppression_enabled,
+    suppression_allowed,
+)
 
 _CONTROL_TYPES = {
     "button",
@@ -155,12 +159,29 @@ def _suppress_overlapping_text_owners(
                 "replacement_ref": control_owner["content_ref"],
             }
             continue
+        # A bounding-box overlap is not proof of duplicate content: VLM boxes
+        # frequently overlap neighbouring labels, and the old rule explicitly
+        # suppressed *different* text (e.g. '本期好价' replaced by
+        # '折扣都按官方价实时算').  The emission contract makes text
+        # equivalence the single criterion.  Set
+        # SCENE_PLAN_LEGACY_OVERLAP_SUPPRESSION=1 to reproduce the old
+        # behaviour for A/B comparison.
+        legacy_suppression = legacy_overlap_suppression_enabled()
         conflict = next(
             (
                 existing
                 for existing in kept
-                if normalize_match_text(existing.get("text"))
-                != normalize_match_text(node.get("text"))
+                if (
+                    (
+                        not legacy_suppression
+                        and suppression_allowed(node, existing)
+                    )
+                    or (
+                        legacy_suppression
+                        and normalize_match_text(existing.get("text"))
+                        != normalize_match_text(node.get("text"))
+                    )
+                )
                 and _overlap_over_smaller(existing["bbox"], node["bbox"]) >= 0.45
             ),
             None,
@@ -580,11 +601,22 @@ def build_scene_plan(
         )
     nodes.extend(table_nodes)
 
-    table_by_id = {
-        str(table.get("id") or ""): table
-        for table in inventory.get("tables") or []
-        if isinstance(table, Mapping)
-    }
+    table_by_id: dict[str, dict[str, Any]] = {}
+    for table in inventory.get("tables") or []:
+        if not isinstance(table, Mapping):
+            continue
+        table_id = str(table.get("id") or "")
+        if not table_id:
+            continue
+        table_copy = copy.deepcopy(dict(table))
+        geometry_bbox = normalize_bbox(
+            (geometry_by_content.get(table_id) or {}).get("bbox"),
+            width,
+            height,
+        )
+        if geometry_bbox is not None:
+            table_copy["bbox"] = geometry_bbox
+        table_by_id[table_id] = table_copy
     candidates: list[dict[str, Any]] = []
     suppressed: list[dict[str, Any]] = []
     text_candidates: list[dict[str, Any]] = []

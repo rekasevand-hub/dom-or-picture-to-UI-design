@@ -20,6 +20,25 @@ class FakeSocket:
         self.sent.append(json.loads(message))
 
 
+class RespondingSocket(FakeSocket):
+    def __init__(self, hub: BridgeHub) -> None:
+        super().__init__()
+        self.hub = hub
+
+    async def send(self, message: str) -> None:
+        await super().send(message)
+        payload = self.sent[-1]
+        await self.hub.plugin_message(
+            json.dumps(
+                {
+                    "type": "response",
+                    "requestId": payload["requestId"],
+                    "result": {"status": "committed", "committed": []},
+                }
+            )
+        )
+
+
 def _write_command(request_id: str = "write-1") -> str:
     return json.dumps(
         {
@@ -41,6 +60,36 @@ def _write_command(request_id: str = "write-1") -> str:
 
 
 class BridgeFencingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_queued_write_uses_plugin_that_took_over_before_dispatch(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as raw_dir:
+            hub = BridgeHub(
+                timeout=1,
+                journal_path=Path(raw_dir) / "bridge-journal.jsonl",
+                write_min_interval=0,
+            )
+            original_plugin = FakeSocket()
+            replacement_plugin = RespondingSocket(hub)
+            await hub.attach_plugin(original_plugin)
+            client = FakeSocket()
+            original_acquire = hub._acquire_write_turn
+
+            async def acquire_then_take_over(client_id: str) -> None:
+                await original_acquire(client_id)
+                await hub.attach_plugin(replacement_plugin)
+
+            hub._acquire_write_turn = acquire_then_take_over
+            try:
+                await hub.command(client, _write_command("takeover-queued"))
+            finally:
+                hub._acquire_write_turn = original_acquire
+                hub.close()
+
+        self.assertFalse(client.sent[-1].get("error"))
+        self.assertEqual(original_plugin.sent, [])
+        self.assertEqual(len(replacement_plugin.sent), 1)
+
     async def test_expired_lease_blocks_before_intent_or_plugin_send(self) -> None:
         with TemporaryDirectory() as raw_dir:
             clock = MutableClock()

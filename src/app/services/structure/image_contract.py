@@ -146,7 +146,106 @@ def extract_easyocr_observations(
                 "engine": "easyocr",
             }
         )
+    enhancement_budget = 8
+    for index, observation in enumerate(observations):
+        if enhancement_budget <= 0:
+            break
+        enhanced = _enhance_low_confidence_ocr_observation(
+            reader,
+            image,
+            observation,
+        )
+        if enhanced is None:
+            continue
+        observations[index] = enhanced
+        enhancement_budget -= 1
     return observations
+
+
+def _enhance_low_confidence_ocr_observation(
+    reader: Any,
+    image: Any,
+    observation: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Retry low-contrast CJK text on an expanded, enlarged local crop."""
+    import numpy as np
+    from PIL import ImageEnhance
+
+    try:
+        confidence = float(observation.get("confidence") or 0.0)
+        x, y, width, height = (
+            int(round(float(value))) for value in observation.get("bbox") or []
+        )
+    except (TypeError, ValueError):
+        return None
+    text = str(observation.get("text") or "").strip()
+    normalized = _normalize_candidate_text(text)
+    if (
+        confidence >= 0.4
+        or sum("\u3400" <= char <= "\u9fff" for char in text) < 2
+        or width < 16
+        or height < 8
+    ):
+        return None
+    pad_x = max(8, min(48, int(round(width * 0.35))))
+    pad_y = max(3, min(10, int(round(height * 0.35))))
+    left = max(0, x - pad_x)
+    top = max(0, y - pad_y)
+    right = min(image.shape[1], x + width + pad_x)
+    bottom = min(image.shape[0], y + height + pad_y)
+    crop = image[top:bottom, left:right]
+    if crop.size == 0:
+        return None
+    scale = 4 if max(crop.shape[:2]) < 120 else 3
+    enhanced_image = Image.fromarray(crop).resize(
+        (crop.shape[1] * scale, crop.shape[0] * scale),
+        Image.Resampling.LANCZOS,
+    )
+    enhanced_image = ImageEnhance.Contrast(enhanced_image).enhance(2.2)
+    enhanced = np.asarray(enhanced_image)
+    try:
+        results = reader.readtext(enhanced, text_threshold=0.2)
+    except Exception:  # noqa: BLE001 - keep the original OCR observation
+        return None
+    candidates: list[tuple[float, str, Any]] = []
+    for polygon, candidate_text, candidate_confidence in results:
+        value = str(candidate_text or "").strip()
+        candidate_normalized = _normalize_candidate_text(value)
+        score = float(candidate_confidence or 0.0)
+        if (
+            not candidate_normalized
+            or len(candidate_normalized) < len(normalized)
+            or score < confidence + 0.15
+        ):
+            continue
+        if normalized not in candidate_normalized and difflib.SequenceMatcher(
+            None,
+            normalized,
+            candidate_normalized,
+        ).ratio() < 0.6:
+            continue
+        candidates.append((score, value, polygon))
+    if not candidates:
+        return None
+    best_confidence, best_text, best_polygon = max(
+        candidates,
+        key=lambda item: (item[0], len(item[1])),
+    )
+    points = np.asarray(best_polygon, dtype=float)
+    crop_width = crop.shape[1] * scale
+    crop_height = crop.shape[0] * scale
+    x0 = left + int(max(0, np.floor(points[:, 0].min()))) * crop.shape[1] / crop_width
+    y0 = top + int(max(0, np.floor(points[:, 1].min()))) * crop.shape[0] / crop_height
+    x1 = left + int(min(crop_width, np.ceil(points[:, 0].max()))) * crop.shape[1] / crop_width
+    y1 = top + int(min(crop_height, np.ceil(points[:, 1].max()))) * crop.shape[0] / crop_height
+    return {
+        "text": best_text,
+        "bbox": [int(x0), int(y0), max(1, int(x1 - x0)), max(1, int(y1 - y0))],
+        "confidence": float(best_confidence),
+        "engine": "easyocr-enhanced",
+        "rawText": text,
+        "rawConfidence": confidence,
+    }
 
 
 def merge_ocr_candidates(

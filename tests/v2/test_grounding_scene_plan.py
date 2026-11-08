@@ -283,6 +283,25 @@ def test_table_cell_has_exactly_one_owner() -> None:
     assert any(item["source_ref"] == "graph.elements[1]" for item in plan["suppressed"])
 
 
+def test_table_duplicate_uses_geometry_bbox_when_inventory_bbox_lags() -> None:
+    inventory = _inventory_with_table_rows()
+    inventory["tables"][0]["bbox"] = [20, 150, 340, 66]
+
+    plan = build_scene_plan(
+        _graph_with_duplicate_table_text(),
+        inventory,
+        _geometry_with_table_grid(),
+    )
+
+    refs = {node["content_ref"] for node in plan["nodes"]}
+    assert "table:0:1" in refs
+    assert "text:duplicate" not in refs
+    assert any(
+        item["content_ref"] == "text:duplicate"
+        and item["reason"] == "table-cell-owner-authoritative"
+        and item["replacement_ref"] == "table:0:1"
+        for item in plan["suppressed"]
+    )
 def test_slice_asset_cannot_create_a_second_layout_tree() -> None:
     plan = build_scene_plan(
         _graph_with_slice_assets(),

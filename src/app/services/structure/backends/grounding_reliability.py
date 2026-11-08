@@ -9,6 +9,7 @@ import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import urlsplit
 
@@ -146,6 +147,8 @@ class GroundingReliability:
         clock: Callable[[], float] | None = None,
         sleeper: Callable[[float], None] | None = None,
         random_value: Callable[[], float] | None = None,
+        request_contract: Mapping[str, Any] | None = None,
+        persistent_cache_dir: Any | None = None,
     ) -> None:
         normalized = tuple(str(item).strip().rstrip("/") for item in endpoints)
         if not normalized or any(not item for item in normalized):
@@ -185,6 +188,14 @@ class GroundingReliability:
         self.breaker_cooldown_seconds = float(breaker_cooldown_seconds)
         self.cache_max_entries = int(cache_max_entries)
         self.cache_ttl_seconds = float(cache_ttl_seconds)
+        # D: the request contract is part of the cache identity, and the cache
+        # survives across processes so repeated full reruns are reproducible.
+        self.request_contract = dict(request_contract or {})
+        self.persistent_cache_dir = (
+            Path(persistent_cache_dir) if persistent_cache_dir else None
+        )
+        if self.persistent_cache_dir is not None:
+            self.persistent_cache_dir.mkdir(parents=True, exist_ok=True)
         self._clock = clock or time.monotonic
         self._sleeper = sleeper or time.sleep
         self._random = random_value or __import__("random").random
@@ -210,6 +221,15 @@ class GroundingReliability:
             "strategy_version": self.strategy_version,
             "cache_namespace": self.cache_namespace,
         }
+        if self.request_contract:
+            material["request_contract_sha256"] = hashlib.sha256(
+                json.dumps(
+                    self.request_contract,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    default=str,
+                ).encode("utf-8")
+            ).hexdigest()
         return hashlib.sha256(
             json.dumps(
                 material,
@@ -402,18 +422,66 @@ class GroundingReliability:
         jitter = 1.0 + self.jitter_ratio * ((self._random() * 2.0) - 1.0)
         return max(0.0, nominal * jitter) / 1000.0
 
+    def _persistent_path(self, key: str) -> Path | None:
+        if self.persistent_cache_dir is None:
+            return None
+        return self.persistent_cache_dir / f"{key}.json"
+
+    def _persistent_get(self, key: str) -> tuple[Any, dict[str, Any]] | None:
+        path = self._persistent_path(key)
+        if path is None or not path.is_file():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            return copy.deepcopy(payload["value"]), dict(payload.get("usage") or {})
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+
+    def _persistent_put(
+        self, key: str, value: Any, usage: Mapping[str, Any]
+    ) -> None:
+        path = self._persistent_path(key)
+        if path is None:
+            return
+        payload = {
+            "schema_version": "grounding-persistent-cache/1.0",
+            "value": value,
+            "usage": dict(usage),
+        }
+        try:
+            serialized = json.dumps(payload, ensure_ascii=False, default=str)
+            temporary = path.with_suffix(".json.tmp")
+            temporary.write_text(serialized, encoding="utf-8")
+            temporary.replace(path)
+        except (OSError, TypeError, ValueError):
+            return
+
     def _cache_get(self, key: str) -> tuple[Any, dict[str, Any]] | None:
         now = self._clock()
         with self._lock:
             cached = self._cache.get(key)
-            if cached is None:
-                return None
-            expires_at, value, usage = cached
-            if expires_at <= now:
+            if cached is not None:
+                expires_at, value, usage = cached
+                if expires_at > now:
+                    self._cache.move_to_end(key)
+                    return copy.deepcopy(value), dict(usage)
                 self._cache.pop(key, None)
-                return None
+        # A persistent entry has no TTL: its key already covers image bytes,
+        # prompt, model, request contract and coordinate contract.
+        persistent = self._persistent_get(key)
+        if persistent is None:
+            return None
+        value, usage = persistent
+        with self._lock:
+            self._cache[key] = (
+                self._clock() + self.cache_ttl_seconds,
+                copy.deepcopy(value),
+                dict(usage),
+            )
             self._cache.move_to_end(key)
-            return copy.deepcopy(value), dict(usage)
+            while len(self._cache) > self.cache_max_entries:
+                self._cache.popitem(last=False)
+        return value, usage
 
     def _cache_put(self, key: str, value: Any, usage: Mapping[str, Any]) -> None:
         with self._lock:
@@ -425,6 +493,7 @@ class GroundingReliability:
             self._cache.move_to_end(key)
             while len(self._cache) > self.cache_max_entries:
                 self._cache.popitem(last=False)
+        self._persistent_put(key, value, usage)
 
 
 def _coerce_result(raw: Any) -> tuple[Any, dict[str, Any]]:

@@ -41,8 +41,18 @@ class ProductionAdmissionDecisionTests(unittest.TestCase):
         text = DECISION.read_text(encoding="utf-8")
 
         self.assertIn("Decision: `not-admitted`", text)
-        self.assertIn("P5 pilot: `not-run`", text)
-        self.assertIn("Production long soak: `not-run`", text)
+        self.assertIn("P5 pilot: `blocked-pending-rulings`", text)
+        self.assertIn("Production long soak: `blocked-24h-7d`", text)
+        self.assertIn(
+            "Controlled one-hour soak: "
+            "`verified-for:controlled-one-hour-fault-soak`",
+            text,
+        )
+        self.assertIn(
+            "Real local Figma one-hour: "
+            "`verified-for:local-real-figma-write-1h`",
+            text,
+        )
 
     def test_all_fifteen_residual_risks_are_reviewed(self) -> None:
         text = DECISION.read_text(encoding="utf-8")

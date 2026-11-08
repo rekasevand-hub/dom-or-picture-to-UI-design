@@ -9,6 +9,7 @@ from typing import Any
 from pathlib import Path
 
 from src.config import Config
+from src.app.utils.redaction import safe_exception_message
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +111,7 @@ def call_vision_llm(messages: list[dict[str, Any]], config: Config) -> str:
             raise ValueError("LLM 返回内容为空")
         return content
     except Exception as exc:
-        logger.error(f"LLM 调用失败: {exc}")
+        logger.error("LLM 调用失败: %s", safe_exception_message(exc))
         raise
 
 

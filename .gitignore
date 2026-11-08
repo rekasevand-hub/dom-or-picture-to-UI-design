@@ -48,6 +48,9 @@ output/
 uploads/
 *.log
 
+# D: persistent content-addressed VLM perception cache
+.vision_cache/
+
 # Models
 *.pt
 *.safetensors

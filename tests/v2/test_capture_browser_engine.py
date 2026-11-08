@@ -153,11 +153,14 @@ class BrowserEngineTests(unittest.TestCase):
                 CAPTURE_STATE_STABLE_MS=20,
                 CAPTURE_STATE_CAP_MS=100,
             ):
-                capture_page(
+                result = capture_page(
                     fixture.resolve().as_uri(),
                     Config(
                         playwright_browser="chromium",
                         playwright_headless=True,
+                        device_scale_factor=2,
+                        playwright_viewport_width=900,
+                        playwright_viewport_height=700,
                         wait_networkidle_timeout=1000,
                     ),
                     str(root / "capture"),
@@ -166,6 +169,12 @@ class BrowserEngineTests(unittest.TestCase):
                 )
 
         self.assertEqual(observed_urls, ["about:blank"])
+        self.assertEqual(result["device_scale_factor"], 2)
+        self.assertEqual(result["viewport"], {"width": 900, "height": 700})
+        self.assertEqual(
+            result["page_state"]["attempts"][0]["device_scale_factor"],
+            2,
+        )
 
     def test_capture_page_recurses_same_origin_iframe_and_records_inventory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

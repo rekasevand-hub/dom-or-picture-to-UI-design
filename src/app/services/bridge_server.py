@@ -22,6 +22,7 @@ from src.app.services.bridge_config import (
     BridgeServerConfig,
     BridgeTlsServerConfig,
     ClientWriteLimitConfig,
+    DEFAULT_MAX_BRIDGE_MESSAGE_BYTES,
     load_bridge_config,
 )
 from src.app.services.attribution import (
@@ -39,6 +40,7 @@ from src.app.services.write_lease import (
     WriterLeaseError,
     WriterLeaseStore,
 )
+from src.app.utils.redaction import redact_sensitive_text, safe_exception_message
 from src.app.services.rendering.figma_adapter import classify_permission_failure
 
 try:
@@ -49,6 +51,16 @@ except ImportError as exc:
     raise ImportError("websockets 未安装，请执行 pip install websockets") from exc
 
 logger = logging.getLogger(__name__)
+
+PROTOCOL_FRAME_HEADROOM_BYTES = 64 * 1024
+
+
+def websocket_frame_limit(max_message_bytes: int) -> int:
+    """Keep the transport limit above the application limit for structured errors."""
+    if max_message_bytes <= 0:
+        raise ValueError("max_message_bytes must be positive")
+    return max_message_bytes + PROTOCOL_FRAME_HEADROOM_BYTES
+
 
 CLIENT_ID_HEADER = "X-Figma-Client-Id"
 CLIENT_TOKEN_HEADER = "X-Figma-Client-Token"
@@ -64,6 +76,25 @@ READ_ONLY_ACTIONS = frozenset(
         "ownership_report",
     }
 )
+
+
+def _message_log_summary(message: object) -> str:
+    """Return protocol metadata only; never include a frame payload."""
+    try:
+        payload = json.loads(str(message))
+    except (TypeError, ValueError):
+        return "invalid-json"
+    if not isinstance(payload, dict):
+        return "non-object"
+    message_type = redact_sensitive_text(payload.get("type") or "unknown")[:40]
+    request_id = redact_sensitive_text(payload.get("requestId") or "")[:128]
+    action = redact_sensitive_text(payload.get("action") or "")[:128]
+    parts = [f"type={message_type}"]
+    if request_id:
+        parts.append(f"requestId={request_id}")
+    if action:
+        parts.append(f"action={action}")
+    return " ".join(parts)
 
 
 @dataclass(frozen=True)
@@ -191,7 +222,7 @@ class BridgeHub:
         idempotency_ttl: float = 60.0,
         *,
         max_inflight: int = 64,
-        max_message_bytes: int = 1_048_576,
+        max_message_bytes: int = DEFAULT_MAX_BRIDGE_MESSAGE_BYTES,
         max_params_depth: int = 16,
         max_cache_entries: int = 1024,
         journal_path: str | Path | None = None,
@@ -625,6 +656,12 @@ class BridgeHub:
                 self._assert_writer_lease()
                 await self._acquire_write_turn(client_id)
                 write_turn_acquired = True
+                plugin = self.plugin_ws
+                if plugin is None:
+                    raise ProtocolError(
+                        "PLUGIN_DISCONNECTED",
+                        "Figma plugin is not connected",
+                    )
 
             wire_request_id = self._wire_request_id(client_id, requested_id)
             future: asyncio.Future[dict[str, Any]] = (
@@ -710,7 +747,11 @@ class BridgeHub:
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - protocol errors return to client
-            logger.info("命令失败 requestId=%s: %s", requested_id, exc)
+            logger.info(
+                "命令失败 requestId=%s: %s",
+                redact_sensitive_text(requested_id),
+                safe_exception_message(exc),
+            )
             code = exc.code if isinstance(exc, ProtocolError) else "COMMAND_FAILED"
             outcome = exc.outcome if isinstance(exc, ProtocolError) else "unknown"
             if (
@@ -736,7 +777,7 @@ class BridgeHub:
                 websocket,
                 requested_id or wire_request_id,
                 code,
-                str(exc),
+                redact_sensitive_text(exc),
                 outcome=outcome,
                 retry_after_ms=getattr(exc, "retry_after_ms", None),
             )
@@ -2643,7 +2684,10 @@ async def _plugin_handler(
     try:
         try:
             async for message in websocket:
-                logger.info("收到插件消息: %s", str(message)[:200])
+                logger.info(
+                    "收到插件消息: %s",
+                    _message_log_summary(message),
+                )
                 await hub.plugin_message(str(message))
         except ConnectionClosed:
             pass
@@ -2655,9 +2699,28 @@ async def _command_handler(
     websocket: websockets.server.WebSocketServerProtocol,
 ) -> None:
     hub = _get_hub()
-    async for message in websocket:
-        logger.info("收到 Python 命令: %s", str(message)[:200])
-        await hub.command(websocket, str(message))
+    try:
+        async for message in websocket:
+            logger.info(
+                "收到 Python 命令: %s",
+                _message_log_summary(message),
+            )
+            await hub.command(websocket, str(message))
+    except ConnectionClosed as exc:
+        code = getattr(exc, "code", None)
+        reason = getattr(exc, "reason", "")
+        if code == 1009:
+            logger.warning(
+                "Python 桥接连接因消息过大关闭: code=%s reason=%s",
+                code,
+                reason,
+            )
+        else:
+            logger.info(
+                "Python 桥接连接已关闭: code=%s reason=%s",
+                code,
+                reason,
+            )
 
 
 async def _route(websocket: websockets.server.WebSocketServerProtocol) -> None:
@@ -2682,6 +2745,9 @@ async def _run(host: str | None = None, port: int | None = None) -> None:
             host,
             port,
             ssl=ssl_context,
+            max_size=websocket_frame_limit(
+                _bridge_config.server.max_message_bytes
+            ),
         ):
             await asyncio.Future()
     finally:

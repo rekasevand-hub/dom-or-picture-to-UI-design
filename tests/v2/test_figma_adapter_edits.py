@@ -588,6 +588,73 @@ class FigmaAdapterEditTests(unittest.TestCase):
         self.assertEqual(report["expected"]["image_fills"], 1)
         self.assertEqual(report["actual"]["image_fills"], 1)
 
+    def test_control_text_omits_none_font_weight_value(self) -> None:
+        adapter = _LayoutRenderAdapter()
+        design = {
+            "canvas": {"width": 240, "height": 80, "background": "#ffffff"},
+            "elements": [
+                {
+                    "id": "button",
+                    "type": "button",
+                    "x": 10,
+                    "y": 10,
+                    "width": 120,
+                    "height": 40,
+                    "text": "Weighted",
+                    "style": {
+                        "fontFamily": "Arial",
+                        "fontSize": 16,
+                        "fontWeight": 300,
+                        "textColor": "#333333",
+                    },
+                }
+            ],
+        }
+
+        adapter.render_design(design)
+
+        text_spec = next(
+            params
+            for action, params, *_rest in adapter.calls
+            if action == "create_text"
+        )
+        self.assertEqual(text_spec["fontWeight"], 300)
+        self.assertNotIn("fontWeightValue", text_spec)
+
+    def test_source_covered_control_keeps_transparent_shell(self) -> None:
+        adapter = _LayoutRenderAdapter()
+        design = {
+            "canvas": {"width": 240, "height": 80, "background": "#ffffff"},
+            "elements": [
+                {
+                    "id": "input",
+                    "type": "input",
+                    "x": 10,
+                    "y": 10,
+                    "width": 120,
+                    "height": 40,
+                    "text": "Value",
+                    "sourceChromeCovered": True,
+                    "style": {
+                        "fillColor": "#ffffff",
+                        "borderColor": "#cccccc",
+                        "borderWidth": 1,
+                    },
+                }
+            ],
+        }
+
+        adapter.render_design(design)
+
+        rectangle = next(
+            params
+            for action, params, *_rest in adapter.calls
+            if action == "create_rectangle"
+        )
+        self.assertEqual(rectangle["fillColor"], "transparent")
+        self.assertEqual(rectangle["borderColor"], "transparent")
+        self.assertEqual(rectangle["borderWidth"], 0)
+
     def test_native_figma_render_rejects_full_screenshot_underlay(self) -> None:
         adapter = _NativeRenderAdapter()
         design = {

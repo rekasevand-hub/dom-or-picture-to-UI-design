@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import re
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 
@@ -31,6 +32,22 @@ def _normalized_bbox(value: Any) -> list[int] | None:
     except (TypeError, ValueError):
         return None
     return [x, y, width, height] if width > 0 and height > 0 else None
+
+
+def _halo_bbox(
+    bbox: list[int],
+    halo_px: int,
+    image_shape: tuple[int, int],
+) -> list[int] | None:
+    height, width = image_shape
+    x, y, box_width, box_height = bbox
+    left = max(0, x - halo_px)
+    top = max(0, y - halo_px)
+    right = min(width, x + box_width + halo_px)
+    bottom = min(height, y + box_height + halo_px)
+    if right <= left or bottom <= top:
+        return None
+    return [left, top, right - left, bottom - top]
 
 
 def _contrast_mask(region: Any) -> Any:
@@ -100,6 +117,36 @@ def _edge_f1(reference_mask: Any, rendered_mask: Any) -> float | None:
     return 2 * precision * recall / (precision + recall)
 
 
+def _mask_edge_f1(
+    reference_mask: Any,
+    rendered_mask: Any,
+    reference_ink: list[int],
+    rendered_ink: list[int],
+    origin: tuple[int, int],
+) -> float | None:
+    union_x = min(reference_ink[0], rendered_ink[0])
+    union_y = min(reference_ink[1], rendered_ink[1])
+    union_right = max(
+        reference_ink[0] + reference_ink[2],
+        rendered_ink[0] + rendered_ink[2],
+    )
+    union_bottom = max(
+        reference_ink[1] + reference_ink[3],
+        rendered_ink[1] + rendered_ink[3],
+    )
+    x, y = origin
+    return _edge_f1(
+        reference_mask[
+            union_y - y : union_bottom - y,
+            union_x - x : union_right - x,
+        ],
+        rendered_mask[
+            union_y - y : union_bottom - y,
+            union_x - x : union_right - x,
+        ],
+    )
+
+
 def _region_mask(shape: tuple[int, int], bbox: list[int]) -> Any:
     import numpy as np
 
@@ -112,6 +159,195 @@ def _region_mask(shape: tuple[int, int], bbox: list[int]) -> Any:
     return mask
 
 
+def _number(value: Any, default: float) -> float:
+    if value is None or isinstance(value, bool):
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _normalize_gate_text(value: Any) -> str:
+    text = str(value or "").casefold()
+    text = re.sub(r"[^\w\s\u4e00-\u9fff]+", " ", text, flags=re.UNICODE)
+    return " ".join(text.split())
+
+
+def _critical_text_matches(expected: Any, actual: Any) -> bool:
+    expected_text = _normalize_gate_text(expected)
+    actual_text = _normalize_gate_text(actual)
+    if not expected_text or not actual_text:
+        return False
+    if expected_text in actual_text:
+        return True
+    if any("\u4e00" <= char <= "\u9fff" for char in expected_text):
+        compact_expected = re.sub(r"\s+", "", expected_text)
+        compact_actual = re.sub(r"\s+", "", actual_text)
+        return compact_expected in compact_actual
+    return False
+
+
+def _unmeasurable_owner(
+    element: Mapping[str, Any],
+    text: str,
+    native_characters: set[str],
+    reason: str,
+) -> dict[str, Any]:
+    """Register native copy that exists but cannot be measured.
+
+    Deliberately omits ``checks`` so the owner is never mistaken for a
+    measured one, and uses a non-``pass`` status so it can never satisfy the
+    gate.  ``nativeText`` comes from the readback tree, not from a guess.
+    """
+    return {
+        "contentRef": element.get("contentRef"),
+        "text": text,
+        "type": element.get("type"),
+        "nativeText": text in native_characters,
+        "ownerScope": "diagnostic-only",
+        "status": "unmeasurable-missing-evidence",
+        "registrationReason": reason,
+        "registrationSource": "inventory-emission-contract/1.0",
+        "baseline": "unknown",
+    }
+
+
+def _evaluate_native_text_gate(
+    owners: Sequence[Mapping[str, Any]],
+    chrome_regions: Sequence[Mapping[str, Any]],
+    *,
+    critical_texts: Sequence[str],
+    policy: Mapping[str, Any],
+) -> dict[str, Any]:
+    critical = list(
+        dict.fromkeys(
+            str(value).strip() for value in critical_texts if str(value).strip()
+        )
+    )
+    matched_owner_indexes: set[int] = set()
+    missing_critical: list[str] = []
+    for expected in critical:
+        matches = [
+            index
+            for index, owner in enumerate(owners)
+            if _critical_text_matches(expected, owner.get("text"))
+        ]
+        if not matches:
+            missing_critical.append(expected)
+        matched_owner_indexes.update(matches)
+    if critical:
+        scope_indexes = sorted(matched_owner_indexes)
+        scope = "critical-text-owners"
+    else:
+        scope_indexes = [
+            index for index, owner in enumerate(owners) if "checks" in owner
+        ]
+        scope = "all-measured-owners"
+    scoped_indexes = set(scope_indexes)
+    owner_scope = "critical-gate" if critical else "all-measured-gate"
+    for index, owner in enumerate(owners):
+        owner["ownerScope"] = (
+            owner_scope if index in scoped_indexes else "diagnostic-only"
+        )
+
+    text_blockers: list[str] = []
+    for expected in missing_critical:
+        text_blockers.append(f"native-text:missing:{expected}")
+    for index in scope_indexes:
+        owner = owners[index]
+        owner_ref = str(owner.get("contentRef") or f"owner-{index}")
+        if not owner.get("nativeText"):
+            text_blockers.append(f"native-text:not-native:{owner_ref}")
+            continue
+        if owner.get("status") != "pass":
+            text_blockers.append(f"native-text:owner:{owner_ref}")
+    baseline_required = bool(policy.get("native_text_baseline_required", False))
+    baseline_evidence_count = sum(
+        owner.get("baseline") not in {None, "", "unknown"} for owner in owners
+    )
+    baseline_status = "pass" if baseline_evidence_count else "not-evaluated"
+    if baseline_required and not baseline_evidence_count:
+        text_blockers.append("native-text:baseline-evidence")
+    if not owners:
+        text_blockers.append("native-text:missing")
+    text_blockers = list(dict.fromkeys(text_blockers))
+
+    chrome_threshold = _number(
+        policy.get("chrome_bad_pixel_ratio_max"),
+        0.05,
+    )
+    chrome_blockers: list[str] = []
+    if not chrome_regions:
+        chrome_blockers.append("chrome-visual:missing")
+    for region in chrome_regions:
+        region_id = str(region.get("id") or region.get("role") or "unknown")
+        ratio = _number(region.get("chromeBadPixelRatio"), 1.0)
+        if ratio > chrome_threshold or region.get("status") == "fail":
+            chrome_blockers.append(f"chrome-visual:{region_id}")
+    chrome_blockers = list(dict.fromkeys(chrome_blockers))
+    blockers = list(dict.fromkeys([*text_blockers, *chrome_blockers]))
+
+    text_pass_count = sum(
+        owners[index].get("nativeText") and owners[index].get("status") == "pass"
+        for index in scope_indexes
+    )
+    owner_refs = [
+        str(owners[index].get("contentRef") or f"owner-{index}")
+        for index in scope_indexes
+    ]
+    return {
+        "schema_version": "grounding-native-text-gate/2.0",
+        "status": "fail" if blockers else "pass",
+        "scope": scope,
+        "thresholds": {
+            "chromeBadPixelRatioMax": chrome_threshold,
+            "positionPxMax": _number(
+                policy.get("native_text_position_px_max"),
+                1.0,
+            ),
+            "inkCoverageRatioMin": _number(
+                policy.get("native_text_ink_coverage_min"),
+                0.90,
+            ),
+            "inkCoverageRatioMax": _number(
+                policy.get("native_text_ink_coverage_max"),
+                1.10,
+            ),
+            "edgeF1Min": _number(policy.get("native_text_edge_f1_min"), 0.95),
+        },
+        "criticalText": {
+            "requiredCount": len(critical),
+            "matchedCount": len(critical) - len(missing_critical),
+            "missing": missing_critical,
+        },
+        "nativeText": {
+            "status": "fail" if text_blockers else "pass",
+            "ownerCount": len(scope_indexes),
+            "ownerPassCount": int(text_pass_count),
+            "ownerPassRatio": (
+                float(text_pass_count) / float(len(scope_indexes))
+                if scope_indexes
+                else 0.0
+            ),
+            "ownerRefs": owner_refs,
+            "unscopedOwnerCount": len(owners) - len(scope_indexes),
+            "blockers": text_blockers,
+        },
+        "chrome": {
+            "status": "fail" if chrome_blockers else "pass",
+            "regionCount": len(chrome_regions),
+            "blockers": chrome_blockers,
+        },
+        "baseline": {
+            "status": baseline_status,
+            "required": baseline_required,
+            "evidenceCount": baseline_evidence_count,
+        },
+        "blockers": blockers,
+    }
+
+
 def build_native_text_quality(
     design: Mapping[str, Any],
     readback_tree: Mapping[str, Any],
@@ -121,8 +357,18 @@ def build_native_text_quality(
     *,
     halo_px: int = 2,
     bad_pixel_threshold: int = 30,
+    gate_policy: Mapping[str, Any] | None = None,
+    critical_texts: Sequence[str] | None = None,
+    register_unmeasured_owners: bool = False,
 ) -> dict[str, Any]:
-    """Build diagnostic text/chrome metrics; never changes acceptance status."""
+    """Build diagnostic text/chrome metrics; never changes acceptance status.
+
+    ``register_unmeasured_owners`` is an opt-in emission-contract repair.  By
+    default an element without measurable ink evidence is silently skipped, so
+    critical-text matching treats existing native copy as absent.  When
+    enabled, such elements are registered with an explicit ``unmeasurable-
+    missing-evidence`` status instead.  They are never counted as passing.
+    """
     import numpy as np
     from PIL import Image
 
@@ -134,6 +380,30 @@ def build_native_text_quality(
         raise ValueError("reference and rendered image sizes must match")
     height, width = reference.shape[:2]
     bad = np.max(np.abs(reference - rendered), axis=2) > bad_pixel_threshold
+    gate_enabled = isinstance(gate_policy, Mapping)
+    policy = gate_policy if gate_enabled else {}
+    position_max = _number(policy.get("native_text_position_px_max"), 1.0)
+    width_ratio = _number(
+        policy.get("native_text_width_tolerance_ratio"),
+        0.02,
+    )
+    width_floor = int(
+        _number(policy.get("native_text_width_tolerance_floor_px"), 2.0)
+    )
+    height_ratio = _number(
+        policy.get("native_text_height_tolerance_ratio"),
+        0.02,
+    )
+    height_floor = int(
+        _number(policy.get("native_text_height_tolerance_floor_px"), 2.0)
+    )
+    coverage_min = _number(policy.get("native_text_ink_coverage_min"), 0.90)
+    coverage_max = _number(policy.get("native_text_ink_coverage_max"), 1.10)
+    edge_min = _number(policy.get("native_text_edge_f1_min"), 0.95)
+    chrome_threshold = _number(
+        policy.get("chrome_bad_pixel_ratio_max"),
+        0.05,
+    )
     native_characters = {
         str(node.get("characters") or "") for node in _text_nodes(readback_tree)
     }
@@ -148,10 +418,22 @@ def build_native_text_quality(
         evidence = element.get("styleEvidence")
         values = evidence.get("evidence") if isinstance(evidence, Mapping) else None
         if not isinstance(values, Mapping):
+            if register_unmeasured_owners:
+                owners.append(
+                    _unmeasurable_owner(
+                        element, text, native_characters, "missing-style-evidence"
+                    )
+                )
             continue
         source_bbox = _normalized_bbox(values.get("source_bbox"))
         reference_ink = _normalized_bbox(values.get("ink_bbox"))
         if source_bbox is None or reference_ink is None:
+            if register_unmeasured_owners:
+                owners.append(
+                    _unmeasurable_owner(
+                        element, text, native_characters, "missing-ink-evidence"
+                    )
+                )
             continue
         x, y, box_width, box_height = source_bbox
         source_region = rendered[y : y + box_height, x : x + box_width]
@@ -165,48 +447,84 @@ def build_native_text_quality(
                     "contentRef": element.get("contentRef"),
                     "text": text,
                     "nativeText": text in native_characters,
+                    "ownerScope": "diagnostic-only",
                     "status": "failed-missing-rendered-ink",
                 }
             )
             continue
         delta_x = rendered_ink[0] - reference_ink[0]
         delta_y = rendered_ink[1] - reference_ink[1]
-        width_tolerance = max(2, int(round(reference_ink[2] * 0.02)))
-        height_tolerance = max(2, int(round(reference_ink[3] * 0.02)))
+        width_tolerance = max(
+            width_floor,
+            int(round(reference_ink[2] * width_ratio)),
+        )
+        height_tolerance = max(
+            height_floor,
+            int(round(reference_ink[3] * height_ratio)),
+        )
         height_delta = rendered_ink[3] - reference_ink[3]
         width_delta = rendered_ink[2] - reference_ink[2]
-        reference_pixels = int(reference_mask.sum())
-        rendered_pixels = int(rendered_mask.sum())
-        coverage = (
-            float(rendered_pixels) / float(reference_pixels)
-            if reference_pixels
+        source_reference_pixels = int(reference_mask.sum())
+        source_rendered_pixels = int(rendered_mask.sum())
+        source_coverage = (
+            float(source_rendered_pixels) / float(source_reference_pixels)
+            if source_reference_pixels
             else None
         )
-        union_x = min(reference_ink[0], rendered_ink[0])
-        union_y = min(reference_ink[1], rendered_ink[1])
-        union_right = max(
-            reference_ink[0] + reference_ink[2],
-            rendered_ink[0] + rendered_ink[2],
+        source_edge_f1 = _mask_edge_f1(
+            reference_mask,
+            rendered_mask,
+            reference_ink,
+            rendered_ink,
+            (x, y),
         )
-        union_bottom = max(
-            reference_ink[1] + reference_ink[3],
-            rendered_ink[1] + rendered_ink[3],
-        )
-        ref_crop = reference_mask[
-            union_y - y : union_bottom - y,
-            union_x - x : union_right - x,
-        ]
-        render_crop = rendered_mask[
-            union_y - y : union_bottom - y,
-            union_x - x : union_right - x,
-        ]
-        edge_f1 = _edge_f1(ref_crop, render_crop)
+        support_bbox = _halo_bbox(reference_ink, halo_px, (height, width))
+        if support_bbox is None:
+            support_coverage = None
+            support_edge_f1 = None
+            support_reference_ink = None
+            support_rendered_ink = None
+        else:
+            support_x, support_y, support_width, support_height = support_bbox
+            support_reference_region = reference[
+                support_y : support_y + support_height,
+                support_x : support_x + support_width,
+            ]
+            support_rendered_region = rendered[
+                support_y : support_y + support_height,
+                support_x : support_x + support_width,
+            ]
+            support_reference_mask = _contrast_mask(support_reference_region)
+            support_rendered_mask = _contrast_mask(support_rendered_region)
+            support_reference_ink = _ink_bbox(support_reference_mask, support_bbox)
+            support_rendered_ink = _ink_bbox(support_rendered_mask, support_bbox)
+            support_reference_pixels = int(support_reference_mask.sum())
+            support_rendered_pixels = int(support_rendered_mask.sum())
+            support_coverage = (
+                float(support_rendered_pixels) / float(support_reference_pixels)
+                if support_reference_pixels
+                else None
+            )
+            support_edge_f1 = (
+                _mask_edge_f1(
+                    support_reference_mask,
+                    support_rendered_mask,
+                    support_reference_ink,
+                    support_rendered_ink,
+                    (support_x, support_y),
+                )
+                if support_reference_ink is not None
+                and support_rendered_ink is not None
+                else None
+            )
         geometry_checks = {
-            "position": abs(delta_x) <= 1 and abs(delta_y) <= 1,
+            "position": abs(delta_x) <= position_max
+            and abs(delta_y) <= position_max,
             "size": abs(width_delta) <= width_tolerance
             and abs(height_delta) <= height_tolerance,
-            "coverage": coverage is not None and 0.90 <= coverage <= 1.10,
-            "edgeF1": edge_f1 is not None and edge_f1 >= 0.95,
+            "coverage": support_coverage is not None
+            and coverage_min <= support_coverage <= coverage_max,
+            "edgeF1": support_edge_f1 is not None and support_edge_f1 >= edge_min,
         }
         owners.append(
             {
@@ -214,6 +532,7 @@ def build_native_text_quality(
                 "text": text,
                 "type": element.get("type"),
                 "nativeText": text in native_characters,
+                "ownerScope": "diagnostic-only",
                 "referenceInkBBox": reference_ink,
                 "renderedInkBBox": rendered_ink,
                 "deltaX": delta_x,
@@ -222,8 +541,14 @@ def build_native_text_quality(
                 "heightDelta": height_delta,
                 "widthTolerance": width_tolerance,
                 "heightTolerance": height_tolerance,
-                "inkCoverageRatio": coverage,
-                "edgeF1": edge_f1,
+                "metricsBasis": "reference-ink-halo",
+                "supportBBox": support_bbox,
+                "supportReferenceInkBBox": support_reference_ink,
+                "supportRenderedInkBBox": support_rendered_ink,
+                "sourceCoverageRatio": source_coverage,
+                "sourceEdgeF1": source_edge_f1,
+                "inkCoverageRatio": support_coverage,
+                "edgeF1": support_edge_f1,
                 "baseline": "unknown",
                 "checks": geometry_checks,
                 "geometryStatus": ("pass" if all(geometry_checks.values()) else "fail"),
@@ -264,7 +589,8 @@ def build_native_text_quality(
                 ),
                 "status": (
                     "pass"
-                    if pixel_count and float(bad_count) / float(pixel_count) <= 0.05
+                    if pixel_count
+                    and float(bad_count) / float(pixel_count) <= chrome_threshold
                     else "fail"
                 ),
             }
@@ -288,27 +614,50 @@ def build_native_text_quality(
         "baselineEvidenceCount": 0,
         "measuredOwnerCount": len(measured),
     }
-    return {
-        "schema_version": "grounding-native-text-quality/1.0",
-        "status": "measured-diagnostic-only",
-        "acceptance_effect": "none",
+    proposed_text_gate = {
+        "positionPxMax": position_max,
+        "widthErrorPxMax": f"max({width_floor}, {width_ratio:.0%} reference width)",
+        "heightErrorPxMax": f"max({height_floor}, {height_ratio:.0%} reference height)",
+        "inkCoverageRatioMin": coverage_min,
+        "inkCoverageRatioMax": coverage_max,
+        "edgeF1Min": edge_min,
+        "baselinePxMax": 1,
+    }
+    report = {
+        "schema_version": (
+            "grounding-native-text-quality/2.0"
+            if gate_enabled
+            else "grounding-native-text-quality/1.0"
+        ),
+        "status": (
+            "measured-gate"
+            if gate_enabled
+            else "measured-diagnostic-only"
+        ),
+        "acceptance_effect": (
+            "native-text-and-chrome-gate" if gate_enabled else "none"
+        ),
         "haloPx": halo_px,
         "badPixelThreshold": bad_pixel_threshold,
         "summary": summary,
         "owners": owners,
         "chromeRegions": chrome_regions,
-        "proposedTextGate": {
-            "positionPxMax": 1,
-            "widthErrorPxMax": "max(2, 2% reference width)",
-            "heightErrorPxMax": "max(2, 2% reference height)",
-            "inkCoverageRatioMin": 0.90,
-            "inkCoverageRatioMax": 1.10,
-            "edgeF1Min": 0.95,
-            "baselinePxMax": 1,
-        },
+        "proposedTextGate": proposed_text_gate,
         "limitations": [
             "Baseline evidence is unavailable for every owner in this diagnostic.",
-            "Native text/chrome split metrics do not change the frozen raw acceptance.",
+            (
+                "Native text and chrome use independent quality gates in policy 2.0."
+                if gate_enabled
+                else "Native text/chrome split metrics do not change the frozen raw acceptance."
+            ),
             "Reference ink masks are screenshot-derived candidates, not original glyph outlines.",
         ],
     }
+    if gate_enabled:
+        report["gate"] = _evaluate_native_text_gate(
+            owners,
+            chrome_regions,
+            critical_texts=critical_texts or [],
+            policy=policy,
+        )
+    return report

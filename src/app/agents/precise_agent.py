@@ -1375,6 +1375,19 @@ class PreciseAgent:
                     "underlay_count": len(enrichment.get("underlays") or []),
                 }
                 manifest["imageMVP"]["enrichmentMode"] = enrichment.get("mode")
+        try:
+            from src.app.services.structure.perception_fingerprint import (
+                build_perception_fingerprint,
+            )
+
+            manifest["perception_fingerprint"] = build_perception_fingerprint(
+                cfg, out
+            )
+        except (ImportError, OSError, TypeError, ValueError):
+            manifest["perception_fingerprint"] = {
+                "schema_version": "grounding-perception-fingerprint/1.0",
+                "status": "unavailable",
+            }
         (out / "manifest.json").write_text(
             json.dumps(manifest, ensure_ascii=False, indent=1), encoding="utf-8"
         )

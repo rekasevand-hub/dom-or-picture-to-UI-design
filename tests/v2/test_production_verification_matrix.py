@@ -29,6 +29,12 @@ REQUIRED_CLAIMS = {
     "PV-07",
     "PV-08",
     "PV-09",
+    "PV-10",
+    "PV-11",
+    "PV-12",
+    "PV-13",
+    "PV-14",
+    "PV-15",
 }
 
 
@@ -77,6 +83,45 @@ class ProductionVerificationMatrixTests(unittest.TestCase):
             re.search(r"\bverified\s*=\s*true\b", text, flags=re.IGNORECASE)
         )
         self.assertIn("production-not-admitted", text)
+
+    def test_grounding_fallback_security_collaboration_and_soak_are_separate(
+        self,
+    ) -> None:
+        text = MATRIX.read_text(encoding="utf-8")
+        _header, rows = _rows(text)
+        by_id = {row["claim_id"]: row for row in rows}
+
+        self.assertEqual(
+            by_id["PV-10"]["dimension"],
+            "grounding-reliability",
+        )
+        self.assertEqual(
+            by_id["PV-11"]["dimension"],
+            "fallback-observability",
+        )
+        self.assertEqual(by_id["PV-12"]["dimension"], "security")
+        self.assertEqual(by_id["PV-13"]["dimension"], "collaboration")
+        self.assertEqual(by_id["PV-14"]["dimension"], "soak-1h-controlled")
+        self.assertEqual(
+            by_id["PV-15"]["dimension"],
+            "soak-1h-real-figma-local",
+        )
+
+    def test_completed_long_runs_are_promoted_only_by_final_evidence(self) -> None:
+        text = MATRIX.read_text(encoding="utf-8")
+        _header, rows = _rows(text)
+        by_id = {row["claim_id"]: row for row in rows}
+
+        self.assertEqual(
+            by_id["PV-14"]["status"],
+            "verified-for:controlled-one-hour-fault-soak",
+        )
+        self.assertRegex(by_id["PV-14"]["evidence_hash"], r"\b[0-9a-f]{64}\b")
+        self.assertEqual(
+            by_id["PV-15"]["status"],
+            "verified-for:local-real-figma-write-1h",
+        )
+        self.assertRegex(by_id["PV-15"]["evidence_hash"], r"\b[0-9a-f]{64}\b")
 
 
 if __name__ == "__main__":

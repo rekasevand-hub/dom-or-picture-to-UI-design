@@ -44,7 +44,7 @@
     "max_cache_entries": 1024,
     "max_inflight": 64,
     "max_journal_events": 4096,
-    "max_message_bytes": 1048576,
+    "max_message_bytes": 16777216,
     "max_params_depth": 16,
     "plugin_token": "",
     "plugin_token_recheck_seconds": 0.5,

@@ -399,6 +399,37 @@ output/_axure_multi/
 
 当前只有 Axure 适配器声明 `supports_pages = True`；SVG / Figma 多输入会明确报错。
 
+### 路线对比环境
+
+跨路线比较必须冻结同一个 CSS viewport 和 DPR。不要用输入截图的像素尺寸
+隐式覆盖 URL 采集断点；需要把截图作为参考时，显式传入 `--reference-image`，
+其物理尺寸除以 DPR 后的 CSS 宽度必须与 `--viewport` 一致。
+
+```powershell
+python scripts/compare_routes.py `
+  --url "https://example.com/" `
+  --routes dom,grounding,cv `
+  --viewport 1440x900 `
+  --device-scale-factor 1 `
+  --base-out output/_compare_1440
+```
+
+已有产物可先做 fail-closed 校验，不重新采集：
+
+```powershell
+python scripts/compare_routes.py `
+  --check-only `
+  --routes dom,grounding,cv `
+  --viewport 1440x900 `
+  --device-scale-factor 1 `
+  --base-out output/_compare_1440
+```
+
+比较结果写入 `comparison_environment.json`。viewport、DPR、截图物理尺寸、
+设计画布或参考图断点不一致时，命令返回 `2`，并且不会生成 `summary.json`。
+纯图片输入没有浏览器 viewport，文件会明确记录
+`not-applicable-image-input`，不会从图片宽度反推断点。
+
 ### 3. DOM → Figma
 
 Figma 不是离线文件输出，必须保持桥接服务和插件运行。
@@ -644,7 +675,7 @@ scripts/                               运维、重放、Axure 调试脚本
 - Image I-004/I-005：CV fallback 已完成一次真实 Figma 路由与写回验收，但结果在 critical text、structure 与 asset 三项 `blocked-fail`；同一冻结样本上的 Grounding + CV conservative hybrid 无独立改善且耗时更高，决策为 `reject-hybrid`，Grounding 保持默认。见 `docs/v2_mentor/IMAGE_CV_HYBRID_BENCHMARK_2026-10-26.md`
 - Image I-004-R2：完整 `PreciseAgent` CV fallback 路径在 owned sample 通过真实 Figma 门禁；随后冻结的三样本 holdout 为 `0/3`，因此 CV fallback 仅保留为 availability fallback，质量泛化结论不成立。见 `docs/v2_mentor/IMAGE_CV_FALLBACK_PRODUCT_ACCEPTANCE_2026-10-26.md`
 - R5 生产切片：`P0-CONTRACT-CORE` 已实现当前范围；`P1-EVIDENCE-ADAPTER` 已完成 shadow、frame 子文档作用域、两轴 outcome、S07 条件候选、有限 barrier、first-party scope、独立 frame boundary 与 S06 导航时间线当前范围；旧 round3 strict 3/7、content 5/7 冻结，新 profile equivalent 2 / different 3 / inconclusive 2；真实 Figma 写入、生产存储与检测器校准仍未准入；见 `docs/v2_mentor/R5_PRODUCTION_BACKLOG.md`
-- R5-P5/P4 门禁：门禁矩阵、冲突交付、输出硬门禁、PARTIAL release gate、single-writer lease、local-pilot store、backup/restore、metric contract 与 frozen dry run 已完成当前范围；真实 1h rehearsal、fixed-registry pilot 和 1h/24h/7d cloud soak 未执行，生产决策为 `not-admitted`；见 `docs/v2_mentor/R5_PRODUCTION_ADMISSION_DECISION.md` 与 `docs/v2_mentor/20261022问题文档.md`
+- R5-P5/P4 门禁：Grounding reliability、fallback telemetry、generated-canary security、controlled collaboration、local-pilot operations 和 frozen dry run 已完成当前范围。真实 Figma 1h round 3 为 57,039/57,039、0 failure、exact cleanup；controlled 1h round 6 为 35,881 attempts、0 failure，并覆盖 429/503、12 reconnects 与 unknown recovery。P5 仍因 Q8-Q10 为 `blocked-pending-rulings`，24h/7d 与真实协作者未完成，生产决策仍为 `not-admitted`；见 `docs/v2_mentor/PRODUCTION_ADMISSION_HARDENING_2026-10-26.md` 与 `docs/v2_mentor/R5_PRODUCTION_ADMISSION_DECISION.md`
 - P0 纯合同核心：`src/app/services/contracts/` + 20/20 单测；未接默认渲染或 bridge；见 `docs/v2_mentor/P0_CONTRACT_CORE.md`
 - P1 当前主目标：固定 Chromium canonical 环境下的实际 SVG/Figma 输出保真。旧 full-visible strict 定义/证据保留，但实时 strict count 只作诊断。calibration 6 样例 `5 pass + 1 partial`；独立 holdout 5 例 SVG 5/5，visual 4 pass / 1 frame fail；data URI 与受控远程资产已校验 content SHA-256、natural size、object-fit source rect。Figma not-evaluated。全量 173/173；详见 `docs/v2_mentor/P1_CANONICAL_OUTPUT_FIDELITY.md`。
 - 真实 Figma 冒烟 B（写入 + 回读，非生产路径）：`docs/v2_mentor/R4_SMOKE_B_READBACK.md`；脚本 `scripts/figma_readback_smoke.py`

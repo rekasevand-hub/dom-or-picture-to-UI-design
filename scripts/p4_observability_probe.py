@@ -1,21 +1,23 @@
 # -*- coding: utf-8 -*-
 """Dashboard metric and disclosure contract probe."""
+
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import subprocess
 import sys
+import math
 from pathlib import Path
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.app.services.contracts import canonical_hash
+from src.app.services.contracts import canonical_hash  # noqa: E402
 
 
 REQUIRED_METRICS = (
@@ -32,10 +34,22 @@ REQUIRED_METRICS = (
     "lease_generation",
     "storage_errors_total",
     "disclosure_counts",
+    "grounding_unavailable_total",
+    "fallback_trigger_total",
+    "fallback_selection_accepted_total",
+    "fallback_write_before_block_total",
+    "fallback_latency_ms_p50",
+    "fallback_latency_ms_p95",
+    "fallback_latency_ms_p99",
+    "fallback_token_usage_total",
 )
 
 
-def run_probe(output: str | Path) -> dict[str, Any]:
+def run_probe(
+    output: str | Path,
+    *,
+    fallback_observations: Iterable[Mapping[str, Any]] = (),
+) -> dict[str, Any]:
     destination = Path(output)
     destination.mkdir(parents=True, exist_ok=True)
     forbidden_values = (
@@ -45,6 +59,7 @@ def run_probe(output: str | Path) -> dict[str, Any]:
     )
     journal = ROOT / "output" / "_bridge_state" / "bridge-journal.jsonl"
     ledger = ROOT / "output" / "_bridge_state" / "write-jobs.jsonl"
+    fallback_metrics = _fallback_metrics(fallback_observations)
     metrics = {
         "pending_transactions": 0,
         "unknown_transactions": 1,
@@ -59,6 +74,7 @@ def run_probe(output: str | Path) -> dict[str, Any]:
         "lease_generation": 4,
         "storage_errors_total": 0,
         "disclosure_counts": 0,
+        **fallback_metrics,
     }
     dashboard = {
         "schema": "p4-dashboard-contract/1.0",
@@ -75,19 +91,73 @@ def run_probe(output: str | Path) -> dict[str, Any]:
         "unknown_transactions": {"condition": "> 0 for 5m", "severity": "critical"},
         "storage_errors_total": {"condition": "increase > 0", "severity": "critical"},
         "disclosure_counts": {"condition": "> 0", "severity": "critical"},
-        "conflict_409_total": {"condition": "increase > 10 in 5m", "severity": "warning"},
+        "conflict_409_total": {
+            "condition": "increase > 10 in 5m",
+            "severity": "warning",
+        },
+        "grounding_unavailable_total": {
+            "condition": "increase > 5 in 10m",
+            "severity": "warning",
+        },
+        "fallback_write_before_block_total": {
+            "condition": "> 0",
+            "severity": "critical",
+        },
     }
     serialized = json.dumps(metrics, ensure_ascii=False)
     checks = (
-        _check("complete-contract", "Every required metric is present", set(metrics) == set(REQUIRED_METRICS)),
-        _check("latency-order", "p99 >= p95 >= p50", metrics["write_latency_ms_p99"] >= metrics["write_latency_ms_p95"] >= metrics["write_latency_ms_p50"]),
-        _check("no-raw-disclosure", "No raw text, secret or action payload canary is emitted", not any(value in serialized for value in forbidden_values)),
-        _check("critical-alerts", "Unknown/storage/disclosure alerts are defined", all(name in alert_rules for name in ("unknown_transactions", "storage_errors_total", "disclosure_counts"))),
-        _check("disclosure-zero", "This probe emits no disclosure", metrics["disclosure_counts"] == 0),
+        _check(
+            "complete-contract",
+            "Every required metric is present",
+            set(metrics) == set(REQUIRED_METRICS),
+        ),
+        _check(
+            "latency-order",
+            "p99 >= p95 >= p50",
+            metrics["write_latency_ms_p99"]
+            >= metrics["write_latency_ms_p95"]
+            >= metrics["write_latency_ms_p50"],
+        ),
+        _check(
+            "no-raw-disclosure",
+            "No raw text, secret or action payload canary is emitted",
+            not any(value in serialized for value in forbidden_values),
+        ),
+        _check(
+            "critical-alerts",
+            "Unknown/storage/disclosure alerts are defined",
+            all(
+                name in alert_rules
+                for name in (
+                    "unknown_transactions",
+                    "storage_errors_total",
+                    "disclosure_counts",
+                )
+            ),
+        ),
+        _check(
+            "disclosure-zero",
+            "This probe emits no disclosure",
+            metrics["disclosure_counts"] == 0,
+        ),
+        _check(
+            "fallback-metric-order",
+            "Fallback p99 >= p95 >= p50",
+            metrics["fallback_latency_ms_p99"]
+            >= metrics["fallback_latency_ms_p95"]
+            >= metrics["fallback_latency_ms_p50"],
+        ),
+        _check(
+            "fallback-write-before-block-zero",
+            "No fallback dispatch precedes its decision",
+            metrics["fallback_write_before_block_total"] == 0,
+        ),
     )
     result = {
         "schema": "p4-observability-probe/1.0",
-        "status": "verified-for" if all(item["passed"] for item in checks) else "blocked",
+        "status": "verified-for"
+        if all(item["passed"] for item in checks)
+        else "blocked",
         "scope": "dashboard metric contract on selected local-pilot storage profile",
         "created_at": "2026-10-22T00:00:00+00:00",
         "code_revision": _code_revision(),
@@ -119,6 +189,45 @@ def _metric_unit(name: str) -> str:
     if name == "lease_generation":
         return "generation"
     return "count"
+
+
+def _fallback_metrics(
+    observations: Iterable[Mapping[str, Any]],
+) -> dict[str, Any]:
+    rows = [dict(item) for item in observations]
+    latencies = sorted(
+        float(item["fallback_latency_ms"])
+        for item in rows
+        if isinstance(item.get("fallback_latency_ms"), (int, float))
+    )
+    return {
+        "grounding_unavailable_total": sum(
+            bool(item.get("grounding_unavailable")) for item in rows
+        ),
+        "fallback_trigger_total": sum(
+            bool(item.get("fallback_triggered")) for item in rows
+        ),
+        "fallback_selection_accepted_total": sum(
+            bool(item.get("fallback_selection_accepted")) for item in rows
+        ),
+        "fallback_write_before_block_total": sum(
+            bool(item.get("write_before_decision")) for item in rows
+        ),
+        "fallback_latency_ms_p50": _percentile(latencies, 0.50),
+        "fallback_latency_ms_p95": _percentile(latencies, 0.95),
+        "fallback_latency_ms_p99": _percentile(latencies, 0.99),
+        "fallback_token_usage_total": sum(
+            int((item.get("token_usage") or {}).get("total_tokens") or 0)
+            for item in rows
+        ),
+    }
+
+
+def _percentile(values: list[float], ratio: float) -> float:
+    if not values:
+        return 0.0
+    index = max(0, math.ceil(len(values) * ratio) - 1)
+    return round(values[index], 3)
 
 
 def _check(name: str, description: str, passed: bool) -> dict[str, Any]:
@@ -161,8 +270,18 @@ def _write_json(path: Path, value: Any) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", default="output/_p4_observability_round1")
+    parser.add_argument(
+        "--fallback-observation",
+        action="append",
+        default=[],
+        help="Path to a fallback_observability.json artifact.",
+    )
     args = parser.parse_args()
-    result = run_probe(args.out)
+    observations = [
+        json.loads(Path(path).read_text(encoding="utf-8"))
+        for path in args.fallback_observation
+    ]
+    result = run_probe(args.out, fallback_observations=observations)
     print("status=" + result["status"])
     print("metrics=" + str(len(result["metrics"])))
     print("content_hash=" + result["content_hash"])

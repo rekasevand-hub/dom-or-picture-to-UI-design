@@ -348,13 +348,24 @@ class PrototypeAdapter(ABC):
                 # 以图片形式画，保证它盖在底下内容之上时观感与截图一致。
                 self.create_image(spec_out, parent_id=parent_id)
             elif el_type in ("button", "input", "rectangle", "container"):
-                r = self._element_rect(spec)
-                backing = self._white_leaf_backing(r, spec, chrome)
-                if backing is not None:
-                    skipped_text_color[idx] = self._contrast_text_color(backing[4])
+                if spec.get("sourceChromeCovered") and el_type in {"button", "input"}:
+                    self.create_rectangle(
+                        {
+                            **spec_out,
+                            "fillColor": "transparent",
+                            "borderColor": "transparent",
+                            "borderWidth": 0,
+                        },
+                        parent_id=parent_id,
+                    )
                 else:
-                    self._note_backing(r, spec.get("fillColor"), chrome, page_rect)
-                    self.create_rectangle(spec_out, parent_id=parent_id)
+                    r = self._element_rect(spec)
+                    backing = self._white_leaf_backing(r, spec, chrome)
+                    if backing is not None:
+                        skipped_text_color[idx] = self._contrast_text_color(backing[4])
+                    else:
+                        self._note_backing(r, spec.get("fillColor"), chrome, page_rect)
+                        self.create_rectangle(spec_out, parent_id=parent_id)
             elif el_type in ("image", "avatar"):
                 if spec.get("vectorSvg") and self.supports_vectors:
                     self.create_vector(spec_out, parent_id=parent_id)
@@ -467,7 +478,6 @@ class PrototypeAdapter(ABC):
                     "textColor": text_color,
                     "fontSize": spec.get("fontSize", 16),
                     "fontWeight": spec.get("fontWeight"),
-                    "fontWeightValue": spec.get("fontWeightValue"),
                     "fontFamily": spec.get("fontFamily"),
                     "fontStyle": spec.get("fontStyle"),
                     "letterSpacing": spec.get("letterSpacing"),
@@ -480,6 +490,8 @@ class PrototypeAdapter(ABC):
                         has_measured_box=measured_box is not None,
                     ),
                 }
+                if spec.get("fontWeightValue") is not None:
+                    text_spec["fontWeightValue"] = spec["fontWeightValue"]
                 if str(spec.get("whiteSpace") or "").strip().lower() == "nowrap":
                     # 元素自己的 `white-space:nowrap` 必须跟着标题走：控件的底框被
                     # "白叶衬底"规则吞掉时，标题是**独立文字**下发的（`_text()` 按估宽

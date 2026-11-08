@@ -15,6 +15,7 @@ if str(_ROOT) not in sys.path:
 
 from src.app.agents.precise_agent import PreciseAgent  # noqa: E402
 from src.app.services.evidence.image_figma_acceptance import (  # noqa: E402
+    IMAGE_MVP_POLICY_V2,
     build_image_acceptance_report,
     run_image_figma_evidence,
 )
@@ -28,13 +29,26 @@ from src.app.services.rendering.figma_adapter import FigmaBridgeAdapter  # noqa:
 from src.app.services.structure.image_contract import (  # noqa: E402
     inspect_image_reference,
 )
+from src.app.services.structure.fidelity.emission_contract import (  # noqa: E402
+    audit_emission,
+)
+from src.app.services.structure.fidelity.perception_contract import (  # noqa: E402
+    evaluate_native_fidelity,
+    run_perception_contract,
+)
 from src.app.services.structure.fidelity.text_calibration import (  # noqa: E402
     calibrate_control_fonts,
     calibrate_form_fonts_from_render,
     calibrate_form_positions_from_render,
+    calibrate_form_text_shape_from_render,
+    calibrate_form_text_weight_from_render,
     calibrate_form_text_positions,
+    calibrate_low_contrast_placeholder_from_render,
+    calibrate_search_control_from_render,
     calibrate_table_fonts_from_render,
+    calibrate_table_letter_spacing_from_render,
     calibrate_table_positions_from_render,
+    calibrate_toolbar_font_weight_from_render,
     calibrate_toolbar_letter_spacing_from_render,
 )
 from src.main import load_config  # noqa: E402
@@ -73,6 +87,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--origin-y", type=float, default=0)
     parser.add_argument("--readback-depth", type=int, default=8)
     parser.add_argument(
+        "--acceptance-policy",
+        choices=("1.0", "2.0"),
+        default="1.0",
+        help="Select the frozen raw-region gate or the split native-text/chrome gate.",
+    )
+    parser.add_argument(
         "--prepare-only",
         action="store_true",
         help="Stop after the reproducible image pipeline artifacts.",
@@ -81,6 +101,44 @@ def _build_parser() -> argparse.ArgumentParser:
         "--reuse-prepared",
         action="store_true",
         help="Use an existing frozen pipeline directory instead of recollecting.",
+    )
+    parser.add_argument(
+        "--perception-contract",
+        choices=("off", "report", "adaptive"),
+        default="adaptive",
+        help=(
+            "Validate text bboxes against reference pixels. 'adaptive' repairs "
+            "only when the unverified ratio exceeds the drift threshold."
+        ),
+    )
+    parser.add_argument(
+        "--perception-drift-threshold",
+        type=float,
+        default=0.20,
+        help="Perception-defect ratio that triggers an adaptive repair.",
+    )
+    parser.add_argument(
+        "--strict-perception",
+        action="store_true",
+        help="Abort before writing to Figma when unverified text owners remain.",
+    )
+    parser.add_argument(
+        "--emission-contract",
+        choices=("off", "report", "repair"),
+        default="report",
+        help=(
+            "Audit inventory->plan->design->gate-owner emission by contentRef. "
+            "'repair' additionally registers native owners that have no "
+            "measurable ink evidence (diagnostic, never counted as passing)."
+        ),
+    )
+    parser.add_argument(
+        "--strict-emission",
+        action="store_true",
+        help=(
+            "Return a dedicated exit code when emission violations remain. "
+            "Off by default; never changes the frozen formal acceptance."
+        ),
     )
     return parser
 
@@ -173,6 +231,9 @@ def _fidelity_regions(geometry: dict | None) -> list[dict]:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
+    acceptance_policy = (
+        IMAGE_MVP_POLICY_V2 if args.acceptance_policy == "2.0" else None
+    )
     image = args.image.resolve()
     truth = _read_json(args.truth)
     if not image.is_file():
@@ -225,6 +286,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     repair_history = _optional_json(pipeline_output / "14_repair_history.json")
     geometry = _optional_json(pipeline_output / "10_geometry_manifest.json")
 
+    perception_report = None
+    if args.perception_contract != "off":
+        unrepaired_design = design
+        design, perception_report = run_perception_contract(
+            design,
+            str(image),
+            ocr_supplement=ocr_supplement,
+            mode=args.perception_contract,
+            drift_threshold=args.perception_drift_threshold,
+        )
+        if perception_report.get("repair", {}).get("applied"):
+            _write_json(
+                output / "figma_design_unrepaired.json", unrepaired_design
+            )
+        _write_json(output / "perception_coverage.json", perception_report)
+
     prepared = {
         "status": "prepared",
         "sample_id": truth.get("sample_id"),
@@ -249,10 +326,38 @@ def main(argv: Sequence[str] | None = None) -> int:
         },
         "pipeline_output": str(pipeline_output),
     }
+    if perception_report is not None:
+        prepared["perception_contract"] = {
+            "status": perception_report["status"],
+            "perceptionDefectRatio": perception_report["ratios"][
+                "perceptionDefectRatio"
+            ],
+            "unverifiedRatio": perception_report["ratios"]["unverifiedRatio"],
+            "systematicCoordinateDrift": perception_report["policy"][
+                "systematicCoordinateDrift"
+            ],
+            "recovered": perception_report["counts"]["recovered"],
+            "repairApplied": bool(
+                perception_report.get("repair", {}).get("applied")
+            ),
+        }
     if args.prepare_only:
         _write_json(output / "prepared.json", prepared)
         print(json.dumps(prepared, ensure_ascii=True))
         return 0
+    if (
+        args.strict_perception
+        and perception_report is not None
+        and perception_report["counts"]["unverified"]
+    ):
+        aborted = {
+            "status": "perception-contract-blocked",
+            "reason": "unverified-text-owners-remain",
+            "perception": perception_report,
+        }
+        _write_json(output / "acceptance.json", aborted)
+        print(json.dumps(aborted, ensure_ascii=True))
+        return 2
 
     design.setdefault("canvas", {})
     design["canvas"]["x"] = float(args.origin_x)
@@ -336,6 +441,29 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps(run_summary, ensure_ascii=True))
             return 2
 
+    table_spacing_design, table_spacing_calibration = (
+        calibrate_table_letter_spacing_from_render(
+            design,
+            str(image),
+            str(run_root / "export.png"),
+        )
+    )
+    if table_spacing_calibration["adjusted_count"]:
+        design = table_spacing_design
+        _write_json(output / "figma_design.json", design)
+        run_root = output / "figma_table_spacing"
+        run_summary = run_image_figma_evidence(
+            design,
+            output_dir=run_root,
+            sample_id=str(truth.get("sample_id") or ""),
+            adapter_factory=ImageMVFigmaAdapter,
+            readback_depth=max(1, args.readback_depth),
+        )
+        if run_summary.get("status") != "captured-figma-evidence":
+            _write_json(output / "acceptance.json", run_summary)
+            print(json.dumps(run_summary, ensure_ascii=True))
+            return 2
+
     form_font_design, form_font_calibration = calibrate_form_fonts_from_render(
         design,
         str(image),
@@ -348,6 +476,52 @@ def main(argv: Sequence[str] | None = None) -> int:
         design = form_font_design
         _write_json(output / "figma_design.json", design)
         run_root = output / "figma_form_font"
+        run_summary = run_image_figma_evidence(
+            design,
+            output_dir=run_root,
+            sample_id=str(truth.get("sample_id") or ""),
+            adapter_factory=ImageMVFigmaAdapter,
+            readback_depth=max(1, args.readback_depth),
+        )
+        if run_summary.get("status") != "captured-figma-evidence":
+            _write_json(output / "acceptance.json", run_summary)
+            print(json.dumps(run_summary, ensure_ascii=True))
+            return 2
+
+    form_weight_design, form_weight_calibration = (
+        calibrate_form_text_weight_from_render(
+            design,
+            str(image),
+            str(run_root / "export.png"),
+        )
+    )
+    if form_weight_calibration["adjusted_count"]:
+        design = form_weight_design
+        _write_json(output / "figma_design.json", design)
+        run_root = output / "figma_form_weight"
+        run_summary = run_image_figma_evidence(
+            design,
+            output_dir=run_root,
+            sample_id=str(truth.get("sample_id") or ""),
+            adapter_factory=ImageMVFigmaAdapter,
+            readback_depth=max(1, args.readback_depth),
+        )
+        if run_summary.get("status") != "captured-figma-evidence":
+            _write_json(output / "acceptance.json", run_summary)
+            print(json.dumps(run_summary, ensure_ascii=True))
+            return 2
+
+    form_shape_design, form_shape_calibration = (
+        calibrate_form_text_shape_from_render(
+            design,
+            str(image),
+            str(run_root / "export.png"),
+        )
+    )
+    if form_shape_calibration["adjusted_count"]:
+        design = form_shape_design
+        _write_json(output / "figma_design.json", design)
+        run_root = output / "figma_form_shape"
         run_summary = run_image_figma_evidence(
             design,
             output_dir=run_root,
@@ -411,6 +585,30 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps(run_summary, ensure_ascii=True))
             return 2
 
+    placeholder_design, placeholder_calibration = (
+        calibrate_low_contrast_placeholder_from_render(
+            design,
+            str(image),
+            str(run_root / "export.png"),
+            ocr_supplement=ocr_supplement,
+        )
+    )
+    if placeholder_calibration["adjusted_count"]:
+        design = placeholder_design
+        _write_json(output / "figma_design.json", design)
+        run_root = output / "figma_placeholder"
+        run_summary = run_image_figma_evidence(
+            design,
+            output_dir=run_root,
+            sample_id=str(truth.get("sample_id") or ""),
+            adapter_factory=ImageMVFigmaAdapter,
+            readback_depth=max(1, args.readback_depth),
+        )
+        if run_summary.get("status") != "captured-figma-evidence":
+            _write_json(output / "acceptance.json", run_summary)
+            print(json.dumps(run_summary, ensure_ascii=True))
+            return 2
+
     toolbar_spacing_design, toolbar_spacing_calibration = (
         calibrate_toolbar_letter_spacing_from_render(
             design,
@@ -434,35 +632,125 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps(run_summary, ensure_ascii=True))
             return 2
 
+    toolbar_weight_design, toolbar_weight_calibration = (
+        calibrate_toolbar_font_weight_from_render(
+            design,
+            str(image),
+            str(run_root / "export.png"),
+        )
+    )
+    if toolbar_weight_calibration["adjusted_count"]:
+        design = toolbar_weight_design
+        _write_json(output / "figma_design.json", design)
+        run_root = output / "figma_toolbar_weight"
+        run_summary = run_image_figma_evidence(
+            design,
+            output_dir=run_root,
+            sample_id=str(truth.get("sample_id") or ""),
+            adapter_factory=ImageMVFigmaAdapter,
+            readback_depth=max(1, args.readback_depth),
+        )
+        if run_summary.get("status") != "captured-figma-evidence":
+            _write_json(output / "acceptance.json", run_summary)
+            print(json.dumps(run_summary, ensure_ascii=True))
+            return 2
+
+    toolbar_respacing_design, toolbar_respacing_calibration = (
+        calibrate_toolbar_letter_spacing_from_render(
+            design,
+            str(image),
+            str(run_root / "export.png"),
+        )
+    )
+    if toolbar_respacing_calibration["adjusted_count"]:
+        design = toolbar_respacing_design
+        _write_json(output / "figma_design.json", design)
+        run_root = output / "figma_toolbar_calibrated_2"
+        run_summary = run_image_figma_evidence(
+            design,
+            output_dir=run_root,
+            sample_id=str(truth.get("sample_id") or ""),
+            adapter_factory=ImageMVFigmaAdapter,
+            readback_depth=max(1, args.readback_depth),
+        )
+        if run_summary.get("status") != "captured-figma-evidence":
+            _write_json(output / "acceptance.json", run_summary)
+            print(json.dumps(run_summary, ensure_ascii=True))
+            return 2
+
+    search_control_design, search_control_calibration = (
+        calibrate_search_control_from_render(
+            design,
+            str(image),
+            str(run_root / "export.png"),
+        )
+    )
+    if search_control_calibration["adjusted_count"]:
+        design = search_control_design
+        _write_json(output / "figma_design.json", design)
+        run_root = output / "figma_search_control"
+        run_summary = run_image_figma_evidence(
+            design,
+            output_dir=run_root,
+            sample_id=str(truth.get("sample_id") or ""),
+            adapter_factory=ImageMVFigmaAdapter,
+            readback_depth=max(1, args.readback_depth),
+        )
+        if run_summary.get("status") != "captured-figma-evidence":
+            _write_json(output / "acceptance.json", run_summary)
+            print(json.dumps(run_summary, ensure_ascii=True))
+            return 2
+
     calibration_report = {
         **control_calibration,
         "table_fonts": table_font_calibration,
         "table_positions": table_position_calibration,
+        "table_letter_spacing": table_spacing_calibration,
         "form_text_positions": form_text_calibration,
         "form_fonts_post": form_font_calibration,
+        "form_text_weight": form_weight_calibration,
+        "form_text_shape": form_shape_calibration,
+        "low_contrast_placeholder": placeholder_calibration,
         "form_positions_post": form_position_calibration,
         "form_positions_post_2": form_position_second_calibration,
         "toolbar_letter_spacing": toolbar_spacing_calibration,
+        "toolbar_font_weight": toolbar_weight_calibration,
+        "toolbar_letter_spacing_2": toolbar_respacing_calibration,
+        "search_control": search_control_calibration,
         "adjusted_count": (
             control_calibration["adjusted_count"]
             + table_font_calibration["adjusted_count"]
             + table_position_calibration["adjusted_count"]
+            + table_spacing_calibration["adjusted_count"]
             + form_text_calibration["adjusted_count"]
             + form_font_calibration["adjusted_count"]
+            + form_weight_calibration["adjusted_count"]
+            + form_shape_calibration["adjusted_count"]
+            + placeholder_calibration["adjusted_count"]
             + form_position_calibration["adjusted_count"]
             + form_position_second_calibration["adjusted_count"]
             + toolbar_spacing_calibration["adjusted_count"]
+            + toolbar_weight_calibration["adjusted_count"]
+            + toolbar_respacing_calibration["adjusted_count"]
+            + search_control_calibration["adjusted_count"]
         ),
         "status": (
             "applied"
             if control_calibration["adjusted_count"]
             or table_font_calibration["adjusted_count"]
             or table_position_calibration["adjusted_count"]
+            or table_spacing_calibration["adjusted_count"]
             or form_text_calibration["adjusted_count"]
             or form_font_calibration["adjusted_count"]
+            or form_weight_calibration["adjusted_count"]
+            or form_shape_calibration["adjusted_count"]
+            or placeholder_calibration["adjusted_count"]
             or form_position_calibration["adjusted_count"]
             or form_position_second_calibration["adjusted_count"]
             or toolbar_spacing_calibration["adjusted_count"]
+            or toolbar_weight_calibration["adjusted_count"]
+            or toolbar_respacing_calibration["adjusted_count"]
+            or search_control_calibration["adjusted_count"]
             else "not-needed"
         ),
     }
@@ -483,8 +771,33 @@ def main(argv: Sequence[str] | None = None) -> int:
         str(image),
         str(run_root / "export.png"),
         regions,
+        gate_policy=acceptance_policy,
+        critical_texts=(
+            [
+                str(value)
+                for value in truth.get("critical_texts") or []
+                if str(value).strip()
+            ]
+            if acceptance_policy is not None
+            else None
+        ),
+        register_unmeasured_owners=(args.emission_contract == "repair"),
     )
     _write_json(output / "native_text_quality.json", native_text_quality)
+
+    emission_report = None
+    if args.emission_contract != "off":
+        emission_report = audit_emission(
+            inventory=_read_json(pipeline_output / "10_content_inventory.json"),
+            scene_plan=_read_json(pipeline_output / "11_scene_plan.json"),
+            design=design,
+            quality=native_text_quality,
+        )
+        emission_report["mode"] = args.emission_contract
+        emission_report["registrationRepairApplied"] = (
+            args.emission_contract == "repair"
+        )
+        _write_json(output / "emission_contract.json", emission_report)
 
     report = build_image_acceptance_report(
         design=design,
@@ -499,6 +812,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         fidelity=fidelity,
         region_quality=region_quality,
         repair_history=repair_history,
+        native_text_quality=native_text_quality,
+        policy=acceptance_policy,
     )
     report["pipeline"] = prepared
     report["artifacts"] = {
@@ -519,10 +834,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         "readback": str((run_root / "readback.json").relative_to(output)),
         "export": str((run_root / "export.png").relative_to(output)),
         "font_calibration": "font_calibration.json",
+        "perception_coverage": "perception_coverage.json",
+        "emission_contract": "emission_contract.json",
         "acceptance": "acceptance.json",
     }
+    if perception_report is not None:
+        export_path = run_root / "export.png"
+        if export_path.is_file():
+            perception_report["nativeFidelity"] = evaluate_native_fidelity(
+                design,
+                str(image),
+                str(export_path),
+            )
+            _write_json(output / "perception_coverage.json", perception_report)
     _write_json(output / "acceptance.json", report)
     print(json.dumps(report, ensure_ascii=True))
+    if (
+        args.strict_emission
+        and emission_report is not None
+        and emission_report.get("status") != "pass"
+    ):
+        return 3
     return 0 if report.get("status") == "pass" else 2
 
 

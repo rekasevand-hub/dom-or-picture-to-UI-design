@@ -61,6 +61,8 @@
   - 同一事务先改文本，再触发真实 Figma `set_gridColumnSpan` 邻列占用错误；
   - 修复后 `rollback 2/2`、零失败、文本和布局快照一致；
   - 首次真实运行曾返回 `rollback-incomplete`，暴露失败动作未入栈和 Grid anchor 恢复方式错误；两项均已修复。
+  - 2026-10-27 controlled 1h：717 次 429、718 次 503、12 次 reconnect、1 个 controlled unknown 完成 readback/no-resend，0 unexplained failure。
+  - 真实 Figma round 1/2 曾因 plugin socket close 失败且 cleanup blocked；插件修复和 depth-1 cleanup readback 后，round 3 完成 57,039/57,039 writes 与 exact cleanup。
 - **影响**：真实运行时约束错误已闭合；网络中断、协作冲突和版本异常仍可能产生 unknown 或 incomplete recovery。
 - **当前处置**：编辑动作应用前入栈快照；失败动作也参与反序恢复；Grid anchor 使用 `setGridChildPosition`；返回逐节点 rollback 明细。
 - **升级条件**：需要协作冲突、上传中断、进程终止和 API 版本异常的真实演练。
@@ -97,6 +99,8 @@
   - transaction payload 现在显式返回 `attribution.status=unavailable`、actor/revision `unknown`；协同者造成相同当前状态时，readback 仍不能证明写入 actor，transaction 不自动晋升或重发。
   - 确定性 namespace soak：7 jobs、2 committed（不同 client 使用同一 raw id）、1 reconciled、3 manual、2 次 bounded plugin write、0 duplicate side effects；content hash `813428fe2c380a104650c1d1ab67d8951adcbb3b8a8cbe1d7ec8ca516a0f190e`，证据在 `output/_r5_p3_namespace_round1/`。
   - R5-P3 当前范围已闭合，但生产准入仍被 authenticated client identity、多人协作归因、权限/限流/用户接管阻塞。
+  - 2026-10-27 controlled collaboration probe：两 client、same request id、takeover `4002`、queued-write plugin re-read、unknown ownership readback、no-resend 与 journal restart 均通过；content hash `326aebfe3c8b4a58a21dd478ccbf7fe1eff5e96422248091269613eefa03d3bf`。
+  - 真实 4-writer 1h round 3：57,039/57,039 writes、0 failures、journal 2,365/4,096、exact cleanup；content hash `01e5d4984598bc1815a2cfef01060c68b79905833d18b1e4bc213057f4c7da3a`。
 - **影响**：本地单 bridge 崩溃后可阻止盲目重放、重复实例，并判断当前状态是否匹配意图；并发协作者可能造成相同结果，提交归因仍未闭合。
 - **当前处置**：写调用必须携带稳定 `clientId + requestId`；intent 在 plugin send 前 `fsync`；日志 replay 前获取独占锁；unknown 保持 unknown，只附 readback 和 intent-match 证据；服务端单写者闸门限制 plugin 队列增长。
 - **升级条件**：需要并发协作者归因、image/layout 完整 expected-state 合同、跨主机 fencing、人工解决协议，以及电源/网络文件系统故障测试。
@@ -122,6 +126,8 @@
   - Windows 事件循环对短 sleep 存在约 15–16ms 的提前唤醒粒度；写闸门已改为条件式循环等待，未再出现低于 `not_before` 的 dispatch。
   - 报告：`output/_p4_write_backpressure_round1/write_backpressure_soak.json`、`output/_p4_write_backpressure_round2/write_backpressure_soak.json`。
   - per-client fairness：一个 client `max_inflight=1` 时第二个请求在 journal intent 前返回 `BRIDGE_CLIENT_RATE_LIMITED`，另一个 client 正常完成；burst 耗尽的 client 等待 refill 时，另一 client 可先 dispatch。content hash `7e06cc0f77028842b9fa3553d2e3ffcdc3d934d59cead73c94525c9525ce3877`。
+  - 1h controlled fault soak：35,881 attempts、0 failures、p99 `64.828ms`、queues empty、12 reconnects；content hash `5f292b8a8132212ffd63686da4bc4a80e02162dff8e7e4dbeb13330e8330d251`。
+  - local real Figma 1h：57,039/57,039 writes、p99 `317.157ms`、journal 2,365/4,096、exact cleanup。
 - **影响**：确定性结果证明超限可变成 not-applied，且单进程内不会被单一 client 永久占满全局队列；仍不能承诺跨进程、跨主机或长时无饥饿。
 - **当前处置**：全局最小间隔 50ms、队列 16、等待 5s；per-client 默认 admitted 4、burst 4、仅在有显式 rate 配置时启用 refill interval；背压/限流返回 `retryAfterMs`；已发送写 timeout 后保持 degraded，直到插件重连。
 - **升级条件**：加入跨进程/跨主机公平性、长尾指标与 24h/7d 持续写入证据，并关闭或解释 reconnect keepalive 日志噪声。24h/7d 已明确延期到用户云服务器执行，计划与准入门槛记录在 `P4_LONG_SOAK_BACKLOG.md`。
@@ -130,6 +136,7 @@
 
 - **风险**：默认未配置 per-client token 时，调用方仍可声明任意 `clientId`，从而与其共享 namespace 和 transaction 域。配置 token 后，错误部署、secret 泄露或缺失轮换仍可破坏身份边界。
 - **当前证据**：`figma_bridge.config.json` 的 `server.client_tokens` 可配置 `clientId -> token`；adapter 从 `client` 段读取身份并发送 client id/token header；BridgeHub 在 cache、namespace、写准入和 dispatch 前校验。deterministic probe 覆盖 missing/wrong/mismatch/valid，并确认 secret 不进入 journal；报告 content hash `3289725b55042212dc6c9756db4cda06b6727e8155cc8ceffd337452ba3008e0`。
+- **2026-10-27 security evidence**：generated canaries verify plugin/client auth rejection, log/frame redaction, request size/depth bounds and Grounding cache namespace isolation; report content hash `f99ee1c65ce447f13374e90f80c25c551c974fe86ca13bd4acde63d7214029c7`.
 - **影响**：配置正确时可阻止无 token 的 client-id 冒充，但默认匿名开发模式、明文 transport、`/plugin` 未认证和 token 轮换仍不构成生产安全边界。
 - **当前处置**：默认仍为匿名本地开发；生产配置必须显式启用 per-client mapping；token 使用 constant-time comparison；identity 错误均 fail-closed；token 不写入报告或 journal。
 - **升级条件**：需要 TLS、secret provisioning/rotation、`/plugin` 认证、默认生产 fail-closed 配置和部署期配置审计。完成前不得宣称默认模式或全局安全 namespace。
@@ -162,6 +169,7 @@
 
 - **风险**：Figma Plugin API 不提供可靠的写入 actor/revision；两个协作者产生相同当前状态时，bridge 无法判断原始写入属于谁。
 - **当前证据**：transaction payload 通过 `AttributionProvider` 扩展桩显式返回 `attribution.status=unavailable`；默认 provider 永不伪造 actor/revision，异常也 fail-closed；deterministic probe 证明 current-state match 不证明 actor、transaction 仍为 unknown、不会自动重发；双 client namespace 继续隔离。证据 `output/_r5_p3_multiplayer_attribution_round2/r5_p3_multiplayer_attribution.json`。
+- **2026-10-27 collaboration evidence**：controlled probe covers two clients, queued plugin takeover, same-request idempotency and unknown ownership readback without resend; report content hash `326aebfe3c8b4a58a21dd478ccbf7fe1eff5e96422248091269613eefa03d3bf`. Real two-collaborator timing remains unavailable.
 - **影响**：不能承诺 collaborator-safe commit attribution，也不能把匹配 readback 写成 actor 证明；冲突必须保留人工复核路径。
 - **当前处置**：actor/revision 保持 unknown；readback 只作为当前状态证据；unknown 不自动 replay；namespace 和 client token 只隔离应用客户端，不冒称 Figma 协作者身份。
 - **升级条件**：需要 Figma 提供权威 actor/revision，或引入外部协作审计源、操作员确认和可验证冲突解决流程；在此之前只能声明 `attribution-unavailable-by-contract`。
@@ -170,6 +178,7 @@
 
 - **风险**：business ledger 已支持 terminal 历史压缩和 legacy 迁移，但 compaction 只有实例内锁；没有跨进程文件锁/fencing。`max_events` 是压缩触发阈值，不是可删除 unknown/nonterminal 的硬上限。迁移工具只处理 business ledger，不重写 Figma plugin-data marker 或 bridge journal。
 - **当前证据**：`figma_bridge.config.json` 的严格 `ledger` 段覆盖 path、max events、terminal retention、compact minimum 和 legacy read；`WriteJobLedger.compact()` 只压缩过期 terminal 历史并保留最新 cleanup receipt/fingerprint/resume 字段；注入 `os.replace` 失败时原文件字节不变；migration dry-run/apply、双 client 同 raw id、映射冲突和报告净化均有测试。证据 `output/_r5_p3_ledger_lifecycle_round1/report.json`，content hash `cd6dcef35fab8bde8eef3a74eb8cafab7cc77ff24e428edf8f7f851b5ab86cb3`。
+- **2026-10-27 soak evidence**：controlled 1h retained `2,460` journal events with 5 ledger events and one reconciled unknown; source-hashed report content is `5f292b8a8132212ffd63686da4bc4a80e02162dff8e7e4dbeb13330e8330d251`. Cross-process fencing and production storage remain unverified.
 - **影响**：单进程可控运行可以把历史压缩到最新 terminal 快照且不改变 unknown no-resend/cleanup 语义；多进程同时 append/compact、最终数据清除政策、磁盘满、网络文件系统和 marker/journal 历史迁移仍未验证。
 - **当前处置**：只允许单 writer 使用 compaction；nonterminal/unknown 永不由自动保留策略删除；迁移默认 dry-run，必须显式 client mapping 和 `--apply`；冲突/非法源文件保持原文件不变。
 - **升级条件**：需要跨进程锁或单 writer fencing、长时故障注入、terminal purge 合规决定、备份恢复演练，以及决定 marker/bridge journal 的迁移或保持 legacy read 路径。

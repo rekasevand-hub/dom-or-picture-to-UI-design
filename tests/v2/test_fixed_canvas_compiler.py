@@ -374,6 +374,110 @@ def test_compiler_resolves_control_text_style_from_text_bbox(
     assert control["style"]["fontSize"] <= 20
 
 
+def test_compiler_refines_textarea_text_bbox_from_source_ink(
+    tmp_path: Path,
+) -> None:
+    path, graph, plan = _fixture(tmp_path)
+    image = Image.open(path).convert("RGB")
+    ImageDraw.Draw(image).text((35, 185), "remark", fill="#555555")
+    image.save(path)
+    plan["nodes"].append(
+        {
+            "id": "control:remark",
+            "parent_id": None,
+            "type": "control",
+            "role": "control",
+            "bbox": [20, 180, 300, 50],
+            "content_ref": "control:remark",
+            "geometry_ref": "geometry:remark",
+            "children": [],
+            "text": "remark",
+            "text_bbox": [30, 200, 250, 20],
+            "control_type": "textarea",
+            "state": "enabled",
+            "text_owner_ref": None,
+        }
+    )
+
+    design = _compile(path, graph, plan)
+    control = next(
+        element
+        for element in design["elements"]
+        if element.get("contentRef") == "control:remark"
+    )
+
+    source_bbox = control["styleEvidence"]["evidence"]["source_bbox"]
+    assert source_bbox[0] <= 40
+    assert source_bbox[1] <= 190
+    assert source_bbox[1] < 200
+    assert source_bbox[2] > 20
+    assert control["textBox"] == source_bbox
+
+
+def test_compiler_marks_form_controls_covered_by_source_chrome(
+    tmp_path: Path,
+) -> None:
+    path, graph, plan = _fixture(tmp_path)
+    plan["nodes"].extend(
+        [
+            {
+                "id": "form:section",
+                "parent_id": None,
+                "type": "container",
+                "role": "form-section",
+                "bbox": [20, 70, 360, 40],
+                "content_ref": None,
+                "geometry_ref": "geometry:form-section",
+                "children": ["control:name"],
+            },
+            {
+                "id": "table:section",
+                "parent_id": None,
+                "type": "container",
+                "role": "table-section",
+                "bbox": [20, 110, 360, 110],
+                "content_ref": None,
+                "geometry_ref": "geometry:table-section",
+                "children": ["controls:toolbar"],
+            },
+            {
+                "id": "controls:toolbar",
+                "parent_id": "table:section",
+                "type": "container",
+                "role": "table-header-controls",
+                "bbox": [20, 112, 180, 24],
+                "content_ref": None,
+                "geometry_ref": "geometry:toolbar",
+                "children": ["control:toolbar"],
+            },
+            {
+                "id": "control:toolbar",
+                "parent_id": "controls:toolbar",
+                "type": "control",
+                "role": "toolbar-control",
+                "bbox": [20, 112, 100, 24],
+                "content_ref": "control:toolbar",
+                "geometry_ref": "geometry:toolbar-control",
+                "children": [],
+                "text": "Refresh",
+                "control_type": "button",
+                "state": "enabled",
+                "text_owner_ref": None,
+            },
+        ]
+    )
+
+    design = _compile(path, graph, plan)
+    by_ref = {
+        element.get("contentRef"): element
+        for element in design["elements"]
+        if element.get("contentRef")
+    }
+
+    assert by_ref["control:name"]["sourceChromeCovered"] is True
+    assert by_ref["control:toolbar"].get("sourceChromeCovered") is not True
+
+
 def test_compiler_uses_inner_line_box_for_control_text_style(
     tmp_path: Path,
 ) -> None:

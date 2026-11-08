@@ -34,6 +34,24 @@ DEFAULT_POLICY = {
     "repair_budget_required_for_high_fidelity": True,
 }
 
+IMAGE_MVP_POLICY_V2 = {
+    **DEFAULT_POLICY,
+    "policy_id": "image-figma-mvp-product/2.0",
+    "region_visual_mode": "native-text-and-chrome",
+    "chrome_bad_pixel_ratio_max": 0.05,
+    "native_text_gate_required": True,
+    "native_text_position_px_max": 1,
+    "native_text_width_tolerance_ratio": 0.02,
+    "native_text_width_tolerance_floor_px": 2,
+    "native_text_height_tolerance_ratio": 0.02,
+    "native_text_height_tolerance_floor_px": 2,
+    "native_text_ink_coverage_min": 0.90,
+    "native_text_ink_coverage_max": 1.10,
+    "native_text_edge_f1_min": 0.95,
+    "native_text_baseline_required": False,
+    "legacy_raw_region_visual_informational": True,
+}
+
 _PASSING_REPAIR_STATUSES = {
     "not-needed",
     "pass",
@@ -100,6 +118,7 @@ def evaluate_image_mvp(
     region_quality: Mapping[str, Any] | None = None,
     repair_history: Mapping[str, Any] | None = None,
     region_regression: Mapping[str, Any] | None = None,
+    native_text_quality: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Evaluate content, structure, editability, assets and visual usability."""
     resolved_policy = {**DEFAULT_POLICY, **(policy or truth.get("policy") or {})}
@@ -191,6 +210,17 @@ def evaluate_image_mvp(
         required=high_fidelity
         and bool(resolved_policy.get("region_quality_required_for_high_fidelity")),
     )
+    split_visual = (
+        str(resolved_policy.get("region_visual_mode") or "") == "native-text-and-chrome"
+    )
+    native_text_blockers, native_text_status, chrome_status = (
+        _native_text_visual_status(
+            native_text_quality,
+            required=split_visual
+            and high_fidelity
+            and bool(resolved_policy.get("native_text_gate_required", True)),
+        )
+    )
     repair_blockers, repair_status = _repair_budget_status(
         repair_history,
         fidelity=fidelity,
@@ -210,10 +240,6 @@ def evaluate_image_mvp(
             ),
             "source": "content-geometry-native-audit",
         },
-        "region_visual": {
-            "status": region_status,
-            "source": "same-size-region-metrics",
-        },
         "repair_budget": {
             "status": repair_status,
             "source": "bounded-repair-history",
@@ -224,6 +250,25 @@ def evaluate_image_mvp(
             "within30_pct": within30,
         },
     }
+    if split_visual:
+        dimensions["legacy_raw_region_visual"] = {
+            "status": region_status,
+            "source": "same-size-raw-region-metrics",
+            "mode": "informational",
+        }
+        dimensions["native_text_visual"] = {
+            "status": native_text_status,
+            "source": "critical-native-text-ink-metrics",
+        }
+        dimensions["chrome_visual"] = {
+            "status": chrome_status,
+            "source": "text-masked-chrome-metrics",
+        }
+    else:
+        dimensions["region_visual"] = {
+            "status": region_status,
+            "source": "same-size-region-metrics",
+        }
     blockers: list[str] = []
     if text_status != "pass":
         blockers.append("critical-text")
@@ -237,7 +282,10 @@ def evaluate_image_mvp(
         blockers.extend(
             f"fidelity:{blocker}" for blocker in fidelity.get("blockers") or ["blocked"]
         )
-    blockers.extend(region_blockers)
+    if split_visual:
+        blockers.extend(native_text_blockers)
+    else:
+        blockers.extend(region_blockers)
     blockers.extend(repair_blockers)
     if visual_status != "pass":
         blockers.append("visual")
@@ -253,7 +301,11 @@ def evaluate_image_mvp(
     if asset_claims["original_asset"]:
         limitations.append("An original asset claim was observed and requires review.")
     return {
-        "schema_version": "image-figma-mvp-acceptance/1.0",
+        "schema_version": (
+            "image-figma-mvp-acceptance/2.0"
+            if split_visual
+            else "image-figma-mvp-acceptance/1.0"
+        ),
         "status": status,
         "policy": dict(resolved_policy),
         "dimensions": dimensions,
@@ -268,6 +320,11 @@ def evaluate_image_mvp(
         "fidelity": dict(fidelity) if isinstance(fidelity, Mapping) else None,
         "region_quality": (
             dict(region_quality) if isinstance(region_quality, Mapping) else None
+        ),
+        "native_text_quality": (
+            dict(native_text_quality)
+            if isinstance(native_text_quality, Mapping)
+            else None
         ),
         "repair_history": (
             dict(repair_history) if isinstance(repair_history, Mapping) else None
@@ -304,6 +361,7 @@ def build_image_acceptance_report(
     region_quality: Mapping[str, Any] | None = None,
     repair_history: Mapping[str, Any] | None = None,
     region_regression: Mapping[str, Any] | None = None,
+    native_text_quality: Mapping[str, Any] | None = None,
     repair_status: str | None = None,
     regions: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
@@ -335,6 +393,30 @@ def build_image_acceptance_report(
     resolved_repair = repair_history
     if resolved_repair is None and repair_status:
         resolved_repair = {"status": repair_status}
+    resolved_policy = {**DEFAULT_POLICY, **(policy or truth.get("policy") or {})}
+    if (
+        str(resolved_policy.get("region_visual_mode") or "")
+        == "native-text-and-chrome"
+        and native_text_quality is None
+        and regions
+    ):
+        from src.app.services.evidence.native_text_quality import (
+            build_native_text_quality,
+        )
+
+        native_text_quality = build_native_text_quality(
+            design,
+            readback_tree,
+            str(reference),
+            str(export),
+            list(regions),
+            gate_policy=resolved_policy,
+            critical_texts=[
+                str(value)
+                for value in truth.get("critical_texts") or []
+                if str(value).strip()
+            ],
+        )
     evaluation = evaluate_image_mvp(
         design=design,
         truth=truth,
@@ -343,11 +425,12 @@ def build_image_acceptance_report(
         text_probe=text_probe,
         asset_probe=asset_probe,
         image_ir=image_ir,
-        policy=policy,
+        policy=resolved_policy,
         fidelity=resolved_fidelity,
         region_quality=resolved_regions,
         repair_history=resolved_repair,
         region_regression=region_regression,
+        native_text_quality=native_text_quality,
     )
     export_summary = {
         "exists": export.is_file(),
@@ -381,6 +464,45 @@ def build_image_acceptance_report(
         report["blockers"] = blockers
         report["status"] = "blocked-environment"
     return report
+
+
+def _native_text_visual_status(
+    native_text_quality: Mapping[str, Any] | None,
+    *,
+    required: bool,
+) -> tuple[list[str], str, str]:
+    if not isinstance(native_text_quality, Mapping):
+        return (
+            (["native-text:missing"], "fail", "missing")
+            if required
+            else ([], "not-evaluated", "not-evaluated")
+        )
+    gate = native_text_quality.get("gate")
+    if not isinstance(gate, Mapping):
+        return (
+            (["native-text:gate-missing"], "fail", "missing")
+            if required
+            else ([], "not-evaluated", "not-evaluated")
+        )
+    native = gate.get("nativeText")
+    chrome = gate.get("chrome")
+    native_status = (
+        str(native.get("status") or "fail") if isinstance(native, Mapping) else "fail"
+    )
+    chrome_status = (
+        str(chrome.get("status") or "fail") if isinstance(chrome, Mapping) else "fail"
+    )
+    blockers = [
+        str(value)
+        for value in gate.get("blockers") or []
+        if str(value).strip()
+    ]
+    if not blockers and (
+        native_status != "pass" or chrome_status != "pass"
+    ):
+        blockers.append("native-text:gate")
+    blockers = list(dict.fromkeys(blockers))
+    return blockers, native_status, chrome_status
 
 
 def _region_visual_status(

@@ -16,7 +16,10 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.app.services.job_namespace import build_job_namespace  # noqa: E402
-from src.app.services.rendering.figma_adapter import FigmaBridgeAdapter  # noqa: E402
+from src.app.services.rendering.figma_adapter import (  # noqa: E402
+    FigmaBridgeAdapter,
+    FigmaBridgeError,
+)
 from src.config.settings import load_config  # noqa: E402
 
 
@@ -215,14 +218,11 @@ def _setup_owned_soak_nodes(
         if mode == "write":
             text_report = admin.ownership_report(text_job)
             setup["text_ownership"] = text_report
-            checks["text_owned"] = (
-                text_report.get("matched", 0) >= 1
-                and _report_contains_node(text_report, setup["text_id"])
-            )
+            checks["text_owned"] = text_report.get(
+                "matched", 0
+            ) >= 1 and _report_contains_node(text_report, setup["text_id"])
         setup["checks"] = checks
-        setup["failed_checks"] = [
-            name for name, passed in checks.items() if not passed
-        ]
+        setup["failed_checks"] = [name for name, passed in checks.items() if not passed]
         setup["verified"] = all(checks.values())
     except Exception as exc:  # noqa: BLE001 - cleanup still needs partial ids
         setup["error"] = f"{type(exc).__name__}: {exc}"
@@ -271,11 +271,9 @@ def _cleanup_owned_soak_nodes(
                 if result.get("status") != "cleaned" or result.get("failed"):
                     cleanup["failed_checks"].append(f"cleanup_status:{job}")
                 if report.get("matched") != 0:
-                    cleanup["failed_checks"].append(
-                        f"ownership_remaining:{job}"
-                    )
+                    cleanup["failed_checks"].append(f"ownership_remaining:{job}")
 
-            page_tree = admin._send("get_node_tree", {"depth": 4})
+            page_tree = admin._send("get_node_tree", {"depth": 1})
             cleanup["page_tree_readback"] = page_tree
             probe_ids = {
                 node_id
@@ -290,13 +288,11 @@ def _cleanup_owned_soak_nodes(
             ]
             cleanup["residual_nodes"] = residual
             if residual:
-                cleanup["failed_checks"].append(
-                    "page_tree_residual_probe_nodes"
-                )
+                cleanup["failed_checks"].append("page_tree_residual_probe_nodes")
             if not cleanup["failed_checks"]:
                 cleanup["verified"] = True
             return cleanup
-        except OSError as exc:
+        except (OSError, FigmaBridgeError) as exc:
             cleanup["attempt_errors"].append(
                 f"attempt={attempt} {type(exc).__name__}: {exc}"
             )

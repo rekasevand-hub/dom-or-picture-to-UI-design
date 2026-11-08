@@ -11,6 +11,7 @@ from unittest.mock import patch
 from PIL import Image, ImageDraw
 
 from src.app.services.evidence.image_figma_acceptance import (
+    IMAGE_MVP_POLICY_V2,
     build_image_acceptance_report,
     evaluate_image_mvp,
     run_image_figma_evidence,
@@ -388,6 +389,8 @@ class ImageFigmaAcceptanceTests(unittest.TestCase):
             report["artifact_sha256"]["export.png"],
             expected_export_sha256,
         )
+        self.assertEqual(report["schema_version"], "image-figma-mvp-acceptance/1.0")
+        self.assertNotIn("native_text_visual", report["dimensions"])
 
     def test_visual_pass_cannot_mask_region_regression(self) -> None:
         with tempfile.TemporaryDirectory() as raw_dir:
@@ -474,6 +477,136 @@ class ImageFigmaAcceptanceTests(unittest.TestCase):
             report["dimensions"]["repair_budget"]["status"],
             "pass",
         )
+
+    def test_v2_can_pass_on_chrome_and_native_text_while_raw_region_fails(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw_dir:
+            report = build_image_acceptance_report(
+                **_acceptance_kwargs(
+                    Path(raw_dir),
+                    fidelity={
+                        "mode": "high",
+                        "status": "pass",
+                        "blockers": [],
+                    },
+                    region_quality={
+                        "status": "measured",
+                        "size_match": True,
+                        "regions": {
+                            "form": {"bad_pixel_ratio": 0.16},
+                        },
+                    },
+                    repair_history={
+                        "status": "not-needed",
+                        "extra_calls": 0,
+                        "rounds": 0,
+                    },
+                ),
+                policy=IMAGE_MVP_POLICY_V2,
+                native_text_quality={
+                    "schema_version": "grounding-native-text-quality/2.0",
+                    "gate": {
+                        "status": "pass",
+                        "blockers": [],
+                        "nativeText": {"status": "pass"},
+                        "chrome": {"status": "pass"},
+                        "baseline": {"status": "not-evaluated"},
+                    },
+                },
+            )
+
+        self.assertEqual(report["status"], "pass")
+        self.assertEqual(report["schema_version"], "image-figma-mvp-acceptance/2.0")
+        self.assertEqual(
+            report["dimensions"]["native_text_visual"]["status"],
+            "pass",
+        )
+        self.assertEqual(
+            report["dimensions"]["chrome_visual"]["status"],
+            "pass",
+        )
+        self.assertEqual(
+            report["dimensions"]["legacy_raw_region_visual"]["status"],
+            "fail",
+        )
+        self.assertNotIn("region-visual:form", report["blockers"])
+
+    def test_v2_native_text_failure_blocks_even_when_chrome_passes(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw_dir:
+            report = build_image_acceptance_report(
+                **_acceptance_kwargs(
+                    Path(raw_dir),
+                    fidelity={
+                        "mode": "high",
+                        "status": "pass",
+                        "blockers": [],
+                    },
+                    region_quality={
+                        "status": "measured",
+                        "size_match": True,
+                        "regions": {
+                            "page": {"bad_pixel_ratio": 0.01},
+                        },
+                    },
+                    repair_history={
+                        "status": "not-needed",
+                        "extra_calls": 0,
+                        "rounds": 0,
+                    },
+                ),
+                policy=IMAGE_MVP_POLICY_V2,
+                native_text_quality={
+                    "schema_version": "grounding-native-text-quality/2.0",
+                    "gate": {
+                        "status": "fail",
+                        "blockers": [
+                            "native-text:owner:text:toolbar",
+                        ],
+                        "nativeText": {"status": "fail"},
+                        "chrome": {"status": "pass"},
+                        "baseline": {"status": "not-evaluated"},
+                    },
+                },
+            )
+
+        self.assertEqual(report["status"], "blocked-fail")
+        self.assertIn("native-text:owner:text:toolbar", report["blockers"])
+        self.assertEqual(
+            report["dimensions"]["native_text_visual"]["status"],
+            "fail",
+        )
+
+    def test_v2_missing_native_text_quality_blocks(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_dir:
+            report = build_image_acceptance_report(
+                **_acceptance_kwargs(
+                    Path(raw_dir),
+                    fidelity={
+                        "mode": "high",
+                        "status": "pass",
+                        "blockers": [],
+                    },
+                    region_quality={
+                        "status": "measured",
+                        "size_match": True,
+                        "regions": {
+                            "page": {"bad_pixel_ratio": 0.01},
+                        },
+                    },
+                    repair_history={
+                        "status": "not-needed",
+                        "extra_calls": 0,
+                        "rounds": 0,
+                    },
+                ),
+                policy=IMAGE_MVP_POLICY_V2,
+            )
+
+        self.assertEqual(report["status"], "blocked-fail")
+        self.assertIn("native-text:missing", report["blockers"])
 
     def test_real_runner_keeps_image_schema_and_export_bytes(self) -> None:
         class FakeAdapter:

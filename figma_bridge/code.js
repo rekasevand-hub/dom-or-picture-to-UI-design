@@ -535,7 +535,7 @@ const WEIGHT_LADDER = [
   { w: 100, names: ["Thin", "Hairline"] },
   { w: 200, names: ["Extra Light", "ExtraLight", "Ultra Light", "UltraLight"] },
   { w: 300, names: ["Light"] },
-  { w: 350, names: ["Semilight", "Semi Light"] },
+  { w: 350, names: ["Semilight", "Semi Light", "DemiLight"] },
   { w: 400, names: ["Regular", "Normal", "Book", "Roman"] },
   { w: 500, names: ["Medium"] },
   { w: 600, names: ["Semi Bold", "SemiBold", "Demi Bold", "DemiBold"] },
@@ -739,9 +739,7 @@ async function createText(params) {
   // 先解析字体再建节点：strict 失败时不留下未挂载的孤立文本节点。
   const resolvedFont = await loadFirstAvailableFont(
     params.fontFamily,
-    params.fontWeightValue === undefined
-      ? params.fontWeight
-      : params.fontWeightValue,
+    params.fontWeightValue ?? params.fontWeight,
     params.fontPolicy === "strict",
     params.fontStyle
   );
@@ -758,7 +756,7 @@ async function createText(params) {
     const style = run.style || {};
     const runFont = await loadFirstAvailableFont(
       style.fontFamily || params.fontFamily,
-      style.fontWeight === undefined ? params.fontWeightValue : style.fontWeight,
+      style.fontWeight ?? params.fontWeightValue ?? params.fontWeight,
       params.fontPolicy === "strict",
       style.fontStyle || params.fontStyle,
     );

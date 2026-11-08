@@ -62,6 +62,53 @@ def _control_text_bbox(bbox: list[int]) -> list[int]:
     ]
 
 
+def _refine_textarea_text_bbox(
+    image_path: str,
+    control_bbox: list[int],
+    text: str,
+) -> list[int] | None:
+    """Recover textarea ink when a provider text box misses the visible glyphs."""
+    if not text:
+        return None
+    import numpy as np
+    from PIL import Image
+
+    x, y, box_width, box_height = control_bbox
+    pad_x = max(4, min(12, box_width // 20))
+    pad_y = max(3, min(8, box_height // 10))
+    left = x + pad_x
+    top = y + pad_y
+    right = min(
+        x + box_width - pad_x,
+        left + max(80, len(text) * 32 + 32),
+    )
+    bottom = min(
+        y + box_height - pad_y,
+        top + max(24, min(48, box_height - pad_y * 2)),
+    )
+    if right <= left or bottom <= top:
+        return None
+    with Image.open(image_path) as source:
+        image = np.asarray(source.convert("RGB"), dtype=np.int16)
+    crop = image[top:bottom, left:right]
+    if crop.size == 0:
+        return None
+    background = np.median(crop.reshape(-1, 3), axis=0)
+    mask = np.max(np.abs(crop - background.reshape(1, 1, 3)), axis=2) > 24
+    # Borders and textarea resize rails are long, near-solid rows/columns.
+    mask[mask.sum(axis=1) >= max(4, int(round(mask.shape[1] * 0.75))), :] = False
+    mask[:, mask.sum(axis=0) >= max(4, int(round(mask.shape[0] * 0.75)))] = False
+    if int(mask.sum()) < 2:
+        return None
+    ys, xs = np.where(mask)
+    return [
+        left + int(xs.min()),
+        top + int(ys.min()),
+        int(xs.max() - xs.min() + 1),
+        int(ys.max() - ys.min() + 1),
+    ]
+
+
 def _text_element(
     node: Mapping[str, Any],
     *,
@@ -175,6 +222,14 @@ def _control_element(
     control_type = str(node.get("control_type") or "button").lower()
     text_bbox = normalize_bbox(node.get("text_bbox"), width, height)
     text = "" if node.get("text_owner_ref") else str(node.get("text") or "")
+    if control_type == "textarea":
+        refined_text_bbox = _refine_textarea_text_bbox(
+            image_path,
+            bbox,
+            text,
+        )
+        if refined_text_bbox is not None:
+            text_bbox = refined_text_bbox
     style_bbox = text_bbox or (
         _control_text_bbox(bbox) if text and box_width > 24 else bbox
     )
@@ -451,8 +506,17 @@ def _source_form_background(
     box_height = bottom - y
     if box_width <= 0 or box_height <= 0:
         return None
+    toolbar_top = next(
+        (
+            int(float(element.get("y") or bottom))
+            for element in elements
+            if str(element.get("role") or "") == "table-header-controls"
+        ),
+        bottom,
+    )
     with Image.open(image_path) as source:
-        image = source.convert("RGB")
+        source_image = source.convert("RGB")
+    image = source_image.copy()
     draw = ImageDraw.Draw(image)
     halo_px = 2
     excluded_rectangles: list[list[int]] = []
@@ -466,9 +530,14 @@ def _source_form_background(
         ink_x, ink_y, ink_width, ink_height = (int(value) for value in ink)
         if not (y <= ink_y < bottom and x <= ink_x < x + box_width):
             continue
-        background = str(values.get("background") or "#ffffff")
-        if not background.startswith("#"):
-            background = "#ffffff"
+        fallback_background = str(values.get("background") or "#ffffff")
+        if not fallback_background.startswith("#"):
+            fallback_background = "#ffffff"
+        background = _local_text_background(
+            source_image,
+            [ink_x, ink_y, ink_width, ink_height],
+            fallback_background,
+        )
         mask_left = max(0, ink_x - halo_px)
         mask_top = max(0, ink_y - halo_px)
         mask_right = min(width - 1, ink_x + ink_width + halo_px - 1)
@@ -492,6 +561,13 @@ def _source_form_background(
         )
         if element.get("contentRef"):
             excluded_refs.append(str(element["contentRef"]))
+    for element in elements:
+        if str(element.get("type") or "") not in {"button", "input"}:
+            continue
+        center_x = float(element.get("x") or 0) + float(element.get("width") or 0) / 2
+        center_y = float(element.get("y") or 0) + float(element.get("height") or 0) / 2
+        if x <= center_x <= x + box_width and y <= center_y < toolbar_top:
+            element["sourceChromeCovered"] = True
     crop = image.crop((x, y, x + box_width, y + box_height))
     buffer = io.BytesIO()
     crop.save(buffer, format="PNG")
@@ -530,6 +606,36 @@ def _source_form_background(
             "generated": False,
         },
     }
+
+
+def _local_text_background(
+    image: Any,
+    ink_bbox: list[int],
+    fallback: str,
+) -> str:
+    """Sample the immediate glyph surround instead of trusting a tight bbox edge."""
+    import numpy as np
+
+    x, y, box_width, box_height = ink_bbox
+    ring = 3
+    left = max(0, x - ring)
+    top = max(0, y - ring)
+    right = min(image.width, x + box_width + ring)
+    bottom = min(image.height, y + box_height + ring)
+    if right <= left or bottom <= top:
+        return fallback
+    pixels = np.asarray(image.crop((left, top, right, bottom)), dtype=np.int16)
+    inner_left = max(0, x - left)
+    inner_top = max(0, y - top)
+    inner_right = min(pixels.shape[1], inner_left + box_width)
+    inner_bottom = min(pixels.shape[0], inner_top + box_height)
+    mask = np.ones(pixels.shape[:2], dtype=bool)
+    mask[inner_top:inner_bottom, inner_left:inner_right] = False
+    ring_pixels = pixels[mask]
+    if ring_pixels.size == 0:
+        return fallback
+    red, green, blue = np.median(ring_pixels, axis=0)
+    return f"#{int(round(red)):02x}{int(round(green)):02x}{int(round(blue)):02x}"
 
 
 def _icon_control_element(

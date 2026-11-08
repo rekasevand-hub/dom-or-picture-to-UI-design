@@ -10,6 +10,7 @@ from scripts.figma_bridge_soak_probe import (
     summarize_latencies,
 )
 from scripts.bridge_write_backpressure_soak import build_write_pacing_report
+from src.app.services.rendering.figma_adapter import FigmaBridgeError
 
 
 class FigmaBridgeSoakProbeTests(unittest.TestCase):
@@ -153,6 +154,7 @@ class FigmaBridgeSoakProbeTests(unittest.TestCase):
 
             def _send(self, action, params, *, request_id=None):
                 self.assert_action = action
+                self.page_tree_depth = params.get("depth")
                 return {
                     "id": "0:1",
                     "name": "P5 Pilot",
@@ -171,6 +173,7 @@ class FigmaBridgeSoakProbeTests(unittest.TestCase):
         self.assertTrue(cleanup["verified"])
         self.assertEqual(cleanup["ownership_reports"][0]["matched"], 0)
         self.assertEqual(admin.assert_action, "get_node_tree")
+        self.assertEqual(admin.page_tree_depth, 1)
         self.assertGreaterEqual(admin.connect_count, 2)
 
     def test_owned_soak_cleanup_fails_when_ownership_remains(self) -> None:
@@ -225,6 +228,88 @@ class FigmaBridgeSoakProbeTests(unittest.TestCase):
 
         self.assertFalse(cleanup["verified"])
         self.assertTrue(cleanup["failed_checks"])
+
+    def test_cleanup_retries_page_readback_after_plugin_reconnect(self) -> None:
+        class FakeAdmin:
+            client_id = "p4-real-soak-admin"
+
+            def __init__(self):
+                self.jobs = {}
+                self.cleaned = set()
+                self.next_id = 1
+                self.connect_count = 0
+                self.page_read_attempts = 0
+
+            def connect(self):
+                self.connect_count += 1
+
+            def disconnect(self):
+                return None
+
+            def apply_batch(self, actions, *, transaction_id=None):
+                node_id = f"node-{self.next_id}"
+                self.next_id += 1
+                self.jobs[node_id] = transaction_id
+                return {
+                    "status": "committed",
+                    "transactionId": transaction_id,
+                    "committed": [
+                        {
+                            "index": 0,
+                            "action": actions[0]["action"],
+                            "result": node_id,
+                        }
+                    ],
+                }
+
+            def ownership_report(self, job_id):
+                nodes = [
+                    {"nodeId": node_id, "jobId": owner}
+                    for node_id, owner in self.jobs.items()
+                    if owner == job_id and node_id not in self.cleaned
+                ]
+                return {"status": "reported", "matched": len(nodes), "nodes": nodes}
+
+            def cleanup_owned_job(self, job_id):
+                matched = [
+                    node_id
+                    for node_id, owner in self.jobs.items()
+                    if owner == job_id and node_id not in self.cleaned
+                ]
+                self.cleaned.update(matched)
+                return {
+                    "status": "cleaned",
+                    "jobId": job_id,
+                    "matched": len(matched),
+                    "removed": len(matched),
+                    "failed": [],
+                }
+
+            def _send(self, action, params, *, request_id=None):
+                self.page_read_attempts += 1
+                if self.page_read_attempts == 1:
+                    raise FigmaBridgeError(
+                        "Figma plugin disconnected: plugin socket closed",
+                        code="COMMAND_FAILED",
+                        outcome="unknown",
+                        request_id="cleanup-readback",
+                    )
+                return {
+                    "id": "0:1",
+                    "name": "P5 Pilot",
+                    "type": "PAGE",
+                    "children": [
+                        {"id": "59:2", "name": "P5-PILOT-ROOT", "type": "FRAME"}
+                    ],
+                }
+
+        admin = FakeAdmin()
+        setup = _setup_owned_soak_nodes(admin, "cleanup-reconnect", mode="write")
+        cleanup = _cleanup_owned_soak_nodes(admin, setup)
+
+        self.assertTrue(cleanup["verified"])
+        self.assertEqual(admin.page_read_attempts, 2)
+        self.assertGreaterEqual(admin.connect_count, 2)
 
     def test_real_soak_report_fails_when_journal_exceeds_bound(self) -> None:
         report = build_real_soak_report(

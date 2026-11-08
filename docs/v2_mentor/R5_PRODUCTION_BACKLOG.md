@@ -1,6 +1,6 @@
 # R5 生产实现切片与后备清单
 
-> 状态：`P0-CONTRACT-CORE` 与 `P3-WRITE-LEDGER-RESUME` 已实现当前范围，P3 增加 ledger retention/compaction/legacy migration current scope；P1 canonical output 继续生产加固；P2/P4/P5 仍未准入，P3 也不是生产准入或 `verified`。  
+> 状态：`P0-CONTRACT-CORE` 与 `P3-WRITE-LEDGER-RESUME` 已实现当前范围；P3/P4 增加受控 collaboration、1h fault soak 和本地真实 Figma 1h 证据。P5 real rehearsal 运行时通过但被 Q8-Q10 阻塞，24h/7d、真实协作者和生产安全/存储仍未准入。
 > 审计依据：`R5_CURRENT_SCOPE_AUDIT.md`、`output/_r5_closeout/result.json`。  
 > 原则：先做纯合同核心；真实 Figma 写入、生产存储和检测器校准都不作为第一步。
 
@@ -16,9 +16,9 @@
 | `P0-CONTRACT-CORE` | 纯合同/schema/validator | `implemented-current-scope` | 无 |
 | `P1-EVIDENCE-ADAPTER` | 采集证据侧车、字段观测与 canonical 输出保真 | `diagnostics-current-scope; canonical-output-svg-3of3-initial-scope; visual-not-gated; figma-not-evaluated; legacy-live-strict-diagnostic-only` | P0 |
 | `P2-PARTIAL-DELIVERY` | PARTIAL 报告、coverage map、验收门禁 | `blocked-by-detector-status` | P0、P1 |
-| `P3-WRITE-LEDGER-RESUME` | 写前账本、resume、ownership namespace、client identity、文件配置、client fairness、TLS、plugin auth/revocation、secret lifecycle、TLS+auth reconnect、attribution boundary、ledger retention/compaction/migration、区域补偿 | `completed-for-current-scope; real-timeout-resume-pass; namespace-slice-pass; client-identity-slice-pass; file-config-slice-pass; client-fairness-slice-pass; tls-slice-pass; plugin-auth-slice-pass; revocation-reconnect-slice-pass; secret-lifecycle-pass; attribution-boundary-pass; ledger-lifecycle-pass; production-not-admitted` | P0、P1 |
-| `P4-PERSISTENCE-OPERATIONS` | 生产 IR 存储、TTL、权限、迁移 | `blocked-by-storage-policy` | P0 |
-| `P5-PILOT-E2E` | 受限真实 Figma 试点 | `blocked-by-p0-p4` | P0–P4 |
+| `P3-WRITE-LEDGER-RESUME` | 写前账本、resume、ownership namespace、client identity、文件配置、client fairness、TLS、plugin auth/revocation、secret lifecycle、TLS+auth reconnect、attribution boundary、ledger retention/compaction/migration、区域补偿 | `completed-for-current-scope; real-local-1h-57039-writes-pass; controlled-takeover-unknown-recovery-pass; production-not-admitted` | P0、P1 |
+| `P4-PERSISTENCE-OPERATIONS` | 生产 IR 存储、TTL、权限、迁移、backup/restore、metrics、受控长跑 | `local-ops-pass; blocked-by-production-storage-and-24h-7d` | P0 |
+| `P5-PILOT-E2E` | 受限真实 Figma 试点 | `runtime-1h-pass; blocked-pending-rulings-Q8-Q10; blocked-by-real-collaborators-and-cloud-soak` | P0–P4 |
 
 > 2026-10-20 的 P1 真实状态对齐更新了本表 P1 行；`R5_CURRENT_SCOPE_AUDIT.md` 与 `output/_r5_closeout/result.json` 保留 R5 收口时点，因此仍记录当时的 `blocked-by-sample-scope`，不回写历史审计。
 
@@ -311,6 +311,21 @@ tests/v2/test_r5_contracts.py
 
 P0 的纯 schema 可以先做，但生产存储不能在没有这些决策时开工。
 
+2026-10-27 local/current-scope evidence:
+
+- 21 required Grounding/fallback and bridge metrics pass the local metric
+  contract without disclosure;
+- controlled 1h soak: 35,881 attempts, 0 failures, 1,435 safe 429/503
+  rejections, 12 reconnects, one controlled unknown reconciled, empty queues,
+  p99 `64.828ms`, RSS growth `68,444,160B`, handles `-14`;
+- real local Figma 1h: 57,039/57,039 writes, 0 failures, exact setup/cleanup,
+  journal `2,365/4,096`, p99 `317.157ms`;
+- evidence audit is mechanically green but `blocked-pending-rulings` for
+  Q8-Q10.
+
+Production storage, encryption/ACL ownership, remote monitoring and 24h/7d
+remain blocked.
+
 ## 7. P5-PILOT-E2E
 
 目标：在受控真实页面上完成：
@@ -321,6 +336,17 @@ P0 的纯 schema 可以先做，但生产存储不能在没有这些决策时开
 ```
 
 只允许 `pilot-allowed-provisional`，不能升级生产；失败、unknown、partial 必须保留。必须有操作员、人工复核和恢复脚本。
+
+2026-10-27 result:
+
+- fixed `pilot` document and `P5-PILOT-ROOT` were readable;
+- 4-writer real preflight wrote and cleaned exactly;
+- real 1h round 3 wrote 57,039/57,039 requests with 0 failures and exact
+  cleanup;
+- the real run is still `blocked-pending-rulings`, not `pilot-verified-for`,
+  because Q8-Q10 are unresolved;
+- real two-collaborator attribution remains unavailable;
+- 24h/7d cloud soak was not started.
 
 ## 8. 推荐执行顺序
 

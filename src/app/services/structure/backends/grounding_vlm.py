@@ -18,6 +18,19 @@ from src.app.services.structure.backends.grounding_reliability import (
     GroundingReliability,
     GroundingRequestError,
 )
+from src.app.services.structure.coordinate_space import (
+    COORDINATE_CONTRACT_VERSION,
+    AxisScales,
+    CoordinateSpaceDecision,
+    build_ink_scorer,
+    canonical,
+    infer_coordinate_space,
+    legacy_axis_scales,
+    resolve_bbox,
+)
+from src.app.services.structure.perception_fingerprint import (
+    vision_request_contract,
+)
 
 if TYPE_CHECKING:
     from src.config import Config
@@ -103,6 +116,7 @@ def parse_vlm_json(
     image_h: int,
     *,
     bbox_format: str = "normalized-xyxy",
+    image_path: str | Path | None = None,
 ) -> dict:
     if bbox_format not in {"normalized-xyxy", "source-px-xywh"}:
         raise ValueError(f"unsupported bbox format: {bbox_format}")
@@ -122,18 +136,48 @@ def parse_vlm_json(
         if isinstance(item.get("bbox"), Mapping)
         and isinstance((item.get("bbox") or {}).get("x"), (int, float))
     ]
-    x_scale = (
-        image_w / 1000.0
-        if image_w > 1000
-        and raw_x_values
-        and max(raw_x_values) <= 1000
-        else 1.0
-    )
-    y_scale = 1.0
+    # A: choose the inverse coordinate transform from reference-pixel evidence.
+    # Without an image (unit tests, offline tooling) keep the historical
+    # behaviour byte-for-byte so existing parse-only contracts do not regress.
+    ink_scorer = build_ink_scorer(image_path) if image_path else None
+    if bbox_format == "source-px-xywh" and ink_scorer is not None:
+        decision = infer_coordinate_space(
+            source_items, image_w, image_h, ink_scorer
+        )
+        x_scale = decision.x_scale
+        y_scale = decision.y_scale
+        coordinate_space = decision.to_dict()
+        evidence_scales = AxisScales(x_scale, y_scale, decision.provenance)
+        use_evidence = True
+    else:
+        x_scale, y_scale, legacy_label = legacy_axis_scales(
+            raw_x_values, image_w
+        )
+        coordinate_space = {
+            "schema_version": COORDINATE_CONTRACT_VERSION,
+            "xScale": round(x_scale, 6),
+            "yScale": round(y_scale, 6),
+            "provenance": (
+                "normalized-xyxy"
+                if bbox_format == "normalized-xyxy"
+                else legacy_label
+            ),
+            "evidence": {"scoredBoxes": 0, "reason": "reference-pixels-unavailable"},
+        }
+        evidence_scales = None
+        use_evidence = False
     out = {"containers": [], "elements": []}
     for c in data.get("containers", []):
-        box = (
-            _source_px_box(
+        if use_evidence:
+            box, box_provenance = resolve_bbox(
+                c.get("bbox"),
+                CoordinateSpaceDecision(x_scale, y_scale, evidence_scales.label),
+                image_w,
+                image_h,
+                ink_scorer,
+            )
+        elif bbox_format == "source-px-xywh":
+            box = _source_px_box(
                 c.get("bbox"),
                 image_w,
                 image_h,
@@ -146,12 +190,19 @@ def parse_vlm_json(
                 ),
                 scale_height=False,
             )
-            if bbox_format == "source-px-xywh"
-            else _norm_box(c.get("bbox"), image_w, image_h)
-        )
+            box_provenance = "legacy-heuristic"
+        else:
+            box = _norm_box(c.get("bbox"), image_w, image_h)
+            box_provenance = "normalized-xyxy"
         if box is None:
             continue
-        out["containers"].append({"bbox": box, "role": str(c.get("role", ""))})
+        out["containers"].append(
+            {
+                "bbox": box,
+                "role": str(c.get("role", "")),
+                "coordinateSpace": box_provenance,
+            }
+        )
     for e in data.get("elements", []):
         t = str(e.get("type", "rectangle"))
         allowed_types = (
@@ -159,20 +210,34 @@ def parse_vlm_json(
         )
         if t not in allowed_types:
             continue
-        box = (
-            _source_px_box(
+        if use_evidence:
+            box, box_provenance = resolve_bbox(
+                e.get("bbox"),
+                CoordinateSpaceDecision(x_scale, y_scale, evidence_scales.label),
+                image_w,
+                image_h,
+                ink_scorer,
+            )
+        elif bbox_format == "source-px-xywh":
+            box = _source_px_box(
                 e.get("bbox"),
                 image_w,
                 image_h,
                 x_scale=x_scale,
                 y_scale=y_scale,
             )
-            if bbox_format == "source-px-xywh"
-            else _norm_box(e.get("bbox"), image_w, image_h)
-        )
+            box_provenance = "legacy-heuristic"
+        else:
+            box = _norm_box(e.get("bbox"), image_w, image_h)
+            box_provenance = "normalized-xyxy"
         if box is None:
             continue
-        element = {"bbox": box, "type": t, "text": str(e.get("text", ""))}
+        element = {
+            "bbox": box,
+            "type": t,
+            "text": str(e.get("text", "")),
+            "coordinateSpace": box_provenance,
+        }
         for field in (
             "controlType",
             "controlValue",
@@ -189,13 +254,24 @@ def parse_vlm_json(
         for table in data.get("tables") or []:
             if not isinstance(table, Mapping):
                 continue
-            box = _source_px_box(
-                table.get("bbox"),
-                image_w,
-                image_h,
-                x_scale=x_scale,
-                y_scale=1.0,
-            )
+            if use_evidence:
+                box, _table_provenance = resolve_bbox(
+                    table.get("bbox"),
+                    CoordinateSpaceDecision(
+                        x_scale, y_scale, evidence_scales.label
+                    ),
+                    image_w,
+                    image_h,
+                    ink_scorer,
+                )
+            else:
+                box = _source_px_box(
+                    table.get("bbox"),
+                    image_w,
+                    image_h,
+                    x_scale=x_scale,
+                    y_scale=1.0,
+                )
             if box is None:
                 continue
             headers = [
@@ -226,37 +302,41 @@ def parse_vlm_json(
         )
 
         enrichment = parse_enrichment_response(raw, image_w, image_h)
-        if x_scale > 1.0 or y_scale > 1.0:
+        if use_evidence or x_scale > 1.0 or y_scale > 1.0:
+            decision_for_boxes = CoordinateSpaceDecision(
+                x_scale, y_scale, coordinate_space["provenance"]
+            )
+
+            def _rescale(box: list) -> list | None:
+                if use_evidence:
+                    resolved, _provenance = resolve_bbox(
+                        box,
+                        decision_for_boxes,
+                        image_w,
+                        image_h,
+                        ink_scorer,
+                    )
+                    return resolved
+                return _source_px_box(
+                    box,
+                    image_w,
+                    image_h,
+                    x_scale=x_scale,
+                    y_scale=y_scale,
+                )
+
             for asset in enrichment["assets"]:
                 box = asset.get("bbox")
                 if isinstance(box, list) and len(box) == 4:
-                    asset["bbox"] = _source_px_box(
-                        box,
-                        image_w,
-                        image_h,
-                        x_scale=x_scale,
-                        y_scale=y_scale,
-                    )
+                    asset["bbox"] = _rescale(box)
             for background in enrichment["backgrounds"]:
                 box = background.get("bbox")
                 if isinstance(box, list) and len(box) == 4:
-                    background["bbox"] = _source_px_box(
-                        box,
-                        image_w,
-                        image_h,
-                        x_scale=x_scale,
-                        y_scale=y_scale,
-                    )
+                    background["bbox"] = _rescale(box)
                 for overlay in background.get("overlays") or []:
                     box = overlay.get("bbox")
                     if isinstance(box, list) and len(box) == 4:
-                        overlay["bbox"] = _source_px_box(
-                            box,
-                            image_w,
-                            image_h,
-                            x_scale=x_scale,
-                            y_scale=y_scale,
-                        )
+                        overlay["bbox"] = _rescale(box)
         out["assets"] = enrichment["assets"]
         out["backgrounds"] = enrichment["backgrounds"]
         out["enrichmentDiagnostics"] = enrichment["diagnostics"]
@@ -264,6 +344,7 @@ def parse_vlm_json(
         out["assets"] = []
         out["backgrounds"] = []
         out["enrichmentDiagnostics"] = []
+    out["coordinateSpace"] = coordinate_space
     return out
 
 
@@ -296,6 +377,7 @@ class GroundingVLM(GroundingBackend):
         self._client_factory = client_factory or self._openai_client
         self.last_report = None
         self.last_request_metadata: dict[str, Any] = {}
+        self.last_coordinate_space: dict[str, Any] | None = None
 
     def ground(self, image_path: str, image_w: int, image_h: int) -> dict:
         image_bytes = Path(image_path).read_bytes()
@@ -327,12 +409,19 @@ class GroundingVLM(GroundingBackend):
                 endpoint,
                 float(self.cfg.vision_timeout),
             )
-            resp = client.chat.completions.create(
-                model=self.cfg.vision_model,
-                messages=messages,
-                temperature=0.1,
-                response_format={"type": "json_object"},
-            )
+            request_kwargs: dict[str, Any] = {
+                "model": self.cfg.vision_model,
+                "messages": messages,
+                "temperature": float(
+                    getattr(self.cfg, "vision_temperature", 0.1)
+                ),
+                "response_format": {"type": "json_object"},
+            }
+            if bool(getattr(self.cfg, "vision_send_seed", False)):
+                request_kwargs["seed"] = int(
+                    getattr(self.cfg, "vision_seed", 20261108)
+                )
+            resp = client.chat.completions.create(**request_kwargs)
             raw = resp.choices[0].message.content or ""
             max_response_bytes = int(
                 getattr(self.cfg, "vision_max_response_bytes", 5 * 1024 * 1024)
@@ -343,7 +432,9 @@ class GroundingVLM(GroundingBackend):
                     f"Grounding response exceeds {max_response_bytes} bytes",
                 )
             try:
-                parsed = parse_vlm_json(raw, image_w, image_h)
+                parsed = parse_vlm_json(
+                    raw, image_w, image_h, image_path=image_path
+                )
             except (json.JSONDecodeError, ValueError) as exc:
                 raise GroundingRequestError(
                     "response-invalid",
@@ -357,6 +448,11 @@ class GroundingVLM(GroundingBackend):
             invoke=invoke,
         )
         self.last_report = invocation.report
+        self.last_coordinate_space = (
+            invocation.value.get("coordinateSpace")
+            if isinstance(invocation.value, Mapping)
+            else None
+        )
         return invocation.value
 
     def ground_with_prompt(
@@ -400,12 +496,19 @@ class GroundingVLM(GroundingBackend):
                 endpoint,
                 float(self.cfg.vision_timeout),
             )
-            resp = client.chat.completions.create(
-                model=self.cfg.vision_model,
-                messages=messages,
-                temperature=0.1,
-                response_format={"type": "json_object"},
-            )
+            request_kwargs: dict[str, Any] = {
+                "model": self.cfg.vision_model,
+                "messages": messages,
+                "temperature": float(
+                    getattr(self.cfg, "vision_temperature", 0.1)
+                ),
+                "response_format": {"type": "json_object"},
+            }
+            if bool(getattr(self.cfg, "vision_send_seed", False)):
+                request_kwargs["seed"] = int(
+                    getattr(self.cfg, "vision_seed", 20261108)
+                )
+            resp = client.chat.completions.create(**request_kwargs)
             raw = resp.choices[0].message.content or ""
             max_response_bytes = int(
                 getattr(self.cfg, "vision_max_response_bytes", 5 * 1024 * 1024)
@@ -424,6 +527,7 @@ class GroundingVLM(GroundingBackend):
                     image_w,
                     image_h,
                     bbox_format=bbox_format,
+                    image_path=image_path,
                 )
             except (json.JSONDecodeError, ValueError) as exc:
                 error = GroundingRequestError(
@@ -440,6 +544,11 @@ class GroundingVLM(GroundingBackend):
             invoke=invoke,
         )
         self.last_report = invocation.report
+        self.last_coordinate_space = (
+            invocation.value.get("coordinateSpace")
+            if isinstance(invocation.value, Mapping)
+            else None
+        )
         self.last_request_metadata = {
             "strategy_id": str(strategy_id),
             **dict(metadata or {}),
@@ -465,6 +574,18 @@ def get_grounding_runtime(cfg: "Config") -> GroundingReliability:
     api_key_fingerprint = hashlib.sha256(
         str(getattr(cfg, "vision_api_key", "") or "").encode("utf-8")
     ).hexdigest()
+    request_contract = vision_request_contract(cfg)
+    persistent_cache_dir = None
+    if bool(getattr(cfg, "vision_persistent_cache", True)):
+        raw_dir = str(
+            getattr(cfg, "vision_persistent_cache_dir", ".vision_cache")
+        )
+        candidate = Path(raw_dir)
+        persistent_cache_dir = (
+            candidate
+            if candidate.is_absolute()
+            else Path(__file__).resolve().parents[5] / candidate
+        )
     key = (
         endpoints,
         str(getattr(cfg, "vision_model", "")),
@@ -478,6 +599,8 @@ def get_grounding_runtime(cfg: "Config") -> GroundingReliability:
         int(getattr(cfg, "vision_cache_max_entries", 64)),
         float(getattr(cfg, "vision_cache_ttl_seconds", 300)),
         api_key_fingerprint,
+        hashlib.sha256(canonical(request_contract).encode("utf-8")).hexdigest(),
+        str(persistent_cache_dir or ""),
     )
     with _RUNTIME_LOCK:
         runtime = _RUNTIMES.get(key)
@@ -498,6 +621,8 @@ def get_grounding_runtime(cfg: "Config") -> GroundingReliability:
                 ),
                 cache_max_entries=int(getattr(cfg, "vision_cache_max_entries", 64)),
                 cache_ttl_seconds=float(getattr(cfg, "vision_cache_ttl_seconds", 300)),
+                request_contract=request_contract,
+                persistent_cache_dir=persistent_cache_dir,
             )
             _RUNTIMES[key] = runtime
         return runtime

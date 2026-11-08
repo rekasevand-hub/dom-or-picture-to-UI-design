@@ -43,6 +43,9 @@ REQUIRED_BLOCKERS = {
     "RR-013",
     "RR-014",
     "RR-015",
+    "GROUNDING-RUNTIME-RELIABILITY",
+    "FALLBACK-OBSERVABILITY",
+    "PROD-CONTROLLED-FAULT-SOAK",
 }
 
 REQUIRED_COLUMNS = {
@@ -145,6 +148,18 @@ class GateMatrixContractTests(unittest.TestCase):
             re.search(r"\bverified\s*=\s*true\b", text, flags=re.IGNORECASE),
             "the gate matrix must not claim project-wide verified=true",
         )
+
+    def test_long_run_results_do_not_promote_production_admission(self) -> None:
+        text = MATRIX_PATH.read_text(encoding="utf-8")
+        _, rows = parse_main_table(text)
+        by_id = {row["id"]: row for row in rows}
+
+        self.assertEqual(
+            by_id["PROD-CONTROLLED-FAULT-SOAK"]["status"],
+            "verified-for:controlled-one-hour-fault-soak",
+        )
+        self.assertIn("blocked-24h-7d", by_id["PROD-LONG-SOAK"]["status"])
+        self.assertEqual(by_id["PROD-ADMISSION"]["status"], "not-admitted")
 
 
 if __name__ == "__main__":

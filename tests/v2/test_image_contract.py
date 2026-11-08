@@ -8,6 +8,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 from src.app.services.structure.image_contract import (
+    _enhance_low_confidence_ocr_observation,
     build_image_design,
     build_image_ir,
     inspect_image_reference,
@@ -21,6 +22,42 @@ from src.app.services.structure.image_enrichment.assets import recover_visible_a
 def _rgb(value: str) -> tuple[int, int, int]:
     text = value.lstrip("#")
     return tuple(int(text[index : index + 2], 16) for index in (0, 2, 4))
+
+
+def test_enhance_low_confidence_ocr_expands_and_reruns_cjk_crop() -> None:
+    import numpy as np
+
+    class FakeReader:
+        def readtext(self, image, text_threshold):
+            assert image.shape[0] > 30
+            assert image.shape[1] > 40
+            return [
+                (
+                    [[0, 0], [100, 0], [100, 20], [0, 20]],
+                    "输入关键字过滤菜单",
+                    0.84,
+                )
+            ]
+
+    observation = {
+        "text": "关键字过滤菜单",
+        "bbox": [30, 20, 60, 12],
+        "confidence": 0.08,
+        "engine": "easyocr",
+    }
+    image = np.full((80, 140, 3), 40, dtype=np.uint8)
+
+    enhanced = _enhance_low_confidence_ocr_observation(
+        FakeReader(),
+        image,
+        observation,
+    )
+
+    assert enhanced is not None
+    assert enhanced["text"] == "输入关键字过滤菜单"
+    assert enhanced["engine"] == "easyocr-enhanced"
+    assert enhanced["rawText"] == "关键字过滤菜单"
+    assert enhanced["confidence"] == 0.84
 
 
 def _fixture(root: Path) -> tuple[Path, dict, dict]:

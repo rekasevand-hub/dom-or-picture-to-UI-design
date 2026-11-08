@@ -416,10 +416,16 @@ def _smaller_tiles(
 
 def _collect_report(backend: GroundingBackend) -> dict[str, Any] | None:
     report = getattr(backend, "last_report", None)
+    coordinate_space = getattr(backend, "last_coordinate_space", None)
     if report is None:
+        if coordinate_space:
+            return {"coordinate_space": coordinate_space}
         return None
     transformed = report.to_dict() if hasattr(report, "to_dict") else dict(report)
-    return dict(transformed)
+    result = dict(transformed)
+    if coordinate_space:
+        result["coordinate_space"] = coordinate_space
+    return result
 
 
 def _merge_enrichment_candidates(graphs: list[dict]) -> dict[str, Any]:

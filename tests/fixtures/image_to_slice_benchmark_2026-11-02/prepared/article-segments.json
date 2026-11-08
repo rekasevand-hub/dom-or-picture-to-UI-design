@@ -1,0 +1,23 @@
+{
+  "source": "IMG-ARTICLE",
+  "segments": [
+    {
+      "id": "IMG-ARTICLE-TOP",
+      "source_id": "IMG-ARTICLE",
+      "path": "tests/fixtures/image_to_slice_benchmark_2026-11-02/prepared/IMG-ARTICLE-TOP.png",
+      "width": 2544,
+      "height": 4096,
+      "source_y_offset": 0,
+      "sha256": "8b044036d2ab2f375b9bc8270bceeb722f459563a88cc604acdef54d209e92c6"
+    },
+    {
+      "id": "IMG-ARTICLE-BOTTOM",
+      "source_id": "IMG-ARTICLE",
+      "path": "tests/fixtures/image_to_slice_benchmark_2026-11-02/prepared/IMG-ARTICLE-BOTTOM.png",
+      "width": 2544,
+      "height": 4096,
+      "source_y_offset": 2060,
+      "sha256": "650879fab754eba0e7809b8e0f598eda84c864722623399dbe6715d9b5e0d7b0"
+    }
+  ]
+}

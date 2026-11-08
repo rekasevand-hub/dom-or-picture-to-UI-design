@@ -51,7 +51,11 @@ const figma = {
       "Bold Text",
     ].map((style) => ({
       fontName: { family: "Segoe UI Variable", style },
-    }));
+    })).concat(
+      ["DemiLight", "Regular", "Medium"].map((style) => ({
+        fontName: { family: "Noto Sans SC", style },
+      })),
+    );
   },
   async loadFontAsync() {},
 };
@@ -64,10 +68,10 @@ const context = vm.createContext({
 
 vm.runInContext(code, context, { filename: codePath });
 
-async function createWithWeight(weight) {
+async function createWithWeight(weight, family = "Segoe UI Variable") {
   await context.createText({
     text: "Variable run",
-    fontFamily: "Segoe UI Variable",
+    fontFamily: family,
     fontWeight: weight,
     fontWeightValue: Number(weight),
     fontStyle: "normal",
@@ -85,6 +89,12 @@ async function main() {
   if (light.style !== "Semilight Text") {
     throw new Error(
       `350 did not use Semilight Text: ${JSON.stringify(light)}`,
+    );
+  }
+  const demi = await createWithWeight("350", "Noto Sans SC");
+  if (demi.style !== "DemiLight") {
+    throw new Error(
+      `Noto Sans SC 350 did not use DemiLight: ${JSON.stringify(demi)}`,
     );
   }
   const semibold = await createWithWeight("650");

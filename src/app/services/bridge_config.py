@@ -12,6 +12,7 @@ from types import MappingProxyType
 from typing import Any, Mapping
 
 BRIDGE_CONFIG_SCHEMA_VERSION = "figma-bridge-config/1.0"
+DEFAULT_MAX_BRIDGE_MESSAGE_BYTES = 16 * 1024 * 1024
 DEFAULT_BRIDGE_CONFIG_PATH = (
     Path(__file__).resolve().parents[3] / "figma_bridge.config.json"
 )

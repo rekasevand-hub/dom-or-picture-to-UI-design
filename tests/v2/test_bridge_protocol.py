@@ -25,6 +25,7 @@ from src.app.services.bridge_server import (
     _bridge_timeout_from_env,
     _client_tokens_from_env,
     _write_pacing_from_env,
+    websocket_frame_limit,
 )
 
 
@@ -1915,7 +1916,7 @@ class BridgeProtocolTests(unittest.IsolatedAsyncioTestCase):
                     updated_at=expired_at,
                     response=response,
                 )
-                hub.completed[(f"expired-client", f"expired-request-{index}")] = (
+                hub.completed[("expired-client", f"expired-request-{index}")] = (
                     CompletedResponse(
                         completed_at=expired_at,
                         fingerprint=f"fingerprint-{index}",
@@ -2767,6 +2768,18 @@ class BridgeProtocolTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(incoming["requestId"], "real-request")
         self.assertEqual(incoming["result"], {"value": 7})
+
+
+class BridgeMessageLimitTests(unittest.TestCase):
+    def test_transport_limit_includes_headroom_over_application_limit(self) -> None:
+        self.assertEqual(
+            websocket_frame_limit(1_048_576),
+            1_048_576 + 65_536,
+        )
+
+    def test_default_hub_accepts_observed_large_image_message(self) -> None:
+        hub = BridgeHub()
+        self.assertGreater(hub.max_message_bytes, 1_049_242)
 
 
 if __name__ == "__main__":

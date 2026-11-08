@@ -18,6 +18,7 @@ _GROUNDING_UNAVAILABLE_TYPES = {
     "TimeoutError",
     "ConnectionError",
     "ConnectionRefusedError",
+    "GroundingUnavailableError",
 }
 
 
