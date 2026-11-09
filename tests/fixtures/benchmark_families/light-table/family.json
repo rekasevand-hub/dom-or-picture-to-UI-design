@@ -1,0 +1,29 @@
+{
+  "family": "light-table",
+  "sample": "IMG-TIMESHEET-CONFIRM-20261108 (ece8effc, 2544x1336, 2x light dense table)",
+  "gold": {
+    "frame_id": "32:2520",
+    "producer": "Figma Make",
+    "note": "日工时确认 · 截图重建, absolute positioning, Chinese semantic names; built at 1920x1008 logical",
+    "scale_to_reference": 1.325
+  },
+  "pipeline_run": "output/_image_figma_timesheet_confirm_20261108_r7",
+  "baselines": {
+    "within30_pct": 93.5031,
+    "font_ratio_median": 1.199,
+    "dy_median": 40.5,
+    "critical": {
+      "matched": 29,
+      "required": 29
+    },
+    "structure": {
+      "total_nodes": 214,
+      "max_depth": 1,
+      "frame_count": 1,
+      "vector_count": 0,
+      "text_count": 160,
+      "image_fill_count": 11
+    },
+    "registered_from": "output/_image_figma_timesheet_confirm_20261108_r7"
+  }
+}

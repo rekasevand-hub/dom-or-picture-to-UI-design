@@ -622,6 +622,7 @@ def build_content_inventory(bundle: Mapping[str, Any]) -> dict[str, Any]:
         if str(record.get("kind") or "") == "unknown":
             unknowns.append(copy.deepcopy(dict(record)))
 
+    items = _dedupe_overlapping_assets(items)
     items = _coalesce_items(items)
     items.sort(
         key=lambda item: (
@@ -661,6 +662,211 @@ def _select_contiguous_boundaries(
         candidates.append((score, index))
     _score, start = min(candidates)
     return values[start : start + expected_count]
+
+
+def _dedupe_overlapping_assets(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop asset items whose box is mostly covered by a larger kept asset.
+
+    Asset enumeration (grounding elements and enrichment/slicing assets)
+    sometimes reports the same visual asset twice with slightly different
+    boxes — a card banner at two nested crops, a logo at two near-identical
+    boxes — which stacks several image fills over one region.  All
+    ``asset``-kind items are considered by descending box area; any asset
+    whose intersection-over-union with an already-kept larger asset exceeds
+    0.5 is dropped and its evidence refs merge into the survivor.  Non-asset
+    items pass through untouched.
+    """
+
+    def _area(box: Sequence[int]) -> int:
+        return max(0, int(box[2])) * max(0, int(box[3]))
+
+    assets = [item for item in items if str(item.get("kind") or "") == "asset"]
+    others = [item for item in items if str(item.get("kind") or "") != "asset"]
+    kept: list[dict[str, Any]] = []
+    for item in sorted(
+        assets, key=lambda entry: _area(entry["bbox"]), reverse=True
+    ):
+        box = item["bbox"]
+        absorbed = False
+        for survivor in kept:
+            sbox = survivor["bbox"]
+            overlap_w = max(
+                0, min(box[0] + box[2], sbox[0] + sbox[2]) - max(box[0], sbox[0])
+            )
+            overlap_h = max(
+                0, min(box[1] + box[3], sbox[1] + sbox[3]) - max(box[1], sbox[1])
+            )
+            intersection = overlap_w * overlap_h
+            if intersection <= 0:
+                continue
+            union = _area(box) + _area(sbox) - intersection
+            if union > 0 and intersection / union > 0.5:
+                survivor.setdefault("evidence_refs", []).extend(
+                    item.get("evidence_refs") or []
+                )
+                absorbed = True
+                break
+        if not absorbed:
+            kept.append(item)
+    return others + kept
+
+
+def _anchor_table_rows(
+    table: Mapping[str, Any],
+    inventory_items: Sequence[Mapping[str, Any]],
+    row_count: int,
+) -> tuple[list[int] | None, dict[str, Any]]:
+    """Re-anchor table row boundaries to grounded text evidence.
+
+    The VLM table bbox is often coarse enough that line detection locks onto
+    chrome above the real table (filter bars, tab strips).  Grounded text
+    items whose text equals a header or cell value carry the true row
+    positions: rows are anchored by their *unique* texts (values that occur
+    exactly once in the table, e.g. dates and header labels), ambiguous texts
+    are matched to the nearest unused grounded instance of the already
+    anchored row band, and rows without any match are interpolated between
+    anchored neighbours.  Returns ``row_count + 1`` boundaries, or ``None``
+    when fewer than two rows can be anchored (evidence too weak to override).
+    """
+
+    def _norm(value: Any) -> str:
+        return "".join(str(value or "").split()).casefold()
+
+    grounded: dict[str, list[Mapping[str, Any]]] = {}
+    for item in inventory_items:
+        if str(item.get("kind") or "") not in {"text", "control"}:
+            continue
+        bbox = item.get("bbox")
+        text = _norm(item.get("text"))
+        if not text or not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+            continue
+        grounded.setdefault(text, []).append(item)
+
+    rows_texts: list[list[str]] = []
+    headers = [str(value) for value in table.get("headers") or []]
+    if headers:
+        rows_texts.append(headers)
+    for row in table.get("rows") or []:
+        rows_texts.append([str(value) for value in row])
+    if len(rows_texts) != row_count:
+        return None, {}
+
+    occurrence: dict[str, int] = {}
+    for row in rows_texts:
+        for value in row:
+            key = _norm(value)
+            if key:
+                occurrence[key] = occurrence.get(key, 0) + 1
+
+    used: set[int] = set()
+    row_band: dict[int, tuple[int, int]] = {}
+
+    def _absorb(row_index: int, match: Mapping[str, Any]) -> None:
+        x, y, width, height = (int(v) for v in match["bbox"])
+        low, high = row_band.get(row_index, (y, y + height))
+        row_band[row_index] = (min(low, y), max(high, y + height))
+
+    # Pass 1: unique table texts with a single grounded instance anchor rows.
+    for row_index, row in enumerate(rows_texts):
+        for value in row:
+            key = _norm(value)
+            if not key or occurrence.get(key) != 1:
+                continue
+            matches = [
+                g for g in grounded.get(key, []) if id(g) not in used
+            ]
+            if len(matches) == 1:
+                used.add(id(matches[0]))
+                _absorb(row_index, matches[0])
+    if len(row_band) < 2:
+        return None, {}
+
+    # Pass 3: reject anchors that break visual row order.  The VLM sometimes
+    # emits a grounded text at a wrong position (e.g. a late row's date placed
+    # at an early row's band); such an anchor would fold rows out of order.
+    # Any band that starts before the previous kept band ends is discarded and
+    # its row is interpolated from the surviving neighbours instead.
+    ordered_keys = sorted(row_band)
+    kept: list[int] = []
+    for row_index in ordered_keys:
+        if kept and row_band[row_index][0] < row_band[kept[-1]][1]:
+            continue
+        kept.append(row_index)
+    if len(kept) < 2:
+        return None, {}
+    row_band = {row_index: row_band[row_index] for row_index in kept}
+    for row_index, row in enumerate(rows_texts):
+        if row_index not in row_band:
+            continue
+        band_low, band_high = row_band[row_index]
+        band_mid = (band_low + band_high) / 2.0
+        for value in row:
+            key = _norm(value)
+            if not key or occurrence.get(key) == 1:
+                continue
+            candidates = [
+                g for g in grounded.get(key, []) if id(g) not in used
+            ]
+            if not candidates:
+                continue
+            nearest = min(
+                candidates,
+                key=lambda g: abs(
+                    (float(g["bbox"][1]) + float(g["bbox"][3]) / 2.0) - band_mid
+                ),
+            )
+            if abs(
+                (float(nearest["bbox"][1]) + float(nearest["bbox"][3]) / 2.0)
+                - band_mid
+            ) <= max(band_high - band_low, 24):
+                used.add(id(nearest))
+                _absorb(row_index, nearest)
+
+    anchored = sorted(row_band)
+    pitches = [
+        row_band[anchored[index + 1]][0] - row_band[anchored[index]][1]
+        for index in range(len(anchored) - 1)
+    ]
+    pitches = [gap for gap in pitches if gap >= 0]
+    median_gap = (
+        sorted(pitches)[len(pitches) // 2] if pitches else 24
+    )
+    half_pitch = max(4, round(median_gap / 2))
+
+    boundaries: list[int | None] = [None] * (row_count + 1)
+    for position, row_index in enumerate(anchored):
+        low, high = row_band[row_index]
+        boundaries[row_index] = max(0, low - half_pitch)
+        boundaries[row_index + 1] = max(
+            (boundaries[row_index + 1] or 0), high + min(half_pitch, 8)
+        )
+    # Interpolate rows without anchors between their anchored neighbours.
+    known = [index for index, value in enumerate(boundaries) if value is not None]
+    for left, right in zip(known, known[1:]):
+        span = boundaries[right] - boundaries[left]  # type: ignore[operator]
+        steps = right - left
+        for step in range(1, steps):
+            boundaries[left + step] = boundaries[left] + round(  # type: ignore[operator]
+                span * step / steps
+            )
+    if any(value is None for value in boundaries):
+        return None, {}
+    evidence = {
+        "source": "grounded-text-rows",
+        "anchored_row_count": len(anchored),
+        "row_bands": {
+            str(row_index): [int(row_band[row_index][0]), int(row_band[row_index][1])]
+            for row_index in anchored
+        },
+        "anchored_rows": anchored,
+        "matched_item_ids": sorted(
+            str(g.get("id") or "") for g in (
+                item for item in inventory_items if id(item) in used
+            )
+        ),
+        "row_boundaries": [int(v) for v in boundaries],  # type: ignore[arg-type]
+    }
+    return [int(v) for v in boundaries], evidence  # type: ignore[arg-type]
 
 
 def build_geometry_manifest(bundle: Mapping[str, Any]) -> dict[str, Any]:
@@ -756,6 +962,7 @@ def build_geometry_manifest(bundle: Mapping[str, Any]) -> dict[str, Any]:
             )
         x_boundaries: list[int] = []
         y_boundaries: list[int] = []
+        anchor_evidence: dict[str, Any] | None = None
         if isinstance(detected_grid, Mapping):
             source_x, source_y, _source_width, _source_height = detected_grid[
                 "source_bbox"
@@ -778,13 +985,60 @@ def build_geometry_manifest(bundle: Mapping[str, Any]) -> dict[str, Any]:
                 y_boundaries,
                 expected_rows,
             )
-            if len(x_boundaries) >= 2 and len(y_boundaries) >= 2:
+        # Phase 2: anchor row boundaries to grounded text evidence.  The VLM
+        # table bbox can be coarse enough that line detection locks onto
+        # chrome above the real table; matched grounded texts (unique row
+        # values, header labels) carry the true row bands and override the
+        # contaminated y boundaries.  Consistency guard: when a majority of
+        # matched bands already sit inside their detected row intervals the
+        # grid agrees with the evidence and the anchor stands down, so tables
+        # the VLM located correctly keep their detected (padded) row heights.
+        manifest_row_count = int(table["row_count"]) + (1 if table["headers"] else 0)
+        anchored_y, anchor_evidence = _anchor_table_rows(
+            table,
+            inventory["items"],
+            manifest_row_count,
+        )
+        if anchored_y:
+            bands = (anchor_evidence or {}).get("row_bands") or {}
+            total = len(bands)
+            if y_boundaries and len(y_boundaries) == manifest_row_count + 1 and total:
+                consistent = 0
+                for key, (low, high) in bands.items():
+                    index = int(key)
+                    top, bottom = y_boundaries[index], y_boundaries[index + 1]
+                    if top <= low and high <= bottom:
+                        consistent += 1
+                if consistent * 2 > total:
+                    anchor_evidence = {
+                        "source": "grounded-text-rows-consistent-detected",
+                        "consistent_bands": consistent,
+                        "total_bands": total,
+                    }
+                    anchored_y = None
+        if anchored_y:
+            y_boundaries = anchored_y
+            if len(x_boundaries) >= 2:
                 table_bbox = [
                     x_boundaries[0],
                     y_boundaries[0],
                     x_boundaries[-1] - x_boundaries[0],
                     y_boundaries[-1] - y_boundaries[0],
                 ]
+            else:
+                table_bbox = [
+                    table_bbox[0],
+                    y_boundaries[0],
+                    table_bbox[2],
+                    y_boundaries[-1] - y_boundaries[0],
+                ]
+        elif len(x_boundaries) >= 2 and len(y_boundaries) >= 2:
+            table_bbox = [
+                x_boundaries[0],
+                y_boundaries[0],
+                x_boundaries[-1] - x_boundaries[0],
+                y_boundaries[-1] - y_boundaries[0],
+            ]
         table_geometry = {
             "id": stable_id(
                 "geometry",
@@ -799,6 +1053,8 @@ def build_geometry_manifest(bundle: Mapping[str, Any]) -> dict[str, Any]:
             "content_ref": table["id"],
             "source_ref": table["source_ref"],
         }
+        if anchor_evidence:
+            table_geometry["anchor"] = anchor_evidence
         if len(x_boundaries) >= 2 and len(y_boundaries) >= 2:
             table_geometry["grid"] = {
                 "x_boundaries": x_boundaries,

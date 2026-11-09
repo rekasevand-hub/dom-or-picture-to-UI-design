@@ -1,0 +1,67 @@
+{
+  "schema_version": "image-mvp-truth/1.0",
+  "sample_id": "IMG-TIMESHEET-CONFIRM-20261108",
+  "description": "Derived manifest for the 2026-11-08 timesheet-confirmation screenshot (light form family, in-family generalization sample). Critical texts transcribed from EasyOCR observations of the frozen PNG; policy mirrors the frozen image-figma-mvp-product/2.0 gate.",
+  "critical_texts": [
+    "输入关键字过滤菜单",
+    "首页",
+    "工时管理",
+    "个人信息",
+    "日工时填报",
+    "日工时确认",
+    "关键字",
+    "搜索",
+    "展开查询",
+    "未确认(0)",
+    "已确认",
+    "全部",
+    "个人待确认",
+    "项目代码",
+    "项目负责人名称",
+    "绩效评估说明",
+    "填报日期",
+    "填报人名称",
+    "当天投入工时",
+    "绩效评估",
+    "工作内容",
+    "项目名称",
+    "填报人",
+    "广东特拓MOM",
+    "石敏妤",
+    "刘治强",
+    "liuzq",
+    "2026-11-06",
+    "2026-11-01"
+  ],
+  "expected_asset_count": 2,
+  "asset_claim": "display-replacement-only",
+  "flow_claim": "candidate-fixed-coordinate",
+  "policy": {
+    "policy_id": "image-figma-mvp-product/2.0",
+    "frozen": true,
+    "visual_within30_min_pct": 90.0,
+    "require_size_match": true,
+    "critical_text_required": true,
+    "native_text_required": true,
+    "claimed_asset_replacement_required": true,
+    "original_asset_identity_required": false,
+    "adaptive_flow_required": false
+  },
+  "image_sha256": "ece8effc177a9333c0d55c1a1826094391c54510382e0bf37488020e7b0a16c2",
+  "image_size": [
+    2544,
+    1336
+  ],
+  "capture_environment": {
+    "browser": "unknown",
+    "viewport": [
+      2544,
+      1336
+    ],
+    "device_scale_factor": "unknown",
+    "locale": "zh-CN",
+    "timezone": "Asia/Shanghai"
+  },
+  "derived_from": "tests/fixtures/timesheet_confirm_20261108/ocr_texts.json",
+  "derivation_note": "New sample supplied by the user on 2026-11-08 for light-form-family in-family generalization testing. Truth texts derive from EasyOCR (ch_sim+en) observations; logo strings (FleXWeaver / 速研 Real-Time Data) are excluded because OCR transcription of stylized logos is unreliable."
+}

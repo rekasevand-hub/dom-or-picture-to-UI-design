@@ -21,6 +21,7 @@ from src.app.services.structure.fidelity.text_calibration import (
     calibrate_form_text_positions,
     calibrate_form_text_shape_from_render,
     calibrate_form_text_weight_from_render,
+    calibrate_ink_convergence_from_render,
     calibrate_low_contrast_placeholder_from_render,
     calibrate_search_control_from_render,
     calibrate_table_fonts_from_render,
@@ -166,6 +167,12 @@ def _toolbar_weight(ctx: CalibrationContext) -> tuple[dict[str, Any], dict[str, 
 
 def _search_control(ctx: CalibrationContext) -> tuple[dict[str, Any], dict[str, Any]]:
     return calibrate_search_control_from_render(ctx.design, ctx.image, _export(ctx))
+
+
+def _ink_convergence(ctx: CalibrationContext) -> tuple[dict[str, Any], dict[str, Any]]:
+    return calibrate_ink_convergence_from_render(
+        ctx.design, ctx.image, _export(ctx), ctx.readback
+    )
 
 
 def _strategy(
@@ -344,6 +351,19 @@ CALIBRATION_GROUPS: tuple[CalibrationGroup, ...] = (
                 ("position", "size", "coverage", "edgeF1"),
                 ("search", "table", "toolbar", "page"),
                 _search_control,
+                always=True,
+            ),
+        ),
+    ),
+    CalibrationGroup(
+        name="ink-convergence",
+        render_suffix="figma_ink_converged",
+        strategies=(
+            _strategy(
+                "ink-convergence",
+                ("size", "coverage", "edgeF1", "position"),
+                ("table", "form", "toolbar", "page", "search"),
+                _ink_convergence,
                 always=True,
             ),
         ),

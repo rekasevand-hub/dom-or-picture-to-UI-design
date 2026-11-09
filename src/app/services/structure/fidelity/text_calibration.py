@@ -1458,3 +1458,154 @@ def calibrate_form_text_positions(
         "adjusted_count": len(adjustments),
         "adjustments": adjustments,
     }
+
+
+def _ink_convergence_gray(path: str):
+    import numpy as np
+    from PIL import Image
+
+    with Image.open(path) as handle:
+        return np.asarray(handle.convert("L"), dtype=np.int16)
+
+
+def _ink_height(gray, box, pad: int = 4) -> int | None:
+    """Ink extent inside ``box`` expanded by ``pad`` on every side.
+
+    Polarity-agnostic contrast mask: the background is the median of the
+    window border, ink is any pixel further than 40 away.  The padding
+    recovers strokes clipped by a tight measurement box.
+    """
+    import numpy as np
+
+    height, width = gray.shape
+    x, y, w, h = (int(v) for v in box)
+    left = max(0, x - pad)
+    top = max(0, y - pad)
+    right = min(width, x + w + pad)
+    bottom = min(height, y + h + pad)
+    if right - left < 3 or bottom - top < 3:
+        return None
+    crop = gray[top:bottom, left:right]
+    border = np.concatenate([crop[0, :], crop[-1, :], crop[:, 0], crop[:, -1]])
+    background = float(np.median(border))
+    mask = np.abs(crop.astype(np.int16) - background) > 40
+    if int(mask.sum()) < 3:
+        return None
+    rows, _cols = np.where(mask)
+    return int(rows.max() - rows.min() + 1)
+
+
+def calibrate_ink_convergence_from_render(
+    design: dict[str, Any],
+    image: str,
+    export_path: str,
+    readback: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Converge every text fontSize until rendered ink matches source ink.
+
+    One-shot measurement (style resolver) is bounded by the tightness of the
+    element box: a 20px box cannot yield a 24px ink height, and a loose box
+    may measure chrome.  This pass closes the loop instead: it re-measures
+    both sides at render time — the reference ink in a padded window of the
+    element's own evidence box, the rendered ink in a padded window of the
+    actual readback node bounds — and scales fontSize by their ratio.
+
+    Skip band [0.85, 1.175]: owners already matching are untouched.  A single
+    ratio step is clamped to [0.7, 1.5] so one pass moves at most ~50%, and
+    repeated calibration iterations converge geometrically.
+    """
+    reference = _ink_convergence_gray(image)
+    rendered = _ink_convergence_gray(export_path)
+
+    readback_nodes: list[dict[str, Any]] = []
+
+    def _walk(node: dict[str, Any]) -> None:
+        if node.get("type") == "TEXT":
+            readback_nodes.append(
+                {
+                    "key": "".join(
+                        str(node.get("characters") or "").split()
+                    ).casefold(),
+                    "x": float(node.get("x") or 0),
+                    "y": float(node.get("y") or 0),
+                    "width": float(node.get("width") or 0),
+                    "height": float(node.get("height") or 0),
+                }
+            )
+        for child in node.get("children") or []:
+            _walk(child)
+
+    root = dict(readback)
+    root["x"], root["y"] = 0, 0
+    _walk(root)
+
+    used: set[int] = set()
+    adjustments: list[dict[str, Any]] = []
+    skipped = 0
+    unmatched = 0
+    for element in design.get("elements") or []:
+        if element.get("type") != "text":
+            continue
+        evidence = (element.get("styleEvidence") or {}).get("evidence") or {}
+        ink_bbox = evidence.get("ink_bbox")
+        style = element.get("style") or {}
+        size = style.get("fontSize")
+        if not ink_bbox or not isinstance(size, (int, float)):
+            continue
+        key = "".join(str(element.get("text") or "").split()).casefold()
+        candidates = [
+            (index, node)
+            for index, node in enumerate(readback_nodes)
+            if node["key"] == key and index not in used
+        ]
+        if not candidates:
+            unmatched += 1
+            continue
+        try:
+            ex, ey = float(element.get("x") or 0), float(element.get("y") or 0)
+        except (TypeError, ValueError):
+            unmatched += 1
+            continue
+        index, node = min(
+            candidates,
+            key=lambda pair: abs(pair[1]["x"] - ex) + abs(pair[1]["y"] - ey),
+        )
+        used.add(index)
+        reference_height = _ink_height(reference, ink_bbox)
+        rendered_height = _ink_height(
+            rendered, (node["x"], node["y"], node["width"], node["height"])
+        )
+        if not reference_height or not rendered_height or rendered_height < 3:
+            skipped += 1
+            continue
+        ratio = reference_height / float(rendered_height)
+        if 0.85 <= ratio <= 1.175:
+            skipped += 1
+            continue
+        ratio = max(0.7, min(1.5, ratio))
+        new_size = max(8.0, min(96.0, round(float(size) * ratio * 4) / 4))
+        if abs(new_size - float(size)) < 0.25:
+            skipped += 1
+            continue
+        element.setdefault("style", {})["fontSize"] = new_size
+        if isinstance(element.get("styleEvidence"), dict):
+            element["styleEvidence"]["fontSize"] = new_size
+        adjustments.append(
+            {
+                "text": str(element.get("text") or "")[:20],
+                "from": float(size),
+                "to": new_size,
+                "ratio": round(ratio, 3),
+                "reference_ink": reference_height,
+                "rendered_ink": rendered_height,
+            }
+        )
+    report = {
+        "schema_version": "grounding-ink-convergence-calibration/1.0",
+        "status": "applied" if adjustments else "not-needed",
+        "adjusted_count": len(adjustments),
+        "skipped_count": skipped,
+        "unmatched_count": unmatched,
+        "adjustments": adjustments,
+    }
+    return design, report

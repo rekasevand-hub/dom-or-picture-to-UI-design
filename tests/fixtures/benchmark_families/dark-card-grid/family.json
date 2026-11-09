@@ -1,0 +1,29 @@
+{
+  "family": "dark-card-grid",
+  "sample": "IMG-ACCTOKEN-MODELS-20261108 (674d733f, 2544x1336, 2x dark card grid)",
+  "gold": {
+    "frame_id": "35:2909",
+    "producer": "Figma Make",
+    "note": "模型广场, 8-level depth, 52 autolayouts, Noto Serif SC + JetBrains Mono; 1:1 source size",
+    "scale_to_reference": 1.0
+  },
+  "pipeline_run": "output/_image_figma_acctoken_20261109_r5",
+  "baselines": {
+    "within30_pct": 94.8873,
+    "font_ratio_median": 0.906,
+    "dy_median": 4.5,
+    "critical": {
+      "matched": 25,
+      "required": 27
+    },
+    "structure": {
+      "total_nodes": 74,
+      "max_depth": 1,
+      "frame_count": 1,
+      "vector_count": 0,
+      "text_count": 47,
+      "image_fill_count": 9
+    },
+    "registered_from": "output/_image_figma_acctoken_20261109_r5"
+  }
+}

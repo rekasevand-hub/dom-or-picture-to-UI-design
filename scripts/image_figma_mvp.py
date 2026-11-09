@@ -17,6 +17,7 @@ if str(_ROOT) not in sys.path:
 from src.app.agents.precise_agent import PreciseAgent  # noqa: E402
 from src.app.services.evidence.image_figma_acceptance import (  # noqa: E402
     IMAGE_MVP_POLICY_V2,
+    IMAGE_MVP_POLICY_V21,
     build_image_acceptance_report,
     run_image_figma_evidence,
 )
@@ -81,7 +82,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--readback-depth", type=int, default=8)
     parser.add_argument(
         "--acceptance-policy",
-        choices=("1.0", "2.0"),
+        choices=("1.0", "2.0", "2.1"),
         default="1.0",
         help="Select the frozen raw-region gate or the split native-text/chrome gate.",
     )
@@ -235,7 +236,12 @@ def _fidelity_regions(geometry: dict | None) -> list[dict]:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
-    acceptance_policy = IMAGE_MVP_POLICY_V2 if args.acceptance_policy == "2.0" else None
+    if args.acceptance_policy == "2.0":
+        acceptance_policy = IMAGE_MVP_POLICY_V2
+    elif args.acceptance_policy == "2.1":
+        acceptance_policy = IMAGE_MVP_POLICY_V21
+    else:
+        acceptance_policy = None
     image = args.image.resolve()
     truth = _read_json(args.truth)
     if not image.is_file():

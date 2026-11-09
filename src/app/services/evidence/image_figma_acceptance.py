@@ -52,6 +52,37 @@ IMAGE_MVP_POLICY_V2 = {
     "legacy_raw_region_visual_informational": True,
 }
 
+# Calibrated 2026-11-09 from gold-native-bound/1.0 measurements
+# (scripts/measure_gold_bound.py, output/_benchmark_families/gold_bound.json):
+# the Figma Make golds themselves score edgeF1 median 0.969 (light-form),
+# 0.679 (dark-card-grid) and 0.0 (light-table semantic redesign) under the
+# 2.0 thresholds -- i.e. edgeF1 >= 0.95 blocks even the golds, while position
+# and size are the genuinely achievable dimensions (gold |dy|<=1px on 75/78
+# and 31/51 owners).  Policy 2.1 keeps every 2.0 dimension but moves the
+# native-text thresholds onto the measured achievable band.  Policy 2.0
+# remains frozen and untouched.
+IMAGE_MVP_POLICY_V21 = {
+    **IMAGE_MVP_POLICY_V2,
+    "policy_id": "image-figma-mvp-product/2.1",
+    "native_text_position_px_max": 2,
+    "native_text_width_tolerance_ratio": 0.03,
+    "native_text_width_tolerance_floor_px": 3,
+    "native_text_height_tolerance_ratio": 0.03,
+    "native_text_height_tolerance_floor_px": 3,
+    "native_text_ink_coverage_min": 0.75,
+    "native_text_ink_coverage_max": 1.35,
+    "native_text_edge_f1_min": 0.55,
+    "calibration": {
+        "source": "gold-native-bound/1.0",
+        "measured_at": "2026-11-09",
+        "gold_edge_f1_median": {
+            "light-form": 0.9688,
+            "dark-card-grid": 0.6785,
+            "light-table": 0.0,
+        },
+    },
+}
+
 _PASSING_REPAIR_STATUSES = {
     "not-needed",
     "pass",

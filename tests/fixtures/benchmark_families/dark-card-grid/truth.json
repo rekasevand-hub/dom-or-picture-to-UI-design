@@ -1,0 +1,65 @@
+{
+  "schema_version": "image-mvp-truth/1.0",
+  "sample_id": "IMG-ACCTOKEN-MODELS-20261108",
+  "description": "Derived rerun manifest for the 2026-11-08 ACCTOKEN model-marketplace screenshot. Critical texts and policy come from the recovered original truth; only the image SHA-256 is updated for the supplied screenshot.",
+  "critical_texts": [
+    "ACCTOKEN",
+    "首页",
+    "模型广场",
+    "创作",
+    "价格",
+    "Agent 优惠",
+    "社区",
+    "接入文档",
+    "控制台",
+    "价目牌 · 82 个模型 · 11 月 8 日更新",
+    "搜索模型或厂商，例如 deepseek",
+    "官方价、社区价和来源，一行看全。",
+    "本期好价",
+    "折扣都按官方价实时算",
+    "DeepSeek V4.1 Flash",
+    "5.8折",
+    "输入 · 峰时",
+    "输出 · 峰时",
+    "¥1.16",
+    "¥4.64",
+    "查看详情",
+    "复制模型 ID",
+    "Seedance 特惠款",
+    "8.8折",
+    "社区价",
+    "¥20.24",
+    "去画布试"
+  ],
+  "expected_asset_count": 4,
+  "asset_claim": "display-replacement-only",
+  "flow_claim": "candidate-fixed-coordinate",
+  "policy": {
+    "policy_id": "image-figma-mvp-product/2.0",
+    "frozen": true,
+    "visual_within30_min_pct": 90.0,
+    "require_size_match": true,
+    "critical_text_required": true,
+    "native_text_required": true,
+    "claimed_asset_replacement_required": true,
+    "original_asset_identity_required": false,
+    "adaptive_flow_required": false
+  },
+  "image_sha256": "674d733f3bbdda5d201b6c78b76ddb94d6d818c980f33e86a107781b8b011641",
+  "image_size": [
+    2544,
+    1336
+  ],
+  "capture_environment": {
+    "browser": "unknown",
+    "viewport": [
+      2544,
+      1336
+    ],
+    "device_scale_factor": "unknown",
+    "locale": "zh-CN",
+    "timezone": "Asia/Shanghai"
+  },
+  "derived_from": "output/_recovered_acctoken_models_20261108/tests/fixtures/image_to_slice_benchmark_2026-11-02/IMG-ACCTOKEN-MODELS-20261108.truth.json",
+  "derivation_note": "The supplied image differs from the recovered source on 0.4848% of pixels, confined to bbox [1328, 1100, 220, 80]; all critical texts and acceptance policy are unchanged."
+}

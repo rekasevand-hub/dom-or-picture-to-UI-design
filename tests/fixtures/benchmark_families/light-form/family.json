@@ -1,0 +1,29 @@
+{
+  "family": "light-form",
+  "sample": "IMG-FLEXWEAVER-ADMIN (c0180587, 1920x826, 1x light form)",
+  "gold": {
+    "frame_id": "2:523",
+    "producer": "Figma Make",
+    "note": "FLEXWEAVER reconstruction, absolute positioning, English semantic names",
+    "scale_to_reference": 1.0
+  },
+  "pipeline_run": "output/_image_figma_flexweaver_20261109_r6",
+  "baselines": {
+    "within30_pct": 91.3206,
+    "font_ratio_median": 1.014,
+    "dy_median": 1.0,
+    "critical": {
+      "matched": 24,
+      "required": 24
+    },
+    "structure": {
+      "total_nodes": 164,
+      "max_depth": 1,
+      "frame_count": 1,
+      "vector_count": 0,
+      "text_count": 88,
+      "image_fill_count": 34
+    },
+    "registered_from": "output/_image_figma_flexweaver_20261109_r6"
+  }
+}
