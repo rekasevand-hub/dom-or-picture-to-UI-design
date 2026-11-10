@@ -2,10 +2,23 @@
   "family": "light-form",
   "sample": "IMG-FLEXWEAVER-ADMIN (c0180587, 1920x826, 1x light form)",
   "gold": {
-    "frame_id": "2:523",
+    "frame_id": "12:1223",
     "producer": "Figma Make",
-    "note": "FLEXWEAVER reconstruction, absolute positioning, English semantic names",
-    "scale_to_reference": 1.0
+    "note": "自动备份 · 截图复刻, Chinese semantic names, 86 FRAME (52 HORIZONTAL auto-layout), 79 TEXT",
+    "scale_to_reference": 1.0,
+    "previous_frame_id": "2:523",
+    "reexported_at": "2026-11-10",
+    "reexport_reason": "2:523 was deleted from the document; re-exported from the live frame 12:1223. Same 79 texts and weight distribution (Regular 71 / Bold 7 / SemiBold Italic 1); gold boxes still land on ink in reference.png (ink_fraction 1.0).",
+    "answer_key_at_reexport": {
+      "matched": 75,
+      "gold_texts": 79,
+      "font_ratio_median": 1.016,
+      "dy_median": 1.0,
+      "style_mismatches": 16,
+      "style_compared": 75,
+      "measured_from": "output/_image_figma_flexweaver_20261110_split",
+      "note": "measured, not registered; baselines below still hold the pre-reexport values"
+    }
   },
   "pipeline_run": "output/_image_figma_flexweaver_20261110_split",
   "baselines": {
@@ -24,7 +37,10 @@
       "text_count": 76,
       "image_fill_count": 32
     },
-    "registered_from": "output/_image_figma_flexweaver_20261110_split"
+    "registered_from": "output/_image_figma_flexweaver_20261110_split",
+    "ink_ratio_median": 1.0,
+    "ink_ratio_pairs": 74,
+    "ink_ratio_registered_from": "rerun"
   },
   "history": [
     {

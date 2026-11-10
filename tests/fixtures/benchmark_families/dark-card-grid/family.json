@@ -24,7 +24,10 @@
       "text_count": 48,
       "image_fill_count": 9
     },
-    "registered_from": "output/_image_figma_acctoken_20261110_split_r2"
+    "registered_from": "output/_image_figma_acctoken_20261110_split_r2",
+    "ink_ratio_median": 0.944,
+    "ink_ratio_pairs": 37,
+    "ink_ratio_registered_from": "rerun"
   },
   "history": [
     {

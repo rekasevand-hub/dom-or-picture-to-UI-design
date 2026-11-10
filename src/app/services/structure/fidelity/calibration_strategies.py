@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from src.app.services.structure.fidelity.text_calibration import (
+    apply_display_weight_by_scale,
     calibrate_control_fonts,
     calibrate_form_fonts_from_render,
     calibrate_form_positions_from_render,
@@ -87,6 +88,10 @@ class CalibrationRenderError(RuntimeError):
 
 def _export(ctx: CalibrationContext) -> str:
     return str(ctx.run_root / "export.png")
+
+
+def _display_weight(ctx: CalibrationContext) -> tuple[dict[str, Any], dict[str, Any]]:
+    return apply_display_weight_by_scale(ctx.design)
 
 
 def _control_fonts(ctx: CalibrationContext) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -197,6 +202,16 @@ CALIBRATION_GROUPS: tuple[CalibrationGroup, ...] = (
         name="font-initial",
         render_suffix="figma_font_calibrated",
         strategies=(
+            # Structural, not statistical: the page's own type scale decides
+            # which text is display-scale.  Runs first so the initial write
+            # already carries the hierarchy.
+            _strategy(
+                "display-weight",
+                (),
+                (),
+                _display_weight,
+                always=True,
+            ),
             _strategy("control-fonts", (), (), _control_fonts, always=True),
             _strategy(
                 "table-fonts", ("size", "coverage", "edgeF1"), ("table",), _table_fonts

@@ -1,7 +1,7 @@
 {
   "schema_version": "image-mvp-truth/1.0",
-  "sample_id": "IMG-TIMESHEET-CONFIRM-20261108",
-  "description": "Derived manifest for the 2026-11-08 timesheet-confirmation screenshot (light form family, in-family generalization sample). Critical texts transcribed from EasyOCR observations of the frozen PNG; policy mirrors the frozen image-figma-mvp-product/2.0 gate.",
+  "sample_id": "IMG-TIMESHEET-CONFIRM-20261110",
+  "description": "Derived manifest for the 2026-11-10 timesheet-confirmation screenshot (light dense table family). Critical texts are the structural strings of the page -- navigation, controls, the ten column headers and the two boundary dates -- verified against the gold frame rebuilt from this exact PNG (109/109 boxes on ink, every header transcribed verbatim).",
   "critical_texts": [
     "输入关键字过滤菜单",
     "首页",
@@ -9,6 +9,7 @@
     "个人信息",
     "日工时填报",
     "日工时确认",
+    "我的工时看板",
     "关键字",
     "搜索",
     "展开查询",
@@ -30,8 +31,8 @@
     "石敏妤",
     "刘治强",
     "liuzq",
-    "2026-11-06",
-    "2026-11-01"
+    "2026-10-16",
+    "2026-10-08"
   ],
   "expected_asset_count": 2,
   "asset_claim": "display-replacement-only",
@@ -47,7 +48,7 @@
     "original_asset_identity_required": false,
     "adaptive_flow_required": false
   },
-  "image_sha256": "ece8effc177a9333c0d55c1a1826094391c54510382e0bf37488020e7b0a16c2",
+  "image_sha256": "e0eefc678bfdbd454774f574941283b3baa2bfbaf224598d3b82d71fd721e4cc",
   "image_size": [
     2544,
     1336
@@ -62,6 +63,6 @@
     "locale": "zh-CN",
     "timezone": "Asia/Shanghai"
   },
-  "derived_from": "tests/fixtures/timesheet_confirm_20261108/ocr_texts.json",
-  "derivation_note": "New sample supplied by the user on 2026-11-08 for light-form-family in-family generalization testing. Truth texts derive from EasyOCR (ch_sim+en) observations; logo strings (FleXWeaver / 速研 Real-Time Data) are excluded because OCR transcription of stylized logos is unreliable."
+  "derived_from": "user-supplied screenshot 2026-11-10 (2x, 2544x1336), paired with gold frame 77:42771",
+  "derivation_note": "The previous sample (IMG-TIMESHEET-CONFIRM-20261108) was a 12-row/2-tab state whose gold frame had been paraphrased and mis-scaled. This sample is the 8-row/1-tab state, and its gold frame 77:42771 is a native 2544x1336 rebuild: 100% of text boxes land on ink and every column header matches the screenshot verbatim."
 }

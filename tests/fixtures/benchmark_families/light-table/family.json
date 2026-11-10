@@ -1,30 +1,36 @@
 {
   "family": "light-table",
-  "sample": "IMG-TIMESHEET-CONFIRM-20261108 (ece8effc, 2544x1336, 2x light dense table)",
+  "sample": "IMG-TIMESHEET-CONFIRM-20261110 (e0eefc67, 2544x1336, 2x light dense table, 8 rows / 1 tab)",
   "gold": {
-    "frame_id": "32:2520",
+    "frame_id": "77:42771",
     "producer": "Figma Make",
-    "note": "日工时确认 · 截图重建, absolute positioning, Chinese semantic names; built at 1920x1008 logical",
-    "scale_to_reference": 1.325
+    "note": "日工时确认 · 截图逐字还原; native 2544x1336, absolute positioning, every column header transcribed verbatim",
+    "scale_to_reference": 1.0,
+    "previous_frame_id": "32:2520",
+    "reexported_at": "2026-11-10T17:40+08:00",
+    "reexport_reason": "previous gold was a 1920x1008 rebuild of a 12-row/2-tab state: paraphrased headers, 39.0% boxes on ink, row pitch 75.5px vs 81px. Replaced by a native-resolution rebuild of the 8-row/1-tab state (audit: 100% boxes on ink, headers verbatim)."
   },
-  "pipeline_run": "output/_image_figma_timesheet_confirm_20261110_split",
+  "pipeline_run": "output/_image_figma_timesheet_verbatim_20261110",
   "baselines": {
-    "within30_pct": 94.0655,
-    "font_ratio_median": 1.186,
-    "dy_median": 42.4,
+    "within30_pct": 95.0007,
+    "font_ratio_median": 1.005,
+    "dy_median": 5.9,
     "critical": {
-      "matched": 29,
-      "required": 29
+      "matched": 30,
+      "required": 30
     },
     "structure": {
-      "total_nodes": 199,
+      "total_nodes": 166,
       "max_depth": 1,
       "frame_count": 1,
       "vector_count": 0,
-      "text_count": 145,
-      "image_fill_count": 11
+      "text_count": 112,
+      "image_fill_count": 12
     },
-    "registered_from": "output/_image_figma_timesheet_confirm_20261110_split"
+    "registered_from": "output/_image_figma_timesheet_verbatim_20261110",
+    "ink_ratio_median": 1.0,
+    "ink_ratio_pairs": 100,
+    "ink_ratio_registered_from": "output/_image_figma_timesheet_verbatim_20261110"
   },
   "history": [
     {
@@ -37,7 +43,13 @@
       "date": "2026-11-10",
       "from": "output/_image_figma_timesheet_confirm_20261110_colanchor",
       "to": "output/_image_figma_timesheet_confirm_20261110_split",
-      "reason": "suppression split (Phase 3a emission-contract reinforcement)"
+      "reason": "suppression split (Phase 3a)"
+    },
+    {
+      "date": "2026-11-10",
+      "from": "output/_image_figma_timesheet_confirm_20261110_split",
+      "to": "output/_image_figma_timesheet_verbatim_20261110",
+      "reason": "full family renewal: new reference.png + truth.json (8-row/1-tab state) and native-resolution gold 77:42771"
     }
   ]
 }

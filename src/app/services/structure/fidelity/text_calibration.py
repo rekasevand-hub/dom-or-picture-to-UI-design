@@ -1284,6 +1284,427 @@ def calibrate_toolbar_letter_spacing_from_render(
     }
 
 
+#: Ladder the image pipeline emits on.  Kept in sync with ``WEIGHT_LADDER`` in
+#: ``figma_bridge/code.js`` so a value chosen here resolves to the same face.
+_WEIGHT_LADDER: tuple[int, ...] = (300, 400, 500, 700, 900)
+
+#: Ink multiplier per ladder step, measured from the gold answer keys of the
+#: three benchmark families (Noto Sans SC CJK stroke-width ratios):
+#: 300->400 = 1.33, 400->500 = 1.11, 500->700 = 1.23, 700->900 = 1.15.
+#: Ink scales with stroke width, so these convert an ink ratio into a weight.
+_INK_STEP_MULTIPLIER: dict[tuple[int, int], float] = {
+    (300, 400): 1.33,
+    (400, 500): 1.11,
+    (500, 700): 1.23,
+    (700, 900): 1.15,
+}
+
+
+def _normalize_font_weight(value: Any) -> int | None:
+    """Map a design weight (``"normal"`` / ``"bold"`` / ``300`` / ``"700"``).
+
+    Returns:
+        The nearest ladder value, or ``None`` when the value is unreadable.
+    """
+    if isinstance(value, (int, float)):
+        numeric = float(value)
+    else:
+        text = str(value or "").strip().lower()
+        if not text:
+            return None
+        if text in {"normal", "regular"}:
+            return 400
+        if text in {"bold", "bolder"}:
+            return 700
+        if text in {"lighter", "light"}:
+            return 300
+        try:
+            numeric = float(text)
+        except ValueError:
+            return None
+    return min(_WEIGHT_LADDER, key=lambda step: abs(step - numeric))
+
+
+def _ink_stats(
+    image: Any,
+    bbox: Any,
+    *,
+    inset: int = 3,
+    threshold: int = 50,
+) -> dict[str, int] | None:
+    """Ink count and ink extent inside ``bbox``, theme agnostic.
+
+    Unlike :func:`_contrast_ink_pixel_count` this takes a preloaded array: a
+    page-wide pass over every text owner would otherwise re-decode the PNG
+    hundreds of times.
+
+    Args:
+        image: ``(h, w, 3)`` RGB array.
+        bbox: ``[x, y, width, height]`` in source pixels.
+        inset: Border skip, so a box edge never counts as ink.
+        threshold: Channel distance from the local background median.
+
+    Returns:
+        ``{count, width, height}`` or ``None`` when the box has no ink.
+    """
+    import numpy as np
+
+    height, width = image.shape[:2]
+    x, y, box_w, box_h = (int(round(float(value))) for value in list(bbox)[:4])
+    left, top = max(0, x + inset), max(0, y + inset)
+    right, bottom = min(width, x + box_w - inset), min(height, y + box_h - inset)
+    if right <= left or bottom <= top:
+        return None
+    region = image[top:bottom, left:right]
+    if region.size == 0:
+        return None
+    background = np.median(region.reshape(-1, 3), axis=0)
+    mask = np.max(np.abs(region - background), axis=2) > threshold
+    count = int(mask.sum())
+    if count == 0:
+        return None
+    rows, columns = np.where(mask)
+    return {
+        "count": count,
+        "width": int(columns.max() - columns.min() + 1),
+        "height": int(rows.max() - rows.min() + 1),
+    }
+
+
+def _weight_for_ink_ratio(current: int, ratio: float) -> int:
+    """Ladder weight whose predicted ink best matches ``ratio`` (rendered/source).
+
+    The mapping is deliberately not "one step per round": calibration applies
+    once per run, so a 400-weight owner whose source is Bold must be able to
+    jump two steps instead of converging over multiple runs.
+
+    Args:
+        current: Current ladder weight.
+        ratio: ``rendered_ink / source_ink`` (>1 means the render is too heavy).
+
+    Returns:
+        The ladder weight minimising the log-distance between predicted and
+        required ink multiplier.
+    """
+    import math
+
+    if ratio <= 0:
+        return current
+    needed = 1.0 / ratio
+    best, best_cost = current, abs(math.log(needed))
+    index = _WEIGHT_LADDER.index(current)
+
+    cumulative = 1.0
+    for position in range(index, len(_WEIGHT_LADDER) - 1):
+        step = (_WEIGHT_LADDER[position], _WEIGHT_LADDER[position + 1])
+        cumulative *= _INK_STEP_MULTIPLIER.get(step, 1.2)
+        cost = abs(math.log(cumulative / needed))
+        if cost < best_cost:
+            best, best_cost = _WEIGHT_LADDER[position + 1], cost
+
+    cumulative = 1.0
+    for position in range(index, 0, -1):
+        step = (_WEIGHT_LADDER[position - 1], _WEIGHT_LADDER[position])
+        cumulative /= _INK_STEP_MULTIPLIER.get(step, 1.2)
+        cost = abs(math.log(cumulative / needed))
+        if cost < best_cost:
+            best, best_cost = _WEIGHT_LADDER[position - 1], cost
+    return best
+
+
+def _element_source_bbox(element: Mapping[str, Any]) -> list[float] | None:
+    """Source-pixel bbox of an element, preferring the style evidence.
+
+    ``styleEvidence.evidence.source_bbox`` is measured on the screenshot, so it
+    is always in source pixels.  The fallback (``x``/``y``/``width``/``height``)
+    is the design canvas, which is in the same space for the fixed-canvas path
+    but should not be trusted when evidence exists.
+    """
+    evidence = element.get("styleEvidence")
+    values = evidence.get("evidence") if isinstance(evidence, Mapping) else None
+    if isinstance(values, Mapping):
+        candidate = values.get("source_bbox")
+        if isinstance(candidate, (list, tuple)) and len(candidate) == 4:
+            return [float(value) for value in candidate]
+    if all(isinstance(element.get(key), (int, float)) for key in ("x", "y", "width", "height")):
+        return [
+            float(element["x"]),
+            float(element["y"]),
+            float(element["width"]),
+            float(element["height"]),
+        ]
+    return None
+
+
+def apply_display_weight_by_scale(
+    design: Mapping[str, Any],
+    *,
+    display_threshold: float = 1.8,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Promote display-scale text to Bold, using only the page's own size system.
+
+    Why this exists: both pixel routes to weight were measured dead ends
+    (``docs/v2_mentor/20261110_font_weight_evidence.md`` §2-§5) -- a static
+    stroke index drifts ±55 % with box geometry, and rendered-vs-source ink
+    density carries font substitution more strongly than weight.  What remains
+    is typography: a page states its hierarchy in *relative* size, and body
+    text is the modal size by definition.
+
+    The rule reads nothing but the design itself -- no text matching, no
+    per-sample constants:
+
+    * ``body`` = the modal font size across the page's text owners;
+    * a text at ``>= display_threshold x body`` is display-scale (by the usual
+      type-scale convention h1 ~ 2x, h2 ~ 1.5x body) and is promoted to Bold;
+    * only owners currently at 400 are promoted, so an explicit Light decision
+      from another strategy is never overridden.
+
+    ``display_threshold`` is deliberately conservative, and the free-text
+    filter is what makes it safe.  Measured on the three families
+    (perception-frozen rerun, style_mm mismatches): without the filter, 1.8
+    still promoted the light-table placeholders ``(选填)`` / ``请输入0~``
+    (their ``fontSize`` is inflated from the input-box height, 48.5-78.75) and
+    regressed within30 94.07 -> 93.68.  With the filter, light-table and
+    light-form have **zero** candidates and stay neutral, while dark moves
+    24/39 -> 19/39.
+
+    The threshold is a type-scale convention, but its exact value is fitted on
+    three samples -- treat a new families' result as unproven until it has its
+    own gold frame.
+
+    Args:
+        design: Image design with ``elements`` carrying ``style.fontSize``.
+        display_threshold: Multiple of the page's body size to count as display.
+
+    Returns:
+        ``(calibrated_design, report)``.
+    """
+    from collections import Counter
+
+    calibrated = copy.deepcopy(dict(design))
+    elements = [
+        element
+        for element in calibrated.get("elements") or []
+        if isinstance(element, dict) and element.get("type") == "text"
+    ]
+
+    def _is_free_text(element: Mapping[str, Any]) -> bool:
+        """Table cells inherit table geometry; they are not display type."""
+        content_ref = str(element.get("contentRef") or "")
+        role = str((element.get("imageMVP") or {}).get("role") or "")
+        return not (
+            content_ref.startswith(("table-cell:", "table-header:"))
+            or role in {"table-cell", "table-header", "control"}
+        )
+
+    free_text = [element for element in elements if _is_free_text(element)]
+    sizes = [
+        round(float(element["style"]["fontSize"]), 1)
+        for element in free_text
+        if isinstance(element.get("style"), Mapping)
+        and isinstance(element["style"].get("fontSize"), (int, float))
+        and float(element["style"]["fontSize"]) > 0
+    ]
+    if len(sizes) < 3:
+        return calibrated, {
+            "schema_version": "grounding-display-weight/1.0",
+            "status": "not-needed",
+            "adjusted_count": 0,
+            "adjustments": [],
+        }
+    body_size = Counter(sizes).most_common(1)[0][0]
+    adjustments: list[dict[str, Any]] = []
+    skipped_roles = 0
+    for element in elements:
+        style = element.get("style")
+        if not isinstance(style, dict):
+            continue
+        # Only free text can be display type.  Table cells inherit table
+        # geometry -- on light-table the placeholders "(选填)" / "请输入0~"
+        # carry an inflated fontSize (48.5, 77, 78.75) derived from the input
+        # box height, and promoting them regressed within30 (93.68 < 94.07).
+        # The role is structural evidence, not a text pattern.
+        content_ref = str(element.get("contentRef") or "")
+        role = str((element.get("imageMVP") or {}).get("role") or "")
+        if content_ref.startswith(("table-cell:", "table-header:")) or role in {
+            "table-cell",
+            "table-header",
+            "control",
+        }:
+            skipped_roles += 1
+            continue
+        size = style.get("fontSize")
+        if not isinstance(size, (int, float)) or body_size <= 0:
+            continue
+        ratio = float(size) / body_size
+        if ratio < display_threshold:
+            continue
+        if _normalize_font_weight(style.get("fontWeight")) != 400:
+            continue
+        style["fontWeight"] = 700
+        adjustments.append(
+            {
+                "contentRef": element.get("contentRef") or None,
+                "text": str(element.get("text") or "")[:48],
+                "fontSize": round(float(size), 2),
+                "bodySize": body_size,
+                "scale": round(ratio, 3),
+                "previous": 400,
+                "updated": 700,
+            }
+        )
+    return calibrated, {
+        "schema_version": "grounding-display-weight/1.0",
+        "status": "applied" if adjustments else "not-needed",
+        "body_size": body_size,
+        "display_threshold": display_threshold,
+        "adjusted_count": len(adjustments),
+        "skipped_non_free_text": skipped_roles,
+        "adjustments": adjustments,
+    }
+
+
+def calibrate_text_weight_from_render(
+    design: Mapping[str, Any],
+    reference_path: str,
+    rendered_path: str,
+    *,
+    skip_content_refs: Mapping[str, Any] | set[str] | None = None,
+    min_ink_pixels: int = 40,
+    step_up_below: float = 0.82,
+    step_down_above: float = 1.22,
+    width_tolerance: float = 0.18,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Choose font weight by comparing rendered ink against source ink.
+
+    **Not wired into the calibration pipeline.**  Measured on dark-card-grid
+    (2026-11-10, perception-frozen rerun), this rule changed 19 owners and got
+    4 right: ``style_mm`` went 24/39 -> 25/39.  The reason is visible once the
+    page-median systematic bias is divided out -- the per-weight density ratios
+    collapse to Regular 1.000, Medium 0.905, Bold 1.027, Black 0.894, i.e. no
+    usable separation.  Ink density carries font-family substitution and
+    anti-aliasing at least as strongly as it carries weight.
+
+    It stays in the module, with tests, as the reproduction of that negative
+    result: anyone proposing a render-compare weight rule should start by
+    re-running it rather than re-deriving the same dead end.
+
+    Why render comparison was attempted: the Phase 1 evidence probe showed a
+    static ``stroke / ink_height`` index shifting up to ±55 % between a gold
+    box and a perception box, larger than the +35 % step between Regular and
+    Bold.  Rendering the candidate into the *same* box was supposed to cancel
+    that geometry dependence -- and it does, but the remaining signal is not
+    weight.
+
+    Guards, all measured rather than tuned:
+
+    * ``width_tolerance``: when the rendered line is already 18 % off in width,
+      the residual is a size/shape problem (other strategies own it) and a
+      weight change would only make things worse.
+    * ``min_ink_pixels``: boxes with almost no ink carry no ratio.
+    * Deadband ``[step_up_below, step_down_above]``: below 18 % deviation the
+      ratio is indistinguishable from anti-aliasing noise at 1x.
+
+    Args:
+        design: Image design (``elements`` with ``style``/``bbox``).
+        reference_path: Source screenshot.
+        rendered_path: Current Figma export of the same canvas.
+        skip_content_refs: Owners another strategy already owns this round.
+        min_ink_pixels: Floor for a usable ink count.
+        step_up_below: Ratio under which the render is too light.
+        step_down_above: Ratio above which the render is too heavy.
+        width_tolerance: Relative line-width mismatch that disqualifies weight.
+
+    Returns:
+        ``(calibrated_design, report)``.
+    """
+    import numpy as np
+    from PIL import Image
+
+    calibrated = copy.deepcopy(dict(design))
+    skip = set(skip_content_refs or ())
+    with Image.open(reference_path) as source_image:
+        reference = np.asarray(source_image.convert("RGB"), dtype=np.int16)
+    with Image.open(rendered_path) as rendered_image:
+        rendered = np.asarray(rendered_image.convert("RGB"), dtype=np.int16)
+
+    adjustments: list[dict[str, Any]] = []
+    skipped = {"unmeasurable": 0, "width-mismatch": 0, "deadband": 0, "no-weight": 0}
+    for element in calibrated.get("elements") or []:
+        if not isinstance(element, dict) or element.get("type") != "text":
+            continue
+        content_ref = str(element.get("contentRef") or "")
+        if content_ref.startswith("table-header:") or content_ref in skip:
+            continue
+        bbox = _element_source_bbox(element)
+        if bbox is None:
+            continue
+        style = element.setdefault("style", {})
+        previous = _normalize_font_weight(style.get("fontWeight"))
+        if previous is None:
+            skipped["no-weight"] += 1
+            continue
+        source_stats = _ink_stats(reference, bbox)
+        rendered_stats = _ink_stats(rendered, bbox)
+        if (
+            source_stats is None
+            or rendered_stats is None
+            or source_stats["count"] < min_ink_pixels
+            or rendered_stats["count"] < min_ink_pixels
+            or min(source_stats["width"], source_stats["height"]) < 3
+            or min(rendered_stats["width"], rendered_stats["height"]) < 3
+        ):
+            skipped["unmeasurable"] += 1
+            continue
+        width_ratio = rendered_stats["width"] / max(1, source_stats["width"])
+        if abs(width_ratio - 1.0) > width_tolerance:
+            skipped["width-mismatch"] += 1
+            continue
+        # Density, not raw ink count.  Ink area scales with size^2 while stroke
+        # scales with size, so a 10 % size deficit already reads as a 20 % ink
+        # deficit and would be mistaken for "too light" (the failure that made
+        # the first dry run jump 14 owners from 400 straight to 900).
+        # Dividing by each side's own ink extent cancels size and leaves the
+        # stroke ratio, which is what weight actually changes.
+        source_density = source_stats["count"] / float(
+            source_stats["width"] * source_stats["height"]
+        )
+        rendered_density = rendered_stats["count"] / float(
+            rendered_stats["width"] * rendered_stats["height"]
+        )
+        if source_density <= 0:
+            skipped["unmeasurable"] += 1
+            continue
+        ratio = rendered_density / source_density
+        if step_up_below <= ratio <= step_down_above:
+            skipped["deadband"] += 1
+            continue
+        target = _weight_for_ink_ratio(previous, ratio)
+        if target == previous:
+            skipped["deadband"] += 1
+            continue
+        style["fontWeight"] = target
+        adjustments.append(
+            {
+                "contentRef": content_ref or None,
+                "text": str(element.get("text") or "")[:48],
+                "previous": previous,
+                "updated": target,
+                "densityRatio": round(ratio, 3),
+                "widthRatio": round(width_ratio, 3),
+                "sourceInk": source_stats["count"],
+                "renderedInk": rendered_stats["count"],
+            }
+        )
+    return calibrated, {
+        "schema_version": "grounding-text-weight-convergence/1.0",
+        "status": "applied" if adjustments else "not-needed",
+        "adjusted_count": len(adjustments),
+        "skipped": skipped,
+        "adjustments": adjustments,
+    }
+
+
 def calibrate_toolbar_font_weight_from_render(
     design: Mapping[str, Any],
     reference_path: str,
@@ -1510,9 +1931,22 @@ def calibrate_ink_convergence_from_render(
     element's own evidence box, the rendered ink in a padded window of the
     actual readback node bounds — and scales fontSize by their ratio.
 
+    Two bands decide what a ratio means:
+
     Skip band [0.85, 1.175]: owners already matching are untouched.  A single
     ratio step is clamped to [0.7, 1.5] so one pass moves at most ~50%, and
     repeated calibration iterations converge geometrically.
+
+    Both numbers were re-tested on 2026-11-10 and are load-bearing:
+
+    * tightening the band to the roadmap's 1 +/- 0.05 moved dark's font_ratio
+      only 0.906 -> 0.919 and regressed light-table (94.07 -> 93.33), because
+      there a 0.90 ink ratio is a font-metric difference, not a size error;
+    * discarding the clamp-saturated ratios (the "obviously wrong" 0.7 / 1.5
+      edits) regressed light-table further (93.44) -- those edits were
+      correcting genuinely oversized text.
+
+    See ``docs/v2_mentor/20261110_font_weight_evidence.md`` §5.2.
     """
     reference = _ink_convergence_gray(image)
     rendered = _ink_convergence_gray(export_path)

@@ -10,9 +10,20 @@ Each family under ``tests/fixtures/benchmark_families/<name>/`` holds:
 
 Metrics per family:
   * within30 / mean / ink_mean  (pipeline export vs reference, project metric)
-  * answer-key: font ratio (pipeline/gold), |dy| median, style mismatches
+  * answer-key:
+      - ink_ratio_median  PRIMARY size metric.  Rendered ink height / source
+        ink height, both measured in the *same gold box*, so box geometry
+        cancels and what remains is "how big does it look".
+      - font_ratio_median DIAGNOSTIC only.  Pipeline fontSize / gold fontSize.
+        When the two sides render with different families this quotient hides a
+        font-metric difference of 1.5-2.4 %, which is why it no longer gates.
+      - |dy| median, style mismatches
   * structure: nodes, depth, FRAME/VECTOR/TEXT, bitmap fills
   * critical text matched/required (from the run's acceptance.json)
+
+Families whose gold geometry cannot support a size metric (too few measurable
+pairs) declare ``size_metrics.evaluable: false`` in family.json and the gate
+skips both size checks for them instead of scoring noise.
 
 Gate (baselines present, no --register): exit 1 if any family regresses.
 Register mode: writes current measurements into family.json baselines.
@@ -43,6 +54,12 @@ BENCH = ROOT / "tests" / "fixtures" / "benchmark_families"
 
 # Gate tolerances: how much a metric may drift before it counts as regression.
 WITHIN30_SLACK_PCT = 0.3
+#: Primary size metric: |ink_ratio - 1| may drift this much before regression.
+INK_RATIO_DRIFT_SLACK = 0.05
+#: Fewer measurable pairs than this and the median is not a measurement.
+INK_RATIO_MIN_PAIRS = 20
+#: Diagnostic only (see the module docstring).  Kept so a *large* size blunder
+#: still shows up in the report, but it no longer fails the gate.
 FONT_RATIO_DRIFT_SLACK = 0.05
 DY_MEDIAN_SLACK_PX = 3.0
 BITMAP_SLACK = 2
@@ -82,6 +99,8 @@ def _flatten_texts(tree: dict[str, Any], scale: float) -> list[dict[str, Any]]:
                     "style": font.get("style") or "",
                     "x": x * scale,
                     "y": y * scale,
+                    "width": float(node.get("width") or 0) * scale,
+                    "height": float(node.get("height") or 0) * scale,
                 }
             )
         for child in node.get("children") or []:
@@ -91,8 +110,54 @@ def _flatten_texts(tree: dict[str, Any], scale: float) -> list[dict[str, Any]]:
     return records
 
 
+def _ink_ratio_metrics(
+    pairs: list[dict[str, Any]], reference: Any, rendered: Any
+) -> dict[str, Any]:
+    """Rendered-vs-source ink height, both measured inside the gold box.
+
+    Same window on both images means the box geometry cancels: whatever is left
+    is how tall the glyph actually renders.  That is the closest observable to
+    "how big does this text look", and unlike ``font_ratio`` it does not divide
+    two *declared* sizes from possibly different font families.
+
+    Boxes with fewer than 3 px of ink on either side are skipped -- at that size
+    the integer ink height is quantisation noise, not a measurement.
+    """
+    from src.app.services.structure.fidelity.text_calibration import _ink_stats
+
+    ratios: list[float] = []
+    for pair in pairs:
+        box = pair.get("bbox")
+        if not box or float(box[2]) < 2 or float(box[3]) < 2:
+            continue
+        source = _ink_stats(reference, box)
+        render = _ink_stats(rendered, box)
+        if source is None or render is None:
+            continue
+        if source["height"] < 3 or render["height"] < 3:
+            continue
+        ratios.append(render["height"] / float(source["height"]))
+    if not ratios:
+        return {
+            "ink_ratio_median": None,
+            "ink_ratio_pairs": 0,
+            "ink_ratio_within10pct": None,
+        }
+    ordered = sorted(ratios)
+    within = sum(1 for value in ratios if abs(value - 1.0) <= 0.10) / len(ratios)
+    return {
+        "ink_ratio_median": round(ordered[len(ordered) // 2], 3),
+        "ink_ratio_pairs": len(ratios),
+        "ink_ratio_within10pct": round(within, 3),
+    }
+
+
 def _answer_key(
-    gold_tree: dict[str, Any], pipe_tree: dict[str, Any], scale: float
+    gold_tree: dict[str, Any],
+    pipe_tree: dict[str, Any],
+    scale: float,
+    reference: Any = None,
+    rendered: Any = None,
 ) -> dict[str, Any]:
     gold = _flatten_texts(gold_tree, scale)
     pipe = _flatten_texts(pipe_tree, 1.0)
@@ -116,6 +181,7 @@ def _answer_key(
                 "text": g["text"][:24],
                 "font_ratio": round(fp / fg, 3) if fg and fp else None,
                 "dy": round(p["y"] - g["y"], 1),
+                "bbox": [g["x"], g["y"], g.get("width") or 0, g.get("height") or 0],
                 "style_match": bool(g["style"])
                 and bool(p["style"])
                 and g["style"] == p["style"],
@@ -131,6 +197,15 @@ def _answer_key(
         ordered = sorted(values)
         return round(ordered[len(ordered) // 2], 3)
 
+    ink = (
+        _ink_ratio_metrics(pairs, reference, rendered)
+        if reference is not None and rendered is not None
+        else {
+            "ink_ratio_median": None,
+            "ink_ratio_pairs": 0,
+            "ink_ratio_within10pct": None,
+        }
+    )
     return {
         "matched": len(pairs),
         "gold_texts": len(gold),
@@ -139,6 +214,7 @@ def _answer_key(
         "dy_median": _median(dys),
         "style_mismatches": sum(1 for p in styles if not p["style_match"]),
         "style_compared": len(styles),
+        **ink,
     }
 
 
@@ -202,18 +278,58 @@ def _critical_from_acceptance(run_dir: Path) -> dict[str, Any] | None:
     }
 
 
-def _gate(family: str, current: dict[str, Any], baseline: dict[str, Any]) -> list[str]:
-    """Return a list of regression descriptions (empty = pass)."""
+def _size_metrics_scope(
+    current: dict[str, Any], meta: dict[str, Any] | None
+) -> tuple[bool, str | None]:
+    """Decide whether this family's size numbers are measurements or noise.
+
+    Two independent reasons to abstain:
+
+    * the family itself declares ``size_metrics.evaluable: false`` -- light-table
+      does, because its gold boxes land mostly on whitespace (ink_fraction 0.36)
+      and only 11 of 91 texts yield a measurable pair;
+    * too few measurable pairs for the median to mean anything, even if nobody
+      remembered to declare it.
+    """
+    block = ((meta or {}).get("size_metrics") or {})
+    if block.get("evaluable") is False:
+        return False, str(block.get("reason") or "declared not evaluable")
+    pairs = int(current.get("ink_ratio_pairs") or 0)
+    if pairs < INK_RATIO_MIN_PAIRS:
+        return False, f"only {pairs} measurable pairs < {INK_RATIO_MIN_PAIRS}"
+    return True, None
+
+
+def _gate(
+    family: str,
+    current: dict[str, Any],
+    baseline: dict[str, Any],
+    meta: dict[str, Any] | None = None,
+) -> tuple[list[str], list[str]]:
+    """Return ``(regressions, notes)``; empty regressions = pass.
+
+    ``font_ratio`` is deliberately *not* a regression source any more.  It
+    divides two declared font sizes, so a family substitution (measured: 1.5-2.4 %
+    on light-form, far more on dark-card-grid) shows up as a size error and
+    chasing it makes the pixels worse -- both attempts are recorded in
+    ``docs/v2_mentor/20261110_font_weight_evidence.md`` §5.2.  The metric is kept
+    in the report as a diagnostic, and a large *drift* in it is still reported,
+    just not failed.
+    """
     # Flatten the current family dict so baseline and current share one shape.
     flat_current = {
         "within30_pct": (current.get("visual") or {}).get("within30_pct"),
         "font_ratio_median": (current.get("answer_key") or {}).get("font_ratio_median"),
+        "ink_ratio_median": (current.get("answer_key") or {}).get("ink_ratio_median"),
+        "ink_ratio_pairs": (current.get("answer_key") or {}).get("ink_ratio_pairs"),
         "dy_median": (current.get("answer_key") or {}).get("dy_median"),
         "critical": current.get("critical"),
         "structure": current.get("structure"),
     }
     current = flat_current
     regressions: list[str] = []
+    notes: list[str] = []
+
     base_w = baseline.get("within30_pct")
     cur_w = current.get("within30_pct")
     if base_w is not None and cur_w is not None:
@@ -221,16 +337,41 @@ def _gate(family: str, current: dict[str, Any], baseline: dict[str, Any]) -> lis
             regressions.append(
                 f"within30 {cur_w:.3f} < baseline {base_w:.3f} - {WITHIN30_SLACK_PCT}"
             )
-    base_ratio = baseline.get("font_ratio_median")
-    cur_ratio = current.get("font_ratio_median")
-    if base_ratio is not None and cur_ratio is not None:
-        base_dist = abs(float(base_ratio) - 1.0)
-        cur_dist = abs(float(cur_ratio) - 1.0)
-        if cur_dist > base_dist + FONT_RATIO_DRIFT_SLACK:
-            regressions.append(
-                f"font_ratio |{cur_ratio}-1|={cur_dist:.3f} worse than baseline "
-                f"|{base_ratio}-1|={base_dist:.3f} + {FONT_RATIO_DRIFT_SLACK}"
-            )
+
+    evaluable, reason = _size_metrics_scope(current, meta)
+    if not evaluable:
+        notes.append(f"size metrics not evaluated ({reason})")
+    else:
+        base_ink = baseline.get("ink_ratio_median")
+        cur_ink = current.get("ink_ratio_median")
+        if base_ink is not None and cur_ink is not None:
+            base_dist = abs(float(base_ink) - 1.0)
+            cur_dist = abs(float(cur_ink) - 1.0)
+            # The slack is inclusive ("may drift this much"), but binary floats
+            # make it exclusive at the boundary: abs(0.95 - 1.0) evaluates to
+            # 0.050000000000000044, so a value sitting exactly on 0.95 would be
+            # failed by a metric documented as tolerating 0.05.  The epsilon is
+            # 1e-9 -- far below the 0.001 resolution of the reported ratios, so
+            # it cannot hide a real regression.
+            if cur_dist > base_dist + INK_RATIO_DRIFT_SLACK + 1e-9:
+                regressions.append(
+                    f"ink_ratio |{cur_ink}-1|={cur_dist:.3f} worse than baseline "
+                    f"|{base_ink}-1|={base_dist:.3f} + {INK_RATIO_DRIFT_SLACK}"
+                )
+        elif current.get("ink_ratio_median") is not None:
+            notes.append("ink_ratio measured but no baseline registered")
+
+        base_ratio = baseline.get("font_ratio_median")
+        cur_ratio = current.get("font_ratio_median")
+        if base_ratio is not None and cur_ratio is not None:
+            base_dist = abs(float(base_ratio) - 1.0)
+            cur_dist = abs(float(cur_ratio) - 1.0)
+            if cur_dist > base_dist + FONT_RATIO_DRIFT_SLACK:
+                notes.append(
+                    f"font_ratio drift |{cur_ratio}-1|={cur_dist:.3f} vs baseline "
+                    f"{base_dist:.3f} (diagnostic, not gated)"
+                )
+
     base_dy = baseline.get("dy_median")
     cur_dy = current.get("dy_median")
     if base_dy is not None and cur_dy is not None:
@@ -257,7 +398,7 @@ def _gate(family: str, current: dict[str, Any], baseline: dict[str, Any]) -> lis
     if base_depth is not None and cur_depth is not None:
         if int(cur_depth) < int(base_depth):
             regressions.append(f"max_depth {cur_depth} < baseline {base_depth}")
-    return regressions
+    return regressions, notes
 
 
 def measure_family(
@@ -282,7 +423,18 @@ def measure_family(
     scale = float(meta.get("gold", {}).get("scale_to_reference") or 1.0)
 
     visual = visual_similarity_metrics(reference, export)
-    answer = _answer_key(gold_tree, pipe_tree, scale)
+    # The ink metric needs both images; they are the same two the visual metric
+    # already reads, so this adds one decode, not a new pipeline pass.
+    import numpy as np
+    from PIL import Image
+
+    with Image.open(reference) as handle:
+        reference_pixels = np.asarray(handle.convert("RGB"), dtype=np.int16)
+    with Image.open(export) as handle:
+        rendered_pixels = np.asarray(handle.convert("RGB"), dtype=np.int16)
+    answer = _answer_key(
+        gold_tree, pipe_tree, scale, reference_pixels, rendered_pixels
+    )
     structure = _structure(pipe_tree)
     critical = _critical_from_acceptance(run_dir)
     return {
@@ -356,6 +508,36 @@ def _rerun_family(family_dir: Path, policy: str) -> Path | None:
             f"{result.stderr[-300:] if result.stderr else ''}"
         )
         return None
+    # A ``blocked-environment`` acceptance is a *failed* run, not a low score:
+    # its readback/export come from whichever stage happened to survive, so
+    # measuring them compares a pre-calibration render against a post-calibration
+    # baseline.  That produced a phantom "within30 94.28 < baseline 95.00"
+    # regression on light-table on 2026-11-10.  Refuse the run instead.
+    acceptance_path = out / "acceptance.json"
+    if acceptance_path.is_file():
+        acceptance = _read_json(acceptance_path)
+        status = str(acceptance.get("status") or "")
+        # Two different "blocked" states, and only one is a failed measurement:
+        #   blocked-environment -> no usable artifacts; whatever readback/export
+        #       exists is from an intermediate stage, so measuring it compares a
+        #       pre-calibration render against a post-calibration baseline;
+        #   blocked-fail -> artifacts are complete and comparable, a gate simply
+        #       did not pass (native text is un-met on every family today).
+        # Guard on the *evidence*, not on the status string.
+        has_visual = (acceptance.get("visual") or {}).get("within30_pct") is not None
+        has_critical = (
+            acceptance.get("critical_text") or {}
+        ).get("matched_count") is not None
+        if status == "blocked-environment" or not (has_visual and has_critical):
+            detail = str(acceptance.get("error") or status or "no acceptance")
+            hint = ""
+            if "invalid id" in detail:
+                hint = (
+                    "  (Figma plugin callback table is stale -- reload the plugin "
+                    "in Figma, then re-run)"
+                )
+            print(f"[rerun-fail] {family_dir.name}: {detail[:160]}{hint}")
+            return None
     print(f"[rerun ] {family_dir.name}: acceptance rebuilt under {out}")
     return out
 
@@ -367,6 +549,14 @@ def main(argv: list[str] | None = None) -> int:
         "--register",
         action="store_true",
         help="write measured values into family.json baselines (first run)",
+    )
+    parser.add_argument(
+        "--register-ink",
+        action="store_true",
+        help=(
+            "add or refresh only the ink_ratio baseline; every other baseline "
+            "entry is left untouched (use after a metric-scope change)"
+        ),
     )
     parser.add_argument(
         "--out",
@@ -417,9 +607,34 @@ def main(argv: list[str] | None = None) -> int:
             continue
         meta = _read_json(family_dir / "family.json")
         baseline = meta.get("baselines")
+        if args.register_ink and baseline:
+            # Additive registration: the ink metric arrived after the other
+            # baselines were set, and re-registering everything would silently
+            # reset within30 / dy / structure to today's values.
+            baseline["ink_ratio_median"] = current["answer_key"]["ink_ratio_median"]
+            baseline["ink_ratio_pairs"] = current["answer_key"]["ink_ratio_pairs"]
+            baseline["ink_ratio_registered_from"] = (
+                "rerun" if args.rerun else current["pipeline_run"]
+            )
+            meta["baselines"] = baseline
+            (family_dir / "family.json").write_text(
+                json.dumps(meta, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            print(
+                f"[reg-ink] {family_dir.name}: ink_ratio_median="
+                f"{current['answer_key']['ink_ratio_median']} "
+                f"(n={current['answer_key']['ink_ratio_pairs']})"
+            )
         if args.register or not baseline:
             meta["baselines"] = {
                 "within30_pct": current["visual"]["within30_pct"],
+                # Both size fields must be registered together: leaving
+                # ink_ratio out here made a freshly registered family report
+                # "ink_ratio measured but no baseline registered" and silently
+                # disabled the primary size gate.
+                "ink_ratio_median": current["answer_key"]["ink_ratio_median"],
+                "ink_ratio_pairs": current["answer_key"]["ink_ratio_pairs"],
                 "font_ratio_median": current["answer_key"]["font_ratio_median"],
                 "dy_median": current["answer_key"]["dy_median"],
                 "critical": current.get("critical"),
@@ -436,13 +651,16 @@ def main(argv: list[str] | None = None) -> int:
                 f"(within30={current['visual']['within30_pct']}%)"
             )
         else:
-            regressions = _gate(family_dir.name, current, baseline)
+            baseline = _read_json(family_dir / "family.json").get("baselines") or baseline
+            regressions, notes = _gate(family_dir.name, current, baseline, meta)
             current["gate"] = "pass" if not regressions else "REGRESSION"
+            current["gate_notes"] = notes
             if regressions:
                 all_regressions[family_dir.name] = regressions
             print(
                 f"[gate ] {family_dir.name}: {current['gate'].upper()}"
                 + (f" -> {'; '.join(regressions)}" if regressions else "")
+                + (f"  [{'; '.join(notes)}]" if notes else "")
             )
         results.append(current)
 
@@ -469,9 +687,12 @@ def main(argv: list[str] | None = None) -> int:
         s = r["structure"]
         cr = r.get("critical") or {}
         ratio = a["font_ratio_median"]
+        ink = a.get("ink_ratio_median")
+        ink_txt = f"{ink}(n={a.get('ink_ratio_pairs')})" if ink is not None else "n/a"
         print(
             f"{r['family']:<16} gate={r['gate']:<11} within30={v['within30_pct']:.2f}%  "
-            f"font_ratio={ratio if ratio is not None else 'n/a'}  dy_med={a['dy_median']}  "
+            f"ink_ratio={ink_txt}  font_ratio={ratio if ratio is not None else 'n/a'} (diag)  "
+            f"dy_med={a['dy_median']}  "
             f"style_mm={a['style_mismatches']}/{a['style_compared']}  "
             f"nodes={s['total_nodes']} depth={s['max_depth']} bitmap={s['image_fill_count']}  "
             f"critical={cr.get('matched')}/{cr.get('required')}"
