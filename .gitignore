@@ -43,6 +43,9 @@ closeai_state.json
 $log
 $null
 
+# WorkBuddy workspace state (local memory / session data, never commit)
+.workbuddy/
+
 # Output
 output/
 uploads/
