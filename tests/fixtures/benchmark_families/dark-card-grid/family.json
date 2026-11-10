@@ -7,26 +7,26 @@
     "note": "模型广场, 8-level depth, 52 autolayouts, Noto Serif SC + JetBrains Mono; 1:1 source size",
     "scale_to_reference": 1.0
   },
-  "pipeline_run": "output/_image_figma_acctoken_20261111_kimi",
+  "pipeline_run": "output/_image_figma_acctoken_20261111_plate",
   "baselines": {
-    "within30_pct": 94.821,
-    "ink_ratio_median": 0.944,
+    "within30_pct": 94.8406,
+    "ink_ratio_median": 0.931,
     "ink_ratio_pairs": 40,
-    "font_ratio_median": 0.911,
+    "font_ratio_median": 0.917,
     "dy_median": 4.5,
     "critical": {
       "matched": 27,
       "required": 27
     },
     "structure": {
-      "total_nodes": 71,
+      "total_nodes": 68,
       "max_depth": 1,
       "frame_count": 1,
       "vector_count": 0,
       "text_count": 48,
-      "image_fill_count": 9
+      "image_fill_count": 5
     },
-    "registered_from": "output/_image_figma_acctoken_20261111_kimi"
+    "registered_from": "output/_image_figma_acctoken_20261111_plate"
   },
   "history": [
     {
@@ -52,6 +52,12 @@
       "change": "reference.png replaced with the Kimi K3 variant; truth date corrected; full run re-baselined",
       "previous_pipeline_run": "output/_image_figma_acctoken_20261110_split_r2",
       "pipeline_run": "output/_image_figma_acctoken_20261111_kimi"
+    },
+    {
+      "date": "2026-11-11",
+      "change": "fragment-image and selection-plate rules: logo crops that carry label glyphs are dropped, the selected tab plate is recovered from the screenshot; full run re-baselined",
+      "previous_pipeline_run": "output/_image_figma_acctoken_20261111_kimi",
+      "pipeline_run": "output/_image_figma_acctoken_20261111_plate"
     }
   ]
 }
