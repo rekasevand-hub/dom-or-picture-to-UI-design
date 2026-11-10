@@ -12,7 +12,7 @@
     "社区",
     "接入文档",
     "控制台",
-    "价目牌 · 82 个模型 · 11 月 8 日更新",
+    "价目牌 · 82 个模型 · 11 月 11 日更新",
     "搜索模型或厂商，例如 deepseek",
     "官方价、社区价和来源，一行看全。",
     "本期好价",
@@ -45,7 +45,7 @@
     "original_asset_identity_required": false,
     "adaptive_flow_required": false
   },
-  "image_sha256": "674d733f3bbdda5d201b6c78b76ddb94d6d818c980f33e86a107781b8b011641",
+  "image_sha256": "38175f8096ac2788da432e9bed0d3c5cd124288b016c4da9b7b2e53574ceeee0",
   "image_size": [
     2544,
     1336
@@ -71,6 +71,20 @@
       "reason": "transcription defect: the two card buttons in the frozen reference image read 看详情 → / 看详情 (visual crop inspection plus EasyOCR observations at 0.98 confidence); the original 查看详情 never appears in the image and could not be matched without hallucinating text",
       "approved_by": "user (session approval 2026-11-10)",
       "evidence": "docs/v2_mentor/20261110_suppression_split_handoff.md#8"
+    },
+    {
+      "date": "2026-11-11",
+      "field": "reference.png",
+      "from_sha256": "674d733f3bbdda5d201b6c78b76ddb94d6d818c980f33e86a107781b8b011641",
+      "to_sha256": "38175f8096ac2788da432e9bed0d3c5cd124288b016c4da9b7b2e53574ceeee0",
+      "reason": "reference showed a URL at the bottom-left where the product screenshot (and the gold frame) show 'Kimi K3'; approved by the user, old file kept in output/_fixtures_backup/reference_url_variant_20261110.png"
+    },
+    {
+      "date": "2026-11-11",
+      "field": "critical_texts",
+      "from": "价目牌 · 82 个模型 · 11 月 8 日更新",
+      "to": "价目牌 · 82 个模型 · 11 月 11 日更新",
+      "reason": "new reference screenshot (Kimi K3 variant) shows 11 月 11 日更新; approved by the user"
     }
   ]
 }

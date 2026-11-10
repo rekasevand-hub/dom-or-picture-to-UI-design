@@ -7,27 +7,26 @@
     "note": "模型广场, 8-level depth, 52 autolayouts, Noto Serif SC + JetBrains Mono; 1:1 source size",
     "scale_to_reference": 1.0
   },
-  "pipeline_run": "output/_image_figma_acctoken_20261110_split_r2",
+  "pipeline_run": "output/_image_figma_acctoken_20261111_kimi",
   "baselines": {
-    "within30_pct": 94.8717,
-    "font_ratio_median": 0.906,
-    "dy_median": 4.5,
+    "within30_pct": 94.821,
+    "ink_ratio_median": 0.938,
+    "ink_ratio_pairs": 39,
+    "font_ratio_median": 0.911,
+    "dy_median": 6.0,
     "critical": {
       "matched": 27,
       "required": 27
     },
     "structure": {
-      "total_nodes": 75,
+      "total_nodes": 71,
       "max_depth": 1,
       "frame_count": 1,
       "vector_count": 0,
       "text_count": 48,
       "image_fill_count": 9
     },
-    "registered_from": "output/_image_figma_acctoken_20261110_split_r2",
-    "ink_ratio_median": 0.944,
-    "ink_ratio_pairs": 37,
-    "ink_ratio_registered_from": "rerun"
+    "registered_from": "output/_image_figma_acctoken_20261111_kimi"
   },
   "history": [
     {
@@ -47,6 +46,12 @@
       "from": "output/_image_figma_acctoken_20261110_split",
       "to": "output/_image_figma_acctoken_20261110_split_r2",
       "reason": "truth correction 查看详情->看详情 (approved)"
+    },
+    {
+      "date": "2026-11-11",
+      "change": "reference.png replaced with the Kimi K3 variant; truth date corrected; full run re-baselined",
+      "previous_pipeline_run": "output/_image_figma_acctoken_20261110_split_r2",
+      "pipeline_run": "output/_image_figma_acctoken_20261111_kimi"
     }
   ]
 }
