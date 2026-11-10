@@ -23,7 +23,7 @@
     "输出 · 峰时",
     "¥1.16",
     "¥4.64",
-    "查看详情",
+    "看详情",
     "复制模型 ID",
     "Seedance 特惠款",
     "8.8折",
@@ -61,5 +61,16 @@
     "timezone": "Asia/Shanghai"
   },
   "derived_from": "output/_recovered_acctoken_models_20261108/tests/fixtures/image_to_slice_benchmark_2026-11-02/IMG-ACCTOKEN-MODELS-20261108.truth.json",
-  "derivation_note": "The supplied image differs from the recovered source on 0.4848% of pixels, confined to bbox [1328, 1100, 220, 80]; all critical texts and acceptance policy are unchanged."
+  "derivation_note": "The supplied image differs from the recovered source on 0.4848% of pixels, confined to bbox [1328, 1100, 220, 80]; all critical texts and acceptance policy are unchanged.",
+  "corrections": [
+    {
+      "date": "2026-11-10",
+      "field": "critical_texts",
+      "from": "查看详情",
+      "to": "看详情",
+      "reason": "transcription defect: the two card buttons in the frozen reference image read 看详情 → / 看详情 (visual crop inspection plus EasyOCR observations at 0.98 confidence); the original 查看详情 never appears in the image and could not be matched without hallucinating text",
+      "approved_by": "user (session approval 2026-11-10)",
+      "evidence": "docs/v2_mentor/20261110_suppression_split_handoff.md#8"
+    }
+  ]
 }

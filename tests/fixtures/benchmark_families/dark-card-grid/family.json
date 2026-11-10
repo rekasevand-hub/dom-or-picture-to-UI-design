@@ -7,13 +7,13 @@
     "note": "模型广场, 8-level depth, 52 autolayouts, Noto Serif SC + JetBrains Mono; 1:1 source size",
     "scale_to_reference": 1.0
   },
-  "pipeline_run": "output/_image_figma_acctoken_20261110_split",
+  "pipeline_run": "output/_image_figma_acctoken_20261110_split_r2",
   "baselines": {
     "within30_pct": 94.8717,
     "font_ratio_median": 0.906,
     "dy_median": 4.5,
     "critical": {
-      "matched": 26,
+      "matched": 27,
       "required": 27
     },
     "structure": {
@@ -24,7 +24,7 @@
       "text_count": 48,
       "image_fill_count": 9
     },
-    "registered_from": "output/_image_figma_acctoken_20261110_split"
+    "registered_from": "output/_image_figma_acctoken_20261110_split_r2"
   },
   "history": [
     {
@@ -38,6 +38,12 @@
       "from": "output/_image_figma_acctoken_20261110_colanchor",
       "to": "output/_image_figma_acctoken_20261110_split",
       "reason": "suppression split (Phase 3a emission-contract reinforcement)"
+    },
+    {
+      "date": "2026-11-10",
+      "from": "output/_image_figma_acctoken_20261110_split",
+      "to": "output/_image_figma_acctoken_20261110_split_r2",
+      "reason": "truth correction 查看详情->看详情 (approved)"
     }
   ]
 }
