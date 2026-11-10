@@ -869,6 +869,291 @@ def _anchor_table_rows(
     return [int(v) for v in boundaries], evidence  # type: ignore[arg-type]
 
 
+# Grounded boxes that belong to one table column share the cell's left inset;
+# observed left-edge spread inside a column is < 16px, 32px allows slack.
+_COLUMN_ABSORB_PX = 32
+# A grounded text left edge may sit a few pixels left of its column rule.
+_COLUMN_CONTAIN_EPS_PX = 8
+
+
+def _anchor_table_columns(
+    table: Mapping[str, Any],
+    inventory_items: Sequence[Mapping[str, Any]],
+    column_count: int,
+    candidates: Sequence[int],
+    y_span: tuple[int, int],
+) -> tuple[list[int] | None, dict[str, Any]]:
+    """Re-anchor table column boundaries to grounded text evidence (x axis).
+
+    Companion of :func:`_anchor_table_rows` for columns.  Line detection
+    usually finds the true vertical rules, but the contiguous window picked
+    by minimum gap-variance can be wrong: a chrome line crossing a text
+    column is kept while the true outer edge is dropped (light-table kept a
+    rule through the middle of a column and lost the right table edge, so
+    every cell of the last three columns rendered 100-240px off).
+
+    Grounded texts matching table headers/cells decide which candidate lines
+    are the table:
+
+    1. each column is anchored by the median left edge of its matched
+       grounded instances — unique table texts first (the narrowest box
+       localizes a text best; wide boxes tend to merge neighbouring
+       chrome), ambiguous texts may join an already-anchored column when
+       their left edge is within ``_COLUMN_ABSORB_PX`` of the anchor; the
+       median keeps a single misplaced box from dragging the anchor;
+    2. instances that do not vertically overlap the table span are ignored
+       (the same text often appears in page chrome far above the table);
+    3. anchors that break left-to-right order are dropped;
+    4. the boundary subsequence (not necessarily contiguous — chrome lines
+       may sit between real column rules) chosen by dynamic programming
+       maximizes the number of anchors contained in their own column
+       interval, tie-broken by the consistency of the anchor insets.
+
+    Consistency guard: the variance-preferred window is only overridden when
+    a strictly better subsequence exists, so tables the detector already
+    located keep their boundaries unchanged (FlexWeaver no-op).  Tables
+    without detected candidates are left to the existing fallbacks; no new
+    synthesis path is introduced here.
+    """
+
+    def _norm(value: Any) -> str:
+        return "".join(str(value or "").split()).casefold()
+
+    if column_count < 1:
+        return None, {}
+    span_low, span_high = int(y_span[0]), int(y_span[1])
+
+    grounded: dict[str, list[Mapping[str, Any]]] = {}
+    for item in inventory_items:
+        if str(item.get("kind") or "") not in {"text", "control"}:
+            continue
+        bbox = item.get("bbox")
+        text = _norm(item.get("text"))
+        if not text or not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+            continue
+        x, y, width, height = (int(v) for v in bbox)
+        if y + height < span_low or y > span_high:
+            continue
+        grounded.setdefault(text, []).append(item)
+
+    headers = [str(value) for value in table.get("headers") or []]
+    rows = [[str(value) for value in row] for row in table.get("rows") or []]
+    columns_texts: list[list[str]] = []
+    for column_index in range(column_count):
+        column: list[str] = []
+        if column_index < len(headers):
+            column.append(headers[column_index])
+        for row in rows:
+            if column_index < len(row):
+                column.append(row[column_index])
+        columns_texts.append(column)
+
+    occurrence: dict[str, int] = {}
+    for column in columns_texts:
+        for value in column:
+            key = _norm(value)
+            if key:
+                occurrence[key] = occurrence.get(key, 0) + 1
+
+    used: set[int] = set()
+    anchors: dict[int, int] = {}
+    # Per-column pool of matched left edges: the anchor is the pool median,
+    # so a single misplaced VLM box cannot drag the column anchor (observed:
+    # two date cells grounded ~700px left of their column).
+    pools: dict[int, list[int]] = {}
+
+    def _pool_anchor(column_index: int) -> int:
+        pool = sorted(pools.get(column_index) or [])
+        return pool[len(pool) // 2]
+
+    # Pass 1: unique table texts anchor their column.  Each unique text
+    # contributes the left edge of its narrowest grounded instance (tight
+    # boxes localize the text; padded boxes drag the estimate into
+    # neighbouring chrome); the column anchor is the median of the pool.
+    for column_index, column in enumerate(columns_texts):
+        for value in column:
+            key = _norm(value)
+            if not key or occurrence.get(key) != 1:
+                continue
+            matches = grounded.get(key) or []
+            if not matches:
+                continue
+            match = min(matches, key=lambda g: int(g["bbox"][2]))
+            if id(match) not in used:
+                used.add(id(match))
+                pools.setdefault(column_index, []).append(int(match["bbox"][0]))
+    anchors = {
+        column_index: _pool_anchor(column_index)
+        for column_index in pools
+        if pools[column_index]
+    }
+    if len(anchors) < 2:
+        return None, {}
+
+    # Pass 2: reject anchors that break left-to-right column order (a VLM
+    # box placed inside a neighbouring column folds the ordering).
+    def _monotonic(anchor_map: dict[int, int]) -> dict[int, int]:
+        kept: dict[int, int] = {}
+        last: int | None = None
+        for column_index in sorted(anchor_map):
+            left = anchor_map[column_index]
+            if last is not None and left <= last:
+                continue
+            kept[column_index] = left
+            last = left
+        return kept
+
+    anchors = _monotonic(anchors)
+    if len(anchors) < 2:
+        return None, {}
+
+    # Pass 3: ambiguous texts join an already-anchored column when their
+    # left edge is close to the anchor; every absorbed instance joins the
+    # pool so the median absorbs further outliers.
+    for column_index, column in enumerate(columns_texts):
+        if column_index not in anchors:
+            continue
+        for value in column:
+            key = _norm(value)
+            if not key or occurrence.get(key) == 1:
+                continue
+            for match in grounded.get(key) or []:
+                if id(match) in used:
+                    continue
+                left = int(match["bbox"][0])
+                if abs(left - anchors[column_index]) <= _COLUMN_ABSORB_PX:
+                    used.add(id(match))
+                    pools.setdefault(column_index, []).append(left)
+    anchors = _monotonic(
+        {
+            column_index: _pool_anchor(column_index)
+            for column_index in anchors
+        }
+    )
+    if len(anchors) < 2:
+        return None, {}
+
+    matched_ids = sorted(
+        str(item.get("id") or "")
+        for item in inventory_items
+        if id(item) in used
+    )
+
+    # Pass 4: pick the boundary subsequence among the candidate lines.  The
+    # variance window (status quo) is the consistency guard: override only
+    # when a strictly better subsequence exists.
+    values = sorted({int(value) for value in candidates})
+    if len(values) < column_count + 1:
+        return None, {
+            "source": "grounded-text-columns",
+            "status": "insufficient-candidates",
+            "anchored_column_count": len(anchors),
+            "column_anchors": {str(c): int(v) for c, v in anchors.items()},
+            "matched_item_ids": matched_ids,
+        }
+    variance = _select_contiguous_boundaries(
+        list(values), column_count + 1
+    )
+
+    def _contained(left: int, low: int, high: int) -> bool:
+        return low - _COLUMN_CONTAIN_EPS_PX <= left < high
+
+    def _score(window: list[int]) -> tuple[int, int]:
+        count = 0
+        inset = 0
+        for column_index, left in anchors.items():
+            if column_index + 1 >= len(window):
+                continue
+            if _contained(left, window[column_index], window[column_index + 1]):
+                count += 1
+                inset += abs(left - window[column_index])
+        return count, inset
+
+    # DP over (boundary index, candidate index): choose column_count+1
+    # boundaries from the candidates in order.  Value of a state is
+    # (contained anchors, -inset total) for the anchors whose interval is
+    # already closed; anchored columns whose interval is still open cannot
+    # be counted yet, so nothing is double scored.
+    count_needed = column_count + 1
+    neg_inf = (float("-inf"), 0.0)
+    dp: list[list[tuple[float, int]]] = [
+        [neg_inf] * len(values) for _ in range(count_needed)
+    ]
+    parent: list[list[int]] = [[-1] * len(values) for _ in range(count_needed)]
+    for start in range(len(values)):
+        dp[0][start] = (0.0, 0)
+    for boundary in range(count_needed - 1):
+        for low_idx, low_value in enumerate(values):
+            if dp[boundary][low_idx] == neg_inf:
+                continue
+            base_count, base_neg_inset = dp[boundary][low_idx]
+            anchor_left = anchors.get(boundary)
+            for high_idx in range(low_idx + 1, len(values)):
+                gained = 0
+                inset_penalty = 0
+                if anchor_left is not None and _contained(
+                    anchor_left, low_value, values[high_idx]
+                ):
+                    gained = 1
+                    inset_penalty = abs(anchor_left - low_value)
+                candidate_value = (
+                    base_count + gained,
+                    base_neg_inset - inset_penalty,
+                )
+                if candidate_value > dp[boundary + 1][high_idx]:
+                    dp[boundary + 1][high_idx] = candidate_value
+                    parent[boundary + 1][high_idx] = low_idx
+    best_end = max(
+        (idx for idx in range(len(values)) if dp[count_needed - 1][idx] != neg_inf),
+        key=lambda idx: dp[count_needed - 1][idx],
+        default=None,
+    )
+    if best_end is None:
+        return None, {
+            "source": "grounded-text-columns",
+            "status": "no-valid-subsequence",
+            "anchored_column_count": len(anchors),
+            "column_anchors": {str(c): int(v) for c, v in anchors.items()},
+            "matched_item_ids": matched_ids,
+        }
+    best: list[int] = []
+    idx = best_end
+    for boundary in range(count_needed - 1, -1, -1):
+        best.append(values[idx])
+        idx = parent[boundary][idx]
+        if idx < 0 and boundary > 0:
+            break
+    best.reverse()
+    if len(best) != count_needed:
+        return None, {
+            "source": "grounded-text-columns",
+            "status": "reconstruction-failed",
+            "matched_item_ids": matched_ids,
+        }
+
+    best_count, best_inset = _score(best)
+    variance_count, _variance_inset = _score(variance)
+    if best_count < 2 or best_count <= variance_count:
+        return None, {
+            "source": "grounded-text-columns-consistent-detected",
+            "contained": variance_count,
+            "best_contained": best_count,
+            "anchored_column_count": len(anchors),
+            "column_anchors": {str(c): int(v) for c, v in anchors.items()},
+            "matched_item_ids": matched_ids,
+        }
+    return best, {
+        "source": "grounded-text-columns",
+        "anchored_column_count": len(anchors),
+        "column_anchors": {str(c): int(v) for c, v in anchors.items()},
+        "matched_item_ids": matched_ids,
+        "contained": best_count,
+        "variance_contained": variance_count,
+        "inset_total": best_inset,
+        "x_boundaries": [int(v) for v in best],
+    }
+
+
 def build_geometry_manifest(bundle: Mapping[str, Any]) -> dict[str, Any]:
     """Project inventory and source regions into one top-left pixel geometry."""
     inventory = build_content_inventory(bundle)
@@ -962,7 +1247,9 @@ def build_geometry_manifest(bundle: Mapping[str, Any]) -> dict[str, Any]:
             )
         x_boundaries: list[int] = []
         y_boundaries: list[int] = []
+        raw_x_boundaries: list[int] = []
         anchor_evidence: dict[str, Any] | None = None
+        column_anchor_evidence: dict[str, Any] | None = None
         if isinstance(detected_grid, Mapping):
             source_x, source_y, _source_width, _source_height = detected_grid[
                 "source_bbox"
@@ -971,6 +1258,7 @@ def build_geometry_manifest(bundle: Mapping[str, Any]) -> dict[str, Any]:
                 source_x + int(value)
                 for value in detected_grid.get("x_boundaries") or []
             ]
+            raw_x_boundaries = list(x_boundaries)
             y_boundaries = [
                 source_y + int(value)
                 for value in detected_grid.get("y_boundaries") or []
@@ -1018,6 +1306,33 @@ def build_geometry_manifest(bundle: Mapping[str, Any]) -> dict[str, Any]:
                     anchored_y = None
         if anchored_y:
             y_boundaries = anchored_y
+        # Phase 2 (x): anchor the column boundary subsequence to grounded
+        # text evidence.  Line detection returns the raw candidate rules
+        # above; the contiguous window picked by gap-variance can keep a
+        # chrome line crossing a text column and drop the true outer edge,
+        # which displaces every cell of the affected columns.  Matched
+        # grounded texts (unique header/cell values, tightest box per text)
+        # choose the boundary subsequence whose column intervals contain
+        # the most anchors.  Consistency guard: the variance window is only
+        # overridden when a strictly better subsequence exists.
+        column_count = int(table["column_count"])
+        if len(y_boundaries) >= 2:
+            column_y_span = (int(y_boundaries[0]), int(y_boundaries[-1]))
+        else:
+            column_y_span = (
+                int(table["bbox"][1]),
+                int(table["bbox"][1] + table["bbox"][3]),
+            )
+        anchored_x, column_anchor_evidence = _anchor_table_columns(
+            table,
+            inventory["items"],
+            column_count,
+            raw_x_boundaries,
+            column_y_span,
+        )
+        if anchored_x:
+            x_boundaries = anchored_x
+        if anchored_y:
             if len(x_boundaries) >= 2:
                 table_bbox = [
                     x_boundaries[0],
@@ -1055,6 +1370,8 @@ def build_geometry_manifest(bundle: Mapping[str, Any]) -> dict[str, Any]:
         }
         if anchor_evidence:
             table_geometry["anchor"] = anchor_evidence
+        if column_anchor_evidence:
+            table_geometry["column_anchor"] = column_anchor_evidence
         if len(x_boundaries) >= 2 and len(y_boundaries) >= 2:
             table_geometry["grid"] = {
                 "x_boundaries": x_boundaries,
@@ -1062,7 +1379,6 @@ def build_geometry_manifest(bundle: Mapping[str, Any]) -> dict[str, Any]:
             }
         items.append(table_geometry)
         seen.add(("table", "table", tuple(table_bbox), table["id"]))
-        column_count = int(table["column_count"])
         row_count = int(table["row_count"]) + (1 if table["headers"] else 0)
         if len(x_boundaries) != column_count + 1:
             x_boundaries = [

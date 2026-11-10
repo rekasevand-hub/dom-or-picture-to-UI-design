@@ -7,23 +7,31 @@
     "note": "FLEXWEAVER reconstruction, absolute positioning, English semantic names",
     "scale_to_reference": 1.0
   },
-  "pipeline_run": "output/_image_figma_flexweaver_20261109_r6",
+  "pipeline_run": "output/_image_figma_flexweaver_20261110_colanchor",
   "baselines": {
-    "within30_pct": 91.3206,
-    "font_ratio_median": 1.014,
+    "within30_pct": 92.1893,
+    "font_ratio_median": 1.0,
     "dy_median": 1.0,
     "critical": {
       "matched": 24,
       "required": 24
     },
     "structure": {
-      "total_nodes": 164,
+      "total_nodes": 149,
       "max_depth": 1,
       "frame_count": 1,
       "vector_count": 0,
-      "text_count": 88,
-      "image_fill_count": 34
+      "text_count": 76,
+      "image_fill_count": 32
     },
-    "registered_from": "output/_image_figma_flexweaver_20261109_r6"
-  }
+    "registered_from": "output/_image_figma_flexweaver_20261110_colanchor"
+  },
+  "history": [
+    {
+      "date": "2026-11-10",
+      "from": "output/_image_figma_flexweaver_20261109_r6",
+      "to": "output/_image_figma_flexweaver_20261110_colanchor",
+      "reason": "column anchoring (Phase 2 x-axis)"
+    }
+  ]
 }

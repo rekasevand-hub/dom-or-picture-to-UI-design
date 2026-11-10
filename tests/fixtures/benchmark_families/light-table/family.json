@@ -7,23 +7,31 @@
     "note": "日工时确认 · 截图重建, absolute positioning, Chinese semantic names; built at 1920x1008 logical",
     "scale_to_reference": 1.325
   },
-  "pipeline_run": "output/_image_figma_timesheet_confirm_20261108_r7",
+  "pipeline_run": "output/_image_figma_timesheet_confirm_20261110_colanchor",
   "baselines": {
-    "within30_pct": 93.5031,
-    "font_ratio_median": 1.199,
-    "dy_median": 40.5,
+    "within30_pct": 94.0655,
+    "font_ratio_median": 1.186,
+    "dy_median": 42.4,
     "critical": {
       "matched": 29,
       "required": 29
     },
     "structure": {
-      "total_nodes": 214,
+      "total_nodes": 199,
       "max_depth": 1,
       "frame_count": 1,
       "vector_count": 0,
-      "text_count": 160,
+      "text_count": 145,
       "image_fill_count": 11
     },
-    "registered_from": "output/_image_figma_timesheet_confirm_20261108_r7"
-  }
+    "registered_from": "output/_image_figma_timesheet_confirm_20261110_colanchor"
+  },
+  "history": [
+    {
+      "date": "2026-11-10",
+      "from": "output/_image_figma_timesheet_confirm_20261108_r7",
+      "to": "output/_image_figma_timesheet_confirm_20261110_colanchor",
+      "reason": "column anchoring (Phase 2 x-axis)"
+    }
+  ]
 }

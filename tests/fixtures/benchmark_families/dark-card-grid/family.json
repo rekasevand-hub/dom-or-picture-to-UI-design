@@ -7,7 +7,7 @@
     "note": "模型广场, 8-level depth, 52 autolayouts, Noto Serif SC + JetBrains Mono; 1:1 source size",
     "scale_to_reference": 1.0
   },
-  "pipeline_run": "output/_image_figma_acctoken_20261109_r5",
+  "pipeline_run": "output/_image_figma_acctoken_20261110_colanchor",
   "baselines": {
     "within30_pct": 94.8873,
     "font_ratio_median": 0.906,
@@ -24,6 +24,14 @@
       "text_count": 47,
       "image_fill_count": 9
     },
-    "registered_from": "output/_image_figma_acctoken_20261109_r5"
-  }
+    "registered_from": "output/_image_figma_acctoken_20261110_colanchor"
+  },
+  "history": [
+    {
+      "date": "2026-11-10",
+      "from": "output/_image_figma_acctoken_20261109_r5",
+      "to": "output/_image_figma_acctoken_20261110_colanchor",
+      "reason": "column anchoring (Phase 2 x-axis)"
+    }
+  ]
 }
