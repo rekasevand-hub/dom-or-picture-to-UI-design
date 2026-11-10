@@ -770,6 +770,109 @@ class ImageContractTests(unittest.TestCase):
         self.assertIn("Orders", [item["text"] for item in merged["elements"]])
         self.assertEqual(report["added_count"], 1)
 
+    def test_ocr_identical_text_at_another_type_scale_is_kept(self) -> None:
+        """The nav label and the h1 may share a string; both must survive.
+
+        dark-card-grid: ``模型广场`` is a 130x42 menu item at y=35 and a
+        395x120 heading at y=251.  Suppressing the second instance by text
+        alone silently removes the selected nav tab from the design -- and the
+        critical-text gate stays green because the heading still matches.
+        """
+        graph = {
+            "image": "sample.png",
+            "image_w": 2544,
+            "image_h": 1336,
+            "route": "grounding",
+            "containers": [],
+            "elements": [
+                {
+                    "id": 1,
+                    "bbox": [90, 251, 395, 120],
+                    "type": "text",
+                    "text": "模型广场",
+                    "source": "grounding",
+                }
+            ],
+            "provenance": {"route": "grounding"},
+        }
+        observations = [
+            {"text": "模型广场", "bbox": [561, 35, 130, 42], "confidence": 0.96}
+        ]
+
+        merged, report = merge_ocr_candidates(graph, observations)
+
+        texts = [item["text"] for item in merged["elements"]]
+        self.assertEqual(texts.count("模型广场"), 2)
+        self.assertEqual(report["added_count"], 1)
+
+    def test_ocr_identical_text_same_scale_elsewhere_is_still_suppressed(self) -> None:
+        """Per-row repeats keep one candidate: table/form synthesis owns them.
+
+        light-table repeats ``(选填)`` in eight rows at the same 30-32 px size.
+        Adding every instance here would double-emit what the table grid
+        already produces, so identical text at one type scale stays a
+        duplicate even when the boxes do not overlap.
+        """
+        graph = {
+            "image": "sample.png",
+            "image_w": 2544,
+            "image_h": 1336,
+            "route": "grounding",
+            "containers": [],
+            "elements": [
+                {
+                    "id": 1,
+                    "bbox": [948, 846, 72, 30],
+                    "type": "text",
+                    "text": "(选填)",
+                    "source": "grounding",
+                }
+            ],
+            "provenance": {"route": "grounding"},
+        }
+        observations = [
+            {"text": "(选填)", "bbox": [948, 926, 72, 32], "confidence": 0.97}
+        ]
+
+        merged, report = merge_ocr_candidates(graph, observations)
+
+        self.assertEqual(len(merged["elements"]), 1)
+        self.assertEqual(report["added_count"], 0)
+        self.assertEqual(report["skipped"][0]["reason"], "already-covered")
+
+    def test_ocr_identical_text_jittered_box_is_still_suppressed(self) -> None:
+        """Same place, slightly different box: one physical label, not two.
+
+        Partially overlapping boxes (not nested -- a nested one is handled by
+        the full-line replacement branch) still describe one label; the centre
+        distance is a fraction of the box width.
+        """
+        graph = {
+            "image": "sample.png",
+            "image_w": 2544,
+            "image_h": 1336,
+            "route": "grounding",
+            "containers": [],
+            "elements": [
+                {
+                    "id": 1,
+                    "bbox": [200, 200, 60, 28],
+                    "type": "text",
+                    "text": "控制台",
+                    "source": "grounding",
+                }
+            ],
+            "provenance": {"route": "grounding"},
+        }
+        observations = [
+            {"text": "控制台", "bbox": [215, 202, 60, 30], "confidence": 0.98}
+        ]
+
+        merged, report = merge_ocr_candidates(graph, observations)
+
+        self.assertEqual(len(merged["elements"]), 1)
+        self.assertEqual(report["added_count"], 0)
+
     def test_ocr_full_line_replaces_covered_cv_text_fragments(self) -> None:
         graph = {
             "image": "sample.png",

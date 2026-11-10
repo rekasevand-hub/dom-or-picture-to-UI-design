@@ -502,7 +502,15 @@ def merge_ocr_candidates(
                 current for current in existing if current["key"] not in replaced_keys
             ]
         if any(
-            normalized == current["normalized"]
+            # Identical text is only "already covered" when it is the same
+            # element seen twice: overlapping boxes, or the same type scale.
+            # A menu label and a hero heading legitimately share a string
+            # (``模型广场`` sits at [561, 35] in the nav and at [90, 251] as the
+            # h1); dropping it by text alone loses the nav item entirely.
+            (
+                normalized == current["normalized"]
+                and _same_text_same_element(line["bbox"], current["bbox"])
+            )
             or (
                 normalized in current["normalized"]
                 and _box_coverage(line["bbox"], current["bbox"]) >= 0.25
@@ -3838,6 +3846,60 @@ def _box_coverage(
     intersection = max(0.0, right - left) * max(0.0, bottom - top)
     inner_area = max(1.0, iw * ih)
     return intersection / inner_area
+
+
+def _same_text_same_element(
+    line_bbox: tuple[int, int, int, int] | list[int],
+    existing_bbox: tuple[int, int, int, int] | list[int],
+    *,
+    coverage_threshold: float = 0.5,
+    center_ratio: float = 0.75,
+    scale_ratio: float = 1.5,
+) -> bool:
+    """Decide whether two identical strings are the same element seen twice.
+
+    Three structural tests, in order of certainty:
+
+    * centre distance -- OCR re-reads the same glyphs within a fraction of
+      their own width (``控制台``: centres 12 px apart on a 55 px box), while a
+      repeated string elsewhere on the page does not (``模型广场``: 427 px
+      apart);
+    * overlap -- boxes for one label still cover each other;
+    * type scale -- a page may repeat a string at another hierarchy level (a
+      nav label and the h1 ``模型广场`` on dark-card-grid: 42 px vs 120 px box
+      height, no overlap, centres far apart).  Repeated labels inside tables
+      and forms share one scale, so a height ratio under ``scale_ratio`` still
+      reads as the same element -- that keeps per-row duplicates (``(选填)``
+      x8, ``石敏妤`` x2) out of the candidate pool, which is what the
+      downstream table and form synthesis depends on.
+
+    Args:
+        line_bbox: Candidate OCR line ``[x, y, w, h]``.
+        existing_bbox: Element already in the graph.
+        coverage_threshold: Fraction of the line inside the existing box.
+        center_ratio: Centre distance, in min-box-widths, that counts as same.
+        scale_ratio: Height ratio at which a repeat counts as another level.
+
+    Returns:
+        ``True`` when the line is a duplicate of the existing element.
+    """
+    import math
+
+    try:
+        lx, ly, lw, lh = (float(value) for value in line_bbox)
+        ex, ey, ew, eh = (float(value) for value in existing_bbox)
+    except (TypeError, ValueError):
+        return True
+    if lw <= 0 or lh <= 0 or ew <= 0 or eh <= 0:
+        return True
+    distance = math.hypot((lx + lw / 2) - (ex + ew / 2), (ly + lh / 2) - (ey + eh / 2))
+    if distance <= center_ratio * min(lw, ew):
+        return True
+    if _box_coverage(line_bbox, existing_bbox) >= coverage_threshold:
+        return True
+    taller = max(lh, eh)
+    shorter = min(lh, eh)
+    return taller / shorter < scale_ratio
 
 
 def _refine_image_box(
