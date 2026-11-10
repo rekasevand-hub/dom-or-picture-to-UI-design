@@ -7,7 +7,7 @@
     "note": "FLEXWEAVER reconstruction, absolute positioning, English semantic names",
     "scale_to_reference": 1.0
   },
-  "pipeline_run": "output/_image_figma_flexweaver_20261110_colanchor",
+  "pipeline_run": "output/_image_figma_flexweaver_20261110_split",
   "baselines": {
     "within30_pct": 92.1893,
     "font_ratio_median": 1.0,
@@ -24,7 +24,7 @@
       "text_count": 76,
       "image_fill_count": 32
     },
-    "registered_from": "output/_image_figma_flexweaver_20261110_colanchor"
+    "registered_from": "output/_image_figma_flexweaver_20261110_split"
   },
   "history": [
     {
@@ -32,6 +32,12 @@
       "from": "output/_image_figma_flexweaver_20261109_r6",
       "to": "output/_image_figma_flexweaver_20261110_colanchor",
       "reason": "column anchoring (Phase 2 x-axis)"
+    },
+    {
+      "date": "2026-11-10",
+      "from": "output/_image_figma_flexweaver_20261110_colanchor",
+      "to": "output/_image_figma_flexweaver_20261110_split",
+      "reason": "suppression split (Phase 3a emission-contract reinforcement)"
     }
   ]
 }

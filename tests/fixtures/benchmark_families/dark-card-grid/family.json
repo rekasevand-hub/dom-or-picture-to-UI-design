@@ -7,24 +7,24 @@
     "note": "模型广场, 8-level depth, 52 autolayouts, Noto Serif SC + JetBrains Mono; 1:1 source size",
     "scale_to_reference": 1.0
   },
-  "pipeline_run": "output/_image_figma_acctoken_20261110_colanchor",
+  "pipeline_run": "output/_image_figma_acctoken_20261110_split",
   "baselines": {
-    "within30_pct": 94.8873,
+    "within30_pct": 94.8717,
     "font_ratio_median": 0.906,
     "dy_median": 4.5,
     "critical": {
-      "matched": 25,
+      "matched": 26,
       "required": 27
     },
     "structure": {
-      "total_nodes": 74,
+      "total_nodes": 75,
       "max_depth": 1,
       "frame_count": 1,
       "vector_count": 0,
-      "text_count": 47,
+      "text_count": 48,
       "image_fill_count": 9
     },
-    "registered_from": "output/_image_figma_acctoken_20261110_colanchor"
+    "registered_from": "output/_image_figma_acctoken_20261110_split"
   },
   "history": [
     {
@@ -32,6 +32,12 @@
       "from": "output/_image_figma_acctoken_20261109_r5",
       "to": "output/_image_figma_acctoken_20261110_colanchor",
       "reason": "column anchoring (Phase 2 x-axis)"
+    },
+    {
+      "date": "2026-11-10",
+      "from": "output/_image_figma_acctoken_20261110_colanchor",
+      "to": "output/_image_figma_acctoken_20261110_split",
+      "reason": "suppression split (Phase 3a emission-contract reinforcement)"
     }
   ]
 }

@@ -129,6 +129,70 @@ def _text_owner_priority(node: Mapping[str, Any]) -> tuple[int, int, int, int]:
     )
 
 
+def _split_remaining_bbox(
+    node_bbox: list[int],
+    replacement_bbox: list[int],
+) -> list[int]:
+    """Estimate the region of a suppressed box its replacement does not own.
+
+    When a merged text owner is suppressed in favour of a narrower owner, the
+    leftover text lives in the part of the merged box away from the
+    replacement.  The dominant offset axis decides the split: the replacement
+    sitting left/right splits off the opposite horizontal band, top/bottom
+    the opposite vertical band.  Coarse by design — the native-text
+    calibration loop corrects sizes afterwards; only the position matters at
+    this stage.
+    """
+    nx, ny, nw, nh = (int(v) for v in node_bbox)
+    rx, ry, rw, rh = (int(v) for v in replacement_bbox)
+    horizontal_offset = abs((rx + rw / 2.0) - (nx + nw / 2.0)) / max(1, nw)
+    vertical_offset = abs((ry + rh / 2.0) - (ny + nh / 2.0)) / max(1, nh)
+    if horizontal_offset >= vertical_offset:
+        replacement_left = (rx + rw / 2.0) < (nx + nw / 2.0)
+        if replacement_left:
+            return [max(nx, rx + rw), ny, max(1, nx + nw - (rx + rw)), nh]
+        return [nx, ny, max(1, min(nw, rx - nx)), nh]
+    replacement_above = (ry + rh / 2.0) < (ny + nh / 2.0)
+    if replacement_above:
+        return [nx, max(ny, ry + rh), nw, max(1, ny + nh - (ry + rh))]
+    return [nx, ny, nw, max(1, min(nh, ry - ny))]
+
+
+def _suppressed_leftover_text(
+    suppressed_text: Any,
+    replacement_text: Any,
+) -> str:
+    """Visible text a suppressed owner carries beyond its replacement.
+
+    Returns the leftover when the replacement's text is fully contained in
+    the suppressed text with at least two characters to spare — e.g.
+    ``'本期好价 折扣都按官方价实时算'`` replaced by ``'折扣都按官方价实时算'``
+    leaves ``'本期好价'``.  Containment is not OCR noise: the leftover is
+    visible copy that must survive the suppression.  Returns ``''`` for
+    everything else (equivalent texts, noise variants, unrelated texts).
+    The original spacing is preferred; normalized text is the fallback when
+    the raw replacement is not a literal substring.
+    """
+    suppressed_raw = str(suppressed_text or "").strip()
+    replacement_raw = str(replacement_text or "").strip()
+    suppressed_normalized = normalize_match_text(suppressed_text)
+    replacement_normalized = normalize_match_text(replacement_text)
+    if (
+        not suppressed_normalized
+        or not replacement_normalized
+        or len(suppressed_normalized) <= len(replacement_normalized) + 1
+        or replacement_normalized not in suppressed_normalized
+    ):
+        return ""
+    if replacement_raw and replacement_raw in suppressed_raw:
+        leftover = suppressed_raw.replace(replacement_raw, "", 1).strip()
+    else:
+        leftover = suppressed_normalized.replace(
+            replacement_normalized, "", 1
+        ).strip()
+    return leftover if len(normalize_match_text(leftover)) >= 2 else ""
+
+
 def _suppress_overlapping_text_owners(
     accepted: list[dict[str, Any]],
     suppressed: list[dict[str, Any]],
@@ -187,6 +251,34 @@ def _suppress_overlapping_text_owners(
             None,
         )
         if conflict is not None:
+            # Emission-contract reinforcement: a suppressed owner may carry
+            # visible text beyond its replacement (a merged title+subtitle
+            # label replaced by the subtitle alone loses the title).  The
+            # leftover survives as a derived owner on the region of the
+            # suppressed box the replacement does not cover.
+            leftover = _suppressed_leftover_text(
+                node.get("text"), conflict.get("text")
+            )
+            if leftover:
+                split = copy.deepcopy(node)
+                split["content_ref"] = f"{node['content_ref']}:split"
+                split["text"] = leftover
+                split["bbox"] = _split_remaining_bbox(
+                    node["bbox"], conflict["bbox"]
+                )
+                # The split owner is new: it must join ``accepted`` so the
+                # final retention filter (which scans ``accepted``) keeps it.
+                accepted.append(split)
+                kept.append(split)
+                removed[str(node["content_ref"])] = {
+                    "content_ref": str(node["content_ref"]),
+                    "source_ref": str(node.get("source_ref") or ""),
+                    "reason": "overlapping-text-owner-split",
+                    "replacement_ref": conflict["content_ref"],
+                    "split_ref": split["content_ref"],
+                    "leftover_text": leftover,
+                }
+                continue
             removed[str(node["content_ref"])] = {
                 "content_ref": str(node["content_ref"]),
                 "source_ref": str(node.get("source_ref") or ""),

@@ -111,6 +111,15 @@ def suppression_allowed(suppressed: Any, replacement: Any) -> bool:
     )
 
 
+def _suppressed_leftover_after(suppressed_text: Any, replacement_text: Any) -> str:
+    """Normalized text remaining after removing the replacement substring."""
+    suppressed = normalize_match_text(suppressed_text)
+    replacement = normalize_match_text(replacement_text)
+    if not suppressed or not replacement or replacement not in suppressed:
+        return ""
+    return suppressed.replace(replacement, "", 1).strip()
+
+
 def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
@@ -229,7 +238,12 @@ def audit_emission(
 
     # Invariant 3: a text-bearing suppression must point to an existing owner
     # carrying equivalent visible text.  This is the defect that silently
-    # dropped labels such as '本期好价', '数据看板' and '钱包'.
+    # dropped labels such as '本期好价', '数据看板' and '钱包'.  When the
+    # suppressed text contains the replacement plus visible leftover (a
+    # merged label replaced by its subtitle), the suppression is legitimate
+    # only while that leftover survives as the derived split owner —
+    # regardless of the OCR-variant similarity that allowed the suppression
+    # in the first place.
     for ref, row in suppressed_by_ref.items():
         item = items_by_ref.get(ref)
         if not _is_text_bearing(item):
@@ -242,6 +256,29 @@ def audit_emission(
             replacement_element
         )
         replacement = {**replacement_element, **replacement_node}
+        leftover = _suppressed_leftover_after(text, replacement_text)
+        if len(leftover) >= 2:
+            split_ref = _ref(row, "split_ref")
+            split_node = nodes_by_ref.get(split_ref) or {}
+            split_text = _text_of(split_node)
+            if not split_node or not suppression_text_equivalent(
+                split_text, leftover
+            ):
+                violations.append(
+                    {
+                        "type": "unequivalent-suppression",
+                        "contentRef": ref,
+                        "text": text,
+                        "reason": str(row.get("reason") or ""),
+                        "replacementRef": replacement_ref,
+                        "replacementText": replacement_text,
+                        "detail": (
+                            "suppression swallows visible leftover "
+                            f"{leftover!r} that has no surviving split owner"
+                        ),
+                    }
+                )
+            continue
         if not replacement_ref or not (replacement_node or replacement_element):
             violations.append(
                 {
