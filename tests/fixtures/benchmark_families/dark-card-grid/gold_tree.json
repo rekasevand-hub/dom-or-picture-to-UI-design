@@ -2254,12 +2254,12 @@
                   "type": "FRAME",
                   "x": 0,
                   "y": 0,
-                  "width": 514,
+                  "width": 532,
                   "height": 40,
                   "absolute": {
                     "x": 26408,
                     "y": -1440,
-                    "width": 514,
+                    "width": 532,
                     "height": 40
                   },
                   "fills": [],
@@ -2300,7 +2300,7 @@
                   "bounds": {
                     "x": 0,
                     "y": 0,
-                    "width": 514,
+                    "width": 532,
                     "height": 40
                   },
                   "layoutSnapshot": {
@@ -2393,12 +2393,12 @@
                       "type": "TEXT",
                       "x": 30,
                       "y": 4.5,
-                      "width": 484,
+                      "width": 502,
                       "height": 31,
                       "absolute": {
                         "x": 26438,
                         "y": -1435.5,
-                        "width": 484,
+                        "width": 502,
                         "height": 31
                       },
                       "fills": [
@@ -2423,7 +2423,7 @@
                       "gridColumnSpan": 1,
                       "gridChildHorizontalAlign": "AUTO",
                       "gridChildVerticalAlign": "AUTO",
-                      "characters": "价目牌 · 82 个模型 · 11 月 8 日更新",
+                      "characters": "价目牌 · 82 个模型 · 11 月 11 日更新",
                       "fontName": {
                         "family": "Noto Sans SC",
                         "style": "Bold",
@@ -2437,7 +2437,7 @@
                       "bounds": {
                         "x": 30,
                         "y": 4.5,
-                        "width": 484,
+                        "width": 502,
                         "height": 31
                       },
                       "layoutSnapshot": {

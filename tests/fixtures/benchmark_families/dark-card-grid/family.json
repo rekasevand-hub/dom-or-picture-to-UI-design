@@ -10,10 +10,10 @@
   "pipeline_run": "output/_image_figma_acctoken_20261111_kimi",
   "baselines": {
     "within30_pct": 94.821,
-    "ink_ratio_median": 0.938,
-    "ink_ratio_pairs": 39,
+    "ink_ratio_median": 0.944,
+    "ink_ratio_pairs": 40,
     "font_ratio_median": 0.911,
-    "dy_median": 6.0,
+    "dy_median": 4.5,
     "critical": {
       "matched": 27,
       "required": 27
