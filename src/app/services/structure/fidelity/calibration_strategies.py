@@ -20,7 +20,9 @@ from src.app.services.structure.fidelity.text_calibration import (
     apply_nav_row_weight,
     clamp_table_cell_font_outliers,
     drop_implausible_duplicate_owners,
+    drop_text_fragment_images,
     resolve_same_slot_conflicts,
+    synthesize_selection_plate,
     calibrate_control_fonts,
     calibrate_form_fonts_from_render,
     calibrate_form_positions_from_render,
@@ -101,6 +103,18 @@ def _display_weight(ctx: CalibrationContext) -> tuple[dict[str, Any], dict[str, 
 
 def _nav_weight(ctx: CalibrationContext) -> tuple[dict[str, Any], dict[str, Any]]:
     return apply_nav_row_weight(ctx.design)
+
+
+def _selection_plate(
+    ctx: CalibrationContext,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    return synthesize_selection_plate(ctx.design, ctx.image)
+
+
+def _drop_fragment_images(
+    ctx: CalibrationContext,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    return drop_text_fragment_images(ctx.design)
 
 
 def _drop_duplicate_owners(
@@ -259,6 +273,26 @@ CALIBRATION_GROUPS: tuple[CalibrationGroup, ...] = (
         name="font-initial",
         render_suffix="figma_font_calibrated",
         strategies=(
+            # A logo crop keeps whatever pixels fell inside the detector box,
+            # so it can carry the first letters of the label beside it.  Drop
+            # such crops before anything else looks at the element list.
+            _strategy(
+                "fragment-image",
+                (),
+                (),
+                _drop_fragment_images,
+                always=True,
+            ),
+            # A selected header tab is a filled shape the asset pass does not
+            # see; recover it from the screenshot so the label is not left
+            # floating on the page background.
+            _strategy(
+                "selection-plate",
+                (),
+                (),
+                _selection_plate,
+                always=True,
+            ),
             # A phantom owner cannot hold its own text and repeats a roomier
             # owner elsewhere (the nav-row search box on dark-card-grid); drop
             # it before any weight rule makes it more visible.

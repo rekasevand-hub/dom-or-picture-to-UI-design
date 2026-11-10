@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import statistics
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 from src.app.services.structure.fidelity.contracts import normalize_match_text
@@ -1579,6 +1580,121 @@ def apply_display_weight_by_scale(
 
 
 
+def drop_text_fragment_images(
+    design: Mapping[str, Any],
+    *,
+    overlap_ratio: float = 0.3,
+    height_band: tuple[float, float] = (0.5, 1.6),
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Remove small crops that are fragments of the text beside them.
+
+    The asset pass crops what the detector box surrounds, and the box does not
+    know about glyphs: a 102x43 crop of a logo carries the first letters of the
+    label next to it.  The label is emitted as text too, so the two copies stack
+    and the render reads ``QweQwen3.8 Flash``, ``Kimii`` or ``勾行成功``.
+
+    A crop is a fragment of a text run when all of these hold:
+
+    * it is narrower than the run and its right edge falls inside the run's
+      horizontal span -- a badge or button background surrounds its label, so
+      it ends past the text, and a full-bleed image is wider than any label;
+    * the boxes overlap by at least ``overlap_ratio`` of the smaller one;
+    * both sit on the same line, i.e. their height ratio stays inside
+      ``height_band`` (a 43 px crop of a 20 px price is not the same run).
+
+    Dropping keeps the complete text and costs any icon the same crop carried.
+    No structural signal separates "icon" from "icon plus three letters" inside
+    one crop, and doubled glyphs read far worse than a missing mark.
+
+    Returns:
+        ``(calibrated_design, report)``.
+    """
+    calibrated = copy.deepcopy(dict(design))
+    elements = [
+        element
+        for element in calibrated.get("elements") or []
+        if isinstance(element, dict)
+    ]
+    texts = [
+        element
+        for element in elements
+        if str(element.get("type") or "") in {"text", "button", "input"}
+        and str(element.get("text") or "").strip()
+        and float(element.get("width") or 0) > 0
+        and float(element.get("height") or 0) > 0
+    ]
+    dropped: list[dict[str, Any]] = []
+    remove_ids: set[int] = set()
+    for element in elements:
+        if str(element.get("type") or "") != "image":
+            continue
+        try:
+            image_box = _box_of(element)
+        except (TypeError, ValueError):
+            continue
+        image_w = image_box[2] - image_box[0]
+        image_h = image_box[3] - image_box[1]
+        if image_w <= 0 or image_h <= 0:
+            continue
+        best: tuple[float, dict[str, Any]] | None = None
+        for text in texts:
+            if id(text) in remove_ids:
+                continue
+            try:
+                text_box = _box_of(text)
+            except (TypeError, ValueError):
+                continue
+            text_w = text_box[2] - text_box[0]
+            text_h = text_box[3] - text_box[1]
+            if text_w <= 0 or text_h <= 0:
+                continue
+            if image_w >= text_w or image_box[2] >= text_box[2]:
+                continue
+            ratio = max(image_h / text_h, text_h / image_h)
+            if ratio < height_band[0] or ratio > height_band[1]:
+                continue
+            overlap_w = min(image_box[2], text_box[2]) - max(image_box[0], text_box[0])
+            overlap_h = min(image_box[3], text_box[3]) - max(image_box[1], text_box[1])
+            if overlap_w <= 0 or overlap_h <= 0:
+                continue
+            overlap = overlap_w * overlap_h
+            smaller = min(image_w * image_h, text_w * text_h)
+            covered = overlap / smaller
+            if covered < overlap_ratio:
+                continue
+            if best is None or covered > best[0]:
+                best = (covered, text)
+        if best is None:
+            continue
+        covered, text = best
+        remove_ids.add(id(element))
+        dropped.append(
+            {
+                "contentRef": element.get("contentRef") or None,
+                "bbox": [round(value, 1) for value in image_box],
+                "overlapped_text": str(text.get("text") or "")[:48],
+                "overlap_ratio": round(covered, 3),
+            }
+        )
+    if dropped:
+        calibrated["elements"] = [
+            element for element in elements if id(element) not in remove_ids
+        ]
+    return calibrated, {
+        "schema_version": "grounding-fragment-image/1.0",
+        "status": "applied" if dropped else "not-needed",
+        "adjusted_count": len(dropped),
+        "dropped": dropped,
+    }
+
+
+def _box_of(element: Mapping[str, Any]) -> tuple[float, float, float, float]:
+    """``(left, top, right, bottom)`` of a design element."""
+    x = float(element.get("x") or 0)
+    y = float(element.get("y") or 0)
+    return (x, y, x + float(element.get("width") or 0), y + float(element.get("height") or 0))
+
+
 def apply_adjudicated_conflicts(
     design: Mapping[str, Any],
     decisions: list[Mapping[str, Any]],
@@ -2744,3 +2860,215 @@ def calibrate_ink_convergence_from_render(
         "adjustments": adjustments,
     }
     return design, report
+
+
+def synthesize_selection_plate(
+    design: Mapping[str, Any],
+    image_path: str | Path,
+    *,
+    top_band_ratio: float = 0.10,
+    pad: int = 22,
+    color_distance: float = 40.0,
+    min_fill_ratio: float = 0.45,
+    radius: int = 10,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Emit the coloured plate behind a selected header tab.
+
+    A selected tab is a filled shape, and the asset pass does not see it: on
+    dark-card-grid the red pill behind ``模型广场`` (x 544-711, y 23-86) is not
+    one of the nine assets, so the label renders as plain text on the page
+    background.  The header is also the region with the worst chrome error, so
+    the missing plate is measurable, not cosmetic.
+
+    The plate is recoverable from pixels without detecting a component: for a
+    label in the header band, take a window around its box, drop the page
+    background, and look at what is left.  A plate fills most of that window
+    with one colour and shows on both sides of the label; an icon beside the
+    label does neither.  The plate's own bounding box comes from the connected
+    run of that colour, so rounded corners and padding are kept as drawn.
+
+    Emitted as a ``rectangle`` with ``paintDepth = 0``, inserted just before the
+    label so every renderer paints it underneath.
+
+    Args:
+        design: Image design with ``elements`` and ``canvas``.
+        image_path: Source screenshot the crop colours are read from.
+        top_band_ratio: Fraction of canvas height that counts as the header.
+        pad: Pixels searched around the label box on each side.
+        color_distance: Per-channel distance from the background that counts as
+            "not background".
+        min_fill_ratio: Share of the window one colour must cover.
+        radius: Corner radius written on the emitted plate.
+
+    Returns:
+        ``(calibrated_design, report)``.
+    """
+    import numpy as np
+    from PIL import Image
+
+    calibrated = copy.deepcopy(dict(design))
+    report: dict[str, Any] = {
+        "schema_version": "grounding-selection-plate/1.0",
+        "status": "not-needed",
+        "adjusted_count": 0,
+        "plates": [],
+        "skipped": [],
+    }
+    elements = [
+        element
+        for element in calibrated.get("elements") or []
+        if isinstance(element, dict)
+    ]
+    canvas = calibrated.get("canvas")
+    height = 0.0
+    if isinstance(canvas, Mapping):
+        raw = canvas.get("height")
+        if isinstance(raw, (int, float)):
+            height = float(raw)
+    if height <= 0:
+        return calibrated, report
+    try:
+        with Image.open(image_path) as handle:
+            pixels = np.asarray(handle.convert("RGB")).astype(np.int16)
+    except (OSError, ValueError):
+        return calibrated, report
+    image_h, image_w = pixels.shape[:2]
+    band_bottom = int(min(image_h, max(1.0, height * top_band_ratio)))
+
+    band = pixels[:band_bottom]
+    colors, counts = np.unique(band.reshape(-1, 3), axis=0, return_counts=True)
+    background = colors[int(counts.argmax())].astype(np.int16)
+
+    def _component_box(
+        window: np.ndarray, colour: np.ndarray, origin: tuple[int, int]
+    ) -> tuple[int, int, int, int] | None:
+        mask = np.abs(window - colour).max(axis=2) <= 20
+        if mask.sum() < 200:
+            return None
+        rows = np.flatnonzero(mask.any(axis=1))
+        cols = np.flatnonzero(mask.any(axis=0))
+        return (
+            origin[0] + int(cols[0]),
+            origin[1] + int(rows[0]),
+            origin[0] + int(cols[-1]) + 1,
+            origin[1] + int(rows[-1]) + 1,
+        )
+
+    prepared: list[dict[str, Any]] = []
+    for element in elements:
+        if str(element.get("type") or "") not in {"text", "button"}:
+            continue
+        text = str(element.get("text") or "").strip()
+        if not text:
+            continue
+        try:
+            left, top, right, bottom = _box_of(element)
+        except (TypeError, ValueError):
+            continue
+        if right <= left or bottom <= top:
+            continue
+        if (top + bottom) / 2.0 > band_bottom:
+            continue
+        x0 = max(0, int(left) - pad)
+        y0 = max(0, int(top) - pad)
+        x1 = min(image_w, int(right) + pad)
+        y1 = min(image_h, int(bottom) + pad)
+        if x1 - x0 < 8 or y1 - y0 < 8:
+            continue
+        window = pixels[y0:y1, x0:x1]
+        distance = np.abs(window - background).max(axis=2)
+        painted = distance > color_distance
+        if painted.mean() < min_fill_ratio:
+            report["skipped"].append({"text": text[:24], "reason": "no filled area"})
+            continue
+        colour = np.median(window[painted], axis=0).astype(np.int16)
+        same = np.abs(window - colour).max(axis=2) <= 20
+        if same.mean() < min_fill_ratio:
+            report["skipped"].append({"text": text[:24], "reason": "colour not dominant"})
+            continue
+        # A plate surrounds its label: sample a strip left of and right of it.
+        left_strip = pixels[y0:y1, max(0, int(left) - pad) : max(1, int(left) - 2)]
+        right_strip = pixels[y0:y1, min(image_w - 1, int(right) + 2) : x1]
+        edges = 0
+        for strip in (left_strip, right_strip):
+            if strip.size and (np.abs(strip - colour).max(axis=2) <= 20).mean() >= 0.3:
+                edges += 1
+        if edges < 2:
+            report["skipped"].append({"text": text[:24], "reason": "label not inside plate"})
+            continue
+        box = _component_box(window, colour, (x0, y0))
+        if box is None:
+            continue
+        plate_w = box[2] - box[0]
+        plate_h = box[3] - box[1]
+        if plate_w * plate_h < 1.5 * (right - left) * (bottom - top):
+            report["skipped"].append({"text": text[:24], "reason": "plate smaller than label"})
+            continue
+        if box[0] > left + 2 or box[2] < right - 2:
+            report["skipped"].append({"text": text[:24], "reason": "plate does not cover label"})
+            continue
+        prepared.append(
+            {
+                "element": element,
+                "text": text,
+                "box": box,
+                "colour": "#%02X%02X%02X"
+                % (int(colour[0]), int(colour[1]), int(colour[2])),
+            }
+        )
+
+    if not prepared:
+        return calibrated, report
+
+    existing_boxes = [
+        _box_of(element)
+        for element in elements
+        if str(element.get("type") or "") in {"image", "rectangle"}
+    ]
+    for item in prepared:
+        box = item["box"]
+        covered = False
+        for other in existing_boxes:
+            width = min(box[2], other[2]) - max(box[0], other[0])
+            height_ = min(box[3], other[3]) - max(box[1], other[1])
+            if width <= 0 or height_ <= 0:
+                continue
+            if width * height_ / ((box[2] - box[0]) * (box[3] - box[1])) >= 0.8:
+                covered = True
+                break
+        if covered:
+            report["skipped"].append({"text": item["text"][:24], "reason": "already emitted"})
+            continue
+        element = item["element"]
+        plate = {
+            "type": "rectangle",
+            "x": float(box[0]),
+            "y": float(box[1]),
+            "width": float(box[2] - box[0]),
+            "height": float(box[3] - box[1]),
+            "text": "",
+            "style": {
+                "fillColor": item["colour"],
+                "borderRadius": int(min(radius, (box[3] - box[1]) // 2)),
+            },
+            "role": "selection-plate",
+            "name": "selection-plate",
+            "contentRef": None,
+            "paintDepth": 0,
+        }
+        if element.get("sceneOwnerId"):
+            plate["sceneOwnerId"] = element["sceneOwnerId"]
+        index = elements.index(element)
+        elements.insert(index, plate)
+        report["plates"].append(
+            {
+                "text": item["text"][:24],
+                "bbox": [float(value) for value in box],
+                "fillColor": item["colour"],
+            }
+        )
+    if report["plates"]:
+        calibrated["elements"] = elements
+        report["status"] = "applied"
+        report["adjusted_count"] = len(report["plates"])
+    return calibrated, report
