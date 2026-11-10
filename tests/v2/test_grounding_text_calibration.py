@@ -568,6 +568,59 @@ def test_low_contrast_placeholder_adjusts_size_position_and_weight(
     assert report["adjusted_count"] == 1
 
 
+def test_low_contrast_placeholder_skips_table_cells(tmp_path: Path) -> None:
+    """A table cell's size belongs to the table, not to the 15.25/700 fallback.
+
+    light-table: this strategy rewrote sixteen table placeholders from Regular
+    to Bold once their size was clamped into its 15.75-24.25 window, taking
+    ``style_mm`` from 14/105 to 30/105.
+    """
+    reference = tmp_path / "reference.png"
+    rendered = tmp_path / "rendered.png"
+    for path, box in (
+        (reference, (30, 20, 79, 31)),
+        (rendered, (29, 20, 80, 33)),
+    ):
+        image = Image.new("RGB", (120, 60), "white")
+        ImageDraw.Draw(image).rectangle(box, fill="#999999")
+        image.save(path)
+    design = {
+        "elements": [
+            {
+                "contentRef": "table-cell:abc",
+                "type": "text",
+                "x": 8,
+                "y": 18,
+                "width": 174,
+                "height": 36,
+                "text": "请输入0~",
+                "style": {"fontSize": 21.0, "fontWeight": "normal"},
+                "imageMVP": {"role": "table-cell", "candidate_type": "text"},
+                "styleEvidence": {
+                    "evidence": {
+                        "background": "#ffffff",
+                        "foreground": "#999999",
+                        "contrast_delta": 102,
+                        "source_bbox": [10, 10, 174, 36],
+                        "ink_bbox": [11, 11, 172, 34],
+                    }
+                },
+            }
+        ]
+    }
+
+    calibrated, report = calibrate_low_contrast_placeholder_from_render(
+        design,
+        str(reference),
+        str(rendered),
+    )
+
+    assert report["adjusted_count"] == 0
+    assert report["skipped_table_cells"] == 1
+    assert calibrated["elements"][0]["style"]["fontSize"] == 21.0
+    assert calibrated["elements"][0]["style"]["fontWeight"] == "normal"
+
+
 def test_low_contrast_placeholder_control_sets_text_box(
     tmp_path: Path,
 ) -> None:

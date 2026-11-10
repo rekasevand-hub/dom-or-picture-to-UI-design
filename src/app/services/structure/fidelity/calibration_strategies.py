@@ -16,6 +16,11 @@ from typing import Any
 
 from src.app.services.structure.fidelity.text_calibration import (
     apply_display_weight_by_scale,
+    apply_adjudicated_conflicts,
+    apply_nav_row_weight,
+    clamp_table_cell_font_outliers,
+    drop_implausible_duplicate_owners,
+    resolve_same_slot_conflicts,
     calibrate_control_fonts,
     calibrate_form_fonts_from_render,
     calibrate_form_positions_from_render,
@@ -92,6 +97,58 @@ def _export(ctx: CalibrationContext) -> str:
 
 def _display_weight(ctx: CalibrationContext) -> tuple[dict[str, Any], dict[str, Any]]:
     return apply_display_weight_by_scale(ctx.design)
+
+
+def _nav_weight(ctx: CalibrationContext) -> tuple[dict[str, Any], dict[str, Any]]:
+    return apply_nav_row_weight(ctx.design)
+
+
+def _drop_duplicate_owners(
+    ctx: CalibrationContext,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    return drop_implausible_duplicate_owners(ctx.design)
+
+
+def _adjudicated_conflicts(
+    ctx: CalibrationContext,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    candidates: list[Path] = []
+    parts = Path(str(ctx.image)).parts
+    if "benchmark_families" in parts:
+        index = parts.index("benchmark_families")
+        if index + 1 < len(parts):
+            family = parts[index + 1]
+            root = Path(__file__).resolve().parents[5]
+            candidates.append(
+                root / "output/_conflict_decisions" / f"{family}.json"
+            )
+            candidates.append(
+                Path.cwd() / "output/_conflict_decisions" / f"{family}.json"
+            )
+    for base in (ctx.run_root, *list(ctx.run_root.parents)[:3]):
+        candidates.append(base / "conflict_adjudication/decisions.json")
+    path = next((item for item in candidates if item.is_file()), None)
+    if path is None:
+        return ctx.design, {
+            "schema_version": "grounding-adjudicated-conflict/1.0",
+            "status": "not-needed",
+            "adjusted_count": 0,
+            "reason": "no decisions file",
+        }
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    return apply_adjudicated_conflicts(ctx.design, payload.get("decisions") or [])
+
+
+def _same_slot_conflict(
+    ctx: CalibrationContext,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    return resolve_same_slot_conflicts(ctx.design)
+
+
+def _table_cell_scale(
+    ctx: CalibrationContext,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    return clamp_table_cell_font_outliers(ctx.design)
 
 
 def _control_fonts(ctx: CalibrationContext) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -202,6 +259,43 @@ CALIBRATION_GROUPS: tuple[CalibrationGroup, ...] = (
         name="font-initial",
         render_suffix="figma_font_calibrated",
         strategies=(
+            # A phantom owner cannot hold its own text and repeats a roomier
+            # owner elsewhere (the nav-row search box on dark-card-grid); drop
+            # it before any weight rule makes it more visible.
+            _strategy(
+                "duplicate-owner",
+                (),
+                (),
+                _drop_duplicate_owners,
+                always=True,
+            ),
+            # Frozen VLM decisions from conflict_adjudicator.py; no-ops unless
+            # that report exists for this run.
+            _strategy(
+                "adjudicated-conflict",
+                (),
+                (),
+                _adjudicated_conflicts,
+                always=True,
+            ),
+            # Two different strings in one slot: only the provable OCR
+            # concatenation is dropped; the rest is recorded for adjudication.
+            _strategy(
+                "same-slot-conflict",
+                (),
+                (),
+                _same_slot_conflict,
+                always=True,
+            ),
+            # A table states its own type scale: cells at 48.5 pt beside cells
+            # at 21 pt are a box-height artefact, not a hierarchy decision.
+            _strategy(
+                "table-cell-scale",
+                (),
+                (),
+                _table_cell_scale,
+                always=True,
+            ),
             # Structural, not statistical: the page's own type scale decides
             # which text is display-scale.  Runs first so the initial write
             # already carries the hierarchy.
@@ -210,6 +304,17 @@ CALIBRATION_GROUPS: tuple[CalibrationGroup, ...] = (
                 (),
                 (),
                 _display_weight,
+                always=True,
+            ),
+            # Header menu rows are chrome: one band of short labels at one
+            # size, above the content.  Promoted to Medium only (400 -> 500);
+            # see apply_nav_row_weight for why "equally spaced" is not the
+            # signal that survives perception-box padding.
+            _strategy(
+                "nav-row-weight",
+                (),
+                (),
+                _nav_weight,
                 always=True,
             ),
             _strategy("control-fonts", (), (), _control_fonts, always=True),

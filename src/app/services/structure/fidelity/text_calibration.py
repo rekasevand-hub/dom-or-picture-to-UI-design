@@ -534,8 +534,17 @@ def calibrate_low_contrast_placeholder_from_render(
     *,
     ocr_supplement: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Fit light-on-white placeholder text whose glyph ink is underweighted."""
+    """Fit light-on-white placeholder text whose glyph ink is underweighted.
+
+    Table cells are excluded.  Their size comes from the table's own scale
+    (``clamp_table_cell_font_outliers``); when this strategy also processed
+    them it rewrote the fallback ``15.25 / 700`` onto every cell placeholder,
+    which measured ``style_mm 14/105 -> 30/105`` on light-table -- sixteen
+    Regular placeholders rendered Bold.  The fixed fallback is a form-control
+    constant; table cells are not form controls.
+    """
     calibrated = copy.deepcopy(dict(design))
+    skipped_table_cells = 0
     ocr_by_text: dict[str, list[dict[str, Any]]] = {}
     for observation in (ocr_supplement or {}).get("observations") or []:
         if not isinstance(observation, Mapping):
@@ -569,6 +578,10 @@ def calibrate_low_contrast_placeholder_from_render(
             continue
         element_type = str(element.get("type") or "")
         if element_type not in {"text", "input", "button"}:
+            continue
+        role = str((element.get("imageMVP") or {}).get("role") or "")
+        if role in {"table-cell", "table-header"}:
+            skipped_table_cells += 1
             continue
         style = element.setdefault("style", {})
         previous_size = float(style.get("fontSize") or 0)
@@ -681,6 +694,7 @@ def calibrate_low_contrast_placeholder_from_render(
         "schema_version": "grounding-low-contrast-placeholder/1.0",
         "status": "applied" if adjustments else "not-needed",
         "adjusted_count": len(adjustments),
+        "skipped_table_cells": skipped_table_cells,
         "adjustments": adjustments,
     }
 
@@ -1562,6 +1576,693 @@ def apply_display_weight_by_scale(
         "skipped_non_free_text": skipped_roles,
         "adjustments": adjustments,
     }
+
+
+
+def apply_adjudicated_conflicts(
+    design: Mapping[str, Any],
+    decisions: list[Mapping[str, Any]],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Apply frozen VLM conflict decisions (only entries marked ``apply``).
+
+    The adjudicator refuses to drop a unique label, so every entry here names a
+    string that occurs more than once on the page; removing the instance that
+    sits in the conflict box loses nothing.  Decisions are read from disk, never
+    recomputed inside the pipeline, so a run stays reproducible.
+    """
+    calibrated = copy.deepcopy(dict(design))
+    elements = [
+        element
+        for element in calibrated.get("elements") or []
+        if isinstance(element, dict)
+    ]
+    dropped: list[dict[str, Any]] = []
+    moved: list[dict[str, Any]] = []
+    remove_ids: set[int] = set()
+    for decision in decisions:
+        status = str(decision.get("status") or "")
+        box = decision.get("bbox") or [0, 0, 1, 1]
+        if status == "move":
+            text = str(
+                decision.get("move_text")
+                or decision.get("conflict")
+                or decision.get("kept")
+                or ""
+            )
+            target = decision.get("move_to") or []
+            if not text or len(target) != 4:
+                continue
+            bx, by, bw, bh = (float(value) for value in box[:4])
+            for element in elements:
+                if id(element) in remove_ids:
+                    continue
+                if str(element.get("text") or "").strip() != text:
+                    continue
+                cx = float(element.get("x") or 0) + float(element.get("width") or 0) / 2
+                cy = float(element.get("y") or 0) + float(element.get("height") or 0) / 2
+                if not (bx - 8 <= cx <= bx + bw + 8 and by - 8 <= cy <= by + bh + 8):
+                    continue
+                previous = [float(element.get("x") or 0), float(element.get("y") or 0)]
+                element["x"] = float(target[0])
+                element["y"] = float(target[1])
+                moved.append(
+                    {
+                        "text": text[:48],
+                        "from": [round(previous[0], 1), round(previous[1], 1)],
+                        "to": [round(float(target[0]), 1), round(float(target[1]), 1)],
+                    }
+                )
+                break
+            continue
+        if status != "apply":
+            continue
+        text = str(decision.get("drop") or "")
+        if not text:
+            continue
+        bx, by, bw, bh = (float(value) for value in box[:4])
+        best = None
+        for element in elements:
+            if id(element) in remove_ids:
+                continue
+            if str(element.get("text") or "").strip() != text:
+                continue
+            cx = float(element.get("x") or 0) + float(element.get("width") or 0) / 2
+            cy = float(element.get("y") or 0) + float(element.get("height") or 0) / 2
+            if bx - 8 <= cx <= bx + bw + 8 and by - 8 <= cy <= by + bh + 8:
+                best = element
+                break
+        if best is None:
+            continue
+        remove_ids.add(id(best))
+        dropped.append(
+            {
+                "text": text[:48],
+                "bbox": [
+                    round(float(best.get(key) or 0), 1)
+                    for key in ("x", "y", "width", "height")
+                ],
+            }
+        )
+    if dropped:
+        calibrated["elements"] = [
+            element for element in elements if id(element) not in remove_ids
+        ]
+    return calibrated, {
+        "schema_version": "grounding-adjudicated-conflict/1.0",
+        "status": "applied" if (dropped or moved) else "not-needed",
+        "adjusted_count": len(dropped) + len(moved),
+        "dropped": dropped,
+        "moved": moved,
+    }
+
+
+def resolve_same_slot_conflicts(
+    design: Mapping[str, Any],
+    *,
+    overlap_ratio: float = 0.9,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Resolve the provable half of "two different texts in one slot".
+
+    light-table has seven pairs of different strings sharing a slot.  Six are
+    genuine semantic conflicts (``未确认(0)`` vs ``个人信息``, ``工时管理`` vs a
+    search placeholder): both readings are plausible, and a geometry rule that
+    picks one would silently delete real content.  Only one shape is provable:
+
+    * an OCR concatenation -- the longer string is the shorter one plus at most
+      two non-CJK characters glued on (``Q搜索`` = icon glyph ``Q`` + ``搜索``).
+      The extra prefix is an icon that OCR read as a letter, not content.
+
+    Everything else is recorded under ``unresolved`` with its geometry so the
+    VLM judge (or a human) can arbitrate; nothing is dropped on a guess.
+
+    Args:
+        design: Image design with ``elements``.
+        overlap_ratio: Share of the smaller box that must be covered.
+
+    Returns:
+        ``(calibrated_design, report)``.
+    """
+    import re
+
+    calibrated = copy.deepcopy(dict(design))
+    elements = [
+        element
+        for element in calibrated.get("elements") or []
+        if isinstance(element, dict)
+    ]
+    owners: list[dict[str, Any]] = []
+    for element in elements:
+        if str(element.get("type") or "").lower() not in {
+            "text",
+            "button",
+            "input",
+            "link",
+        }:
+            continue
+        text = str(element.get("text") or "").strip()
+        if not text:
+            continue
+        try:
+            x = float(element.get("x") or 0)
+            y = float(element.get("y") or 0)
+            width = float(element.get("width") or 0)
+            height = float(element.get("height") or 0)
+        except (TypeError, ValueError):
+            continue
+        if width <= 0 or height <= 0:
+            continue
+        owners.append(
+            {
+                "element": element,
+                "text": text,
+                "normalized": re.sub(r"[\s\W_]+", "", text).lower(),
+                "rect": (x, y, x + width, y + height),
+                "area": width * height,
+            }
+        )
+
+    def _intersection(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> float:
+        return max(0.0, min(a[2], b[2]) - max(a[0], b[0])) * max(
+            0.0, min(a[3], b[3]) - max(a[1], b[1])
+        )
+
+    dropped: list[dict[str, Any]] = []
+    unresolved: list[dict[str, Any]] = []
+    dropped_ids: set[int] = set()
+    for index, left in enumerate(owners):
+        if id(left["element"]) in dropped_ids:
+            continue
+        for right in owners[index + 1 :]:
+            if id(right["element"]) in dropped_ids:
+                continue
+            area = _intersection(left["rect"], right["rect"])
+            if area <= 0:
+                continue
+            smaller = min(left["area"], right["area"])
+            if smaller <= 0 or area / smaller < overlap_ratio:
+                continue
+            short, long = sorted((left, right), key=lambda item: len(item["normalized"]))
+            shorter = short["normalized"]
+            longer = long["normalized"]
+            if shorter == longer:
+                # Identical strings are not this rule's business: the
+                # duplicate-owner pass owns them.
+                continue
+            clipped = (
+                len(longer) - len(shorter) <= 2
+                and shorter
+                and shorter in longer
+                and not any(ord(char) > 0x2E80 for char in longer.replace(shorter, ""))
+            )
+            record = {
+                "kept": short["text"][:32],
+                "conflict": long["text"][:32],
+                "bbox": [round(value, 1) for value in long["rect"]],
+                "kept_bbox": [round(value, 1) for value in short["rect"]],
+                "overlap": round(area / smaller, 3),
+            }
+            if clipped:
+                dropped_ids.add(id(long["element"]))
+                dropped.append({**record, "reason": "ocr-concatenation"})
+            else:
+                unresolved.append(record)
+
+    if dropped:
+        calibrated["elements"] = [
+            element for element in elements if id(element) not in dropped_ids
+        ]
+    return calibrated, {
+        "schema_version": "grounding-same-slot-conflict/1.0",
+        "status": "applied" if dropped else "not-needed",
+        "overlap_ratio": overlap_ratio,
+        "adjusted_count": len(dropped),
+        "dropped": dropped,
+        "unresolved": unresolved,
+    }
+
+
+def clamp_table_cell_font_outliers(
+    design: Mapping[str, Any],
+    *,
+    factor: float = 1.6,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Clamp table-cell font sizes that were inflated from the cell box height.
+
+    light-table measures ``(选填)`` / ``请输入0~...`` at 48.5 pt inside 55 px
+    cells while every neighbouring cell sits at 20-21 pt.  The size came from
+    the *box*, not from the type scale: a taller cell inflates the estimate, and
+    the placeholder then paints across the column line.  The table itself
+    states the right size -- its cells' median -- so the outlier is clamped to
+    it instead of being inferred again from ink.
+
+    Scope is deliberately narrow: only ``table-cell`` owners (role or
+    ``contentRef``), and only when the page has enough cells for a median to
+    mean something.  Display type, headers and free text are untouched, so a
+    KPI card or a hero number can keep its 48 pt.
+
+    Args:
+        design: Image design with ``elements``.
+        factor: Multiple of the cells' median above which a size is an outlier.
+
+    Returns:
+        ``(calibrated_design, report)``.
+    """
+    calibrated = copy.deepcopy(dict(design))
+    elements = [
+        element
+        for element in calibrated.get("elements") or []
+        if isinstance(element, dict)
+    ]
+
+    def _is_cell(element: Mapping[str, Any]) -> bool:
+        role = str((element.get("imageMVP") or {}).get("role") or "")
+        content_ref = str(element.get("contentRef") or "")
+        return role == "table-cell" or content_ref.startswith("table-cell:")
+
+    cells: list[tuple[dict[str, Any], float]] = []
+    for element in elements:
+        if not _is_cell(element):
+            continue
+        style = element.get("style")
+        if not isinstance(style, dict):
+            continue
+        size = style.get("fontSize")
+        if isinstance(size, (int, float)) and float(size) > 0:
+            cells.append((element, float(size)))
+    report: dict[str, Any] = {
+        "schema_version": "grounding-table-cell-scale/1.0",
+        "status": "not-needed",
+        "factor": factor,
+        "cell_count": len(cells),
+        "median_size": None,
+        "adjusted_count": 0,
+        "adjustments": [],
+    }
+    if len(cells) < 4:
+        return calibrated, report
+    ordered = sorted(size for _element, size in cells)
+    median = ordered[len(ordered) // 2]
+    report["median_size"] = round(median, 2)
+    for element, size in cells:
+        if size <= factor * median:
+            continue
+        style = element["style"]
+        style["fontSize"] = median
+        report["adjustments"].append(
+            {
+                "contentRef": element.get("contentRef") or None,
+                "text": str(element.get("text") or "")[:32],
+                "previous": round(size, 2),
+                "updated": round(median, 2),
+                "ratio": round(size / median, 2),
+            }
+        )
+    report["adjusted_count"] = len(report["adjustments"])
+    if report["adjusted_count"]:
+        report["status"] = "applied"
+    return calibrated, report
+
+
+def drop_implausible_duplicate_owners(
+    design: Mapping[str, Any],
+    *,
+    overflow_ratio: float = 2.0,
+    similarity: float = 0.85,
+    roomy_ratio: float = 0.8,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Drop a text owner that repeats another one from a box that cannot hold it.
+
+    dark-card-grid carries a search placeholder twice: the real control in the
+    hero ``[1706, 297, 442, ...]`` and a phantom ``[1084, 42, 58, 29]`` in the
+    nav row.  The phantom's box is 4.2x narrower than the glyph run, so its text
+    paints across ``社区`` and ``接入文档`` -- the occlusion the VLM judge
+    reported.  Two independent signals make the drop safe:
+
+    * the string already exists elsewhere with a box that can hold it
+      (fuzzy match, because OCR noise differs by a character or two);
+    * this owner's box is too narrow for its own text by ``overflow_ratio``,
+      i.e. the detection that produced it is not trustworthy.
+
+    A legitimate repeat (a header CTA also present in the footer) has a box
+    that fits its text, so it never matches the second condition.
+
+    The surviving owner keeps its geometry but takes the cleaner reading: on
+    dark-card-grid the implausible box carries ``…或厂商，例如 deepseek`` while
+    the roomy one carries ``…或「商。例如 deepseek`` (two OCR artefacts).  Merging
+    text instead of dropping it keeps the critical string alive -- a plain drop
+    measured ``critical 26/27`` on the family gate.
+
+    Args:
+        design: Image design with ``elements``.
+        overflow_ratio: Expected-width / box-width above which a box is
+            implausible.
+        similarity: Fuzzy match ratio for "the same string".
+        roomy_ratio: The surviving owner's box must fit at least this share of
+            the text.
+
+    Returns:
+        ``(calibrated_design, report)``.
+    """
+    import difflib
+    import re
+
+    calibrated = copy.deepcopy(dict(design))
+    elements = [
+        element
+        for element in calibrated.get("elements") or []
+        if isinstance(element, dict)
+    ]
+
+    def _normalized(text: str) -> str:
+        return re.sub(r"[\s\W_]+", "", text, flags=re.UNICODE)
+
+    def _expected(text: str, size: float) -> float:
+        total = sum(1.0 if ord(char) > 0x2E80 else 0.55 for char in text)
+        return total * size
+
+    def _noise_score(text: str) -> int:
+        """Count OCR artefacts, not ordinary punctuation.
+
+        ``搜索模型或「商。例如 deepseek`` carries two artefacts (``「``, ``。``
+        mid-string) while the clean reading has none, so the merge below keeps
+        the clean string even though it lives on the implausible box.
+        """
+        artefacts = set("「」『』【】〔〕[]{}〈〉《》*□■◇◆")
+        return sum(1 for char in text if char in artefacts)
+
+    owners: list[dict[str, Any]] = []
+    for element in elements:
+        if str(element.get("type") or "").lower() not in {
+            "text",
+            "button",
+            "input",
+            "link",
+        }:
+            continue
+        text = str(element.get("text") or "").strip()
+        style = element.get("style")
+        if not text or not isinstance(style, Mapping):
+            continue
+        size = style.get("fontSize")
+        if not isinstance(size, (int, float)) or float(size) <= 0:
+            continue
+        width = float(element.get("width") or 0)
+        if width <= 0:
+            continue
+        expected = _expected(text, float(size))
+        if expected <= 0:
+            continue
+        owners.append(
+            {
+                "element": element,
+                "raw": text,
+                "normalized": _normalized(text),
+                "expected": expected,
+                "width": width,
+                "center": (
+                    float(element.get("x") or 0) + width / 2,
+                    float(element.get("y") or 0) + float(element.get("height") or 0) / 2,
+                ),
+            }
+        )
+
+    dropped: list[dict[str, Any]] = []
+    dropped_ids: set[int] = set()
+    for owner in owners:
+        if owner["expected"] / owner["width"] < overflow_ratio:
+            continue
+        if not owner["normalized"]:
+            continue
+        match = None
+        for other in owners:
+            if other is owner or id(other["element"]) in dropped_ids:
+                continue
+            if other["width"] < roomy_ratio * other["expected"]:
+                continue
+            distance = abs(other["center"][0] - owner["center"][0]) + abs(
+                other["center"][1] - owner["center"][1]
+            )
+            if distance < 0.5 * max(other["width"], owner["width"]):
+                continue
+            ratio = difflib.SequenceMatcher(
+                None, owner["normalized"], other["normalized"]
+            ).ratio()
+            if ratio >= similarity:
+                match = (other, ratio)
+                break
+        if match is None:
+            continue
+        other, ratio = match
+        element = owner["element"]
+        dropped_ids.add(id(element))
+        merged_text = None
+        survivor = other["element"]
+        survivor_style = survivor.get("style")
+        if (
+            isinstance(survivor_style, dict)
+            and _noise_score(owner["raw"]) < _noise_score(other["raw"])
+        ):
+            # Same string, cleaner reading on the implausible box: keep the
+            # survivor's geometry but its text, so no content disappears.
+            merged_text = owner["raw"]
+            survivor["text"] = merged_text
+            evidence = survivor.get("styleEvidence")
+            if isinstance(evidence, dict):
+                evidence["textSource"] = "merged-owner"
+        dropped.append(
+            {
+                "contentRef": element.get("contentRef") or None,
+                "text": owner["raw"][:48],
+                "bbox": [
+                    round(float(element.get(key) or 0), 1)
+                    for key in ("x", "y", "width", "height")
+                ],
+                "overflow_ratio": round(owner["expected"] / owner["width"], 2),
+                "duplicate_of": {
+                    "text": other["raw"][:48],
+                    "bbox": [
+                        round(float(other["element"].get(key) or 0), 1)
+                        for key in ("x", "y", "width", "height")
+                    ],
+                },
+                "similarity": round(ratio, 3),
+                "text_merged": bool(merged_text),
+                "merged_text": merged_text,
+            }
+        )
+
+    if dropped:
+        calibrated["elements"] = [
+            element
+            for element in elements
+            if id(element) not in dropped_ids
+        ]
+
+    return calibrated, {
+        "schema_version": "grounding-duplicate-owner/1.0",
+        "status": "applied" if dropped else "not-needed",
+        "overflow_ratio": overflow_ratio,
+        "similarity": similarity,
+        "adjusted_count": len(dropped),
+        "dropped": dropped,
+    }
+
+
+def apply_nav_row_weight(
+    design: Mapping[str, Any],
+    *,
+    top_band_ratio: float = 0.10,
+    min_row_items: int = 3,
+    size_tolerance: float = 0.25,
+    max_label_chars: int = 12,
+    nav_weight: int = 500,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Promote a header menu row to Medium, using row structure as the evidence.
+
+    Why this exists: on dark-card-grid the six remaining Medium mismatches sit
+    in one row at the top of the page (``首页``/``创作``/``价格``/``Agent 优惠``/
+    ``社区``/``接入文档``, y ~= 38 of 1336 = 4.2 % of canvas height).  A menu bar
+    is chrome, not content: it is a single horizontal row of short labels,
+    rendered at one size, above everything else.  That is a shape, so it can be
+    read off the design without matching a single string.
+
+    "Equally spaced" is **not** used, and that is a measured decision: on this
+    very row the gaps between perception boxes range from 12 px to 230 px
+    (``ACCTOKEN``'s box overlaps ``首页`` by 10 px, ``首页``->``创作`` is 230 px
+    because the selected tab is not emitted as a label).  Box padding, not
+    layout, dominates the gap, so an equidistance test would never fire on the
+    page it was written for.  What remains measurable is the row itself:
+
+    * one vertical band (centre-y within ``max(4 px, 0.3 x median height)``);
+    * at least ``min_row_items`` members, all short labels;
+    * one shared size, within ``size_tolerance`` of the row's modal size
+      (``Agent 优惠`` measures 32.25 against a 27.5 mode, +17 %);
+    * the band lies in the top ``top_band_ratio`` of the canvas;
+    * ``table-cell`` / ``table-header`` owners are excluded, and so is every
+      ``control`` **except** ``controlType == "navigation"`` -- the search
+      placeholder shares this band on dark-card-grid, while the ``社区`` menu
+      label is itself a control whose control type says it is navigation.
+
+    Only owners currently at 400 are promoted, so an explicit Light decision
+    from another strategy survives.  Runs as part of ``font-initial`` after the
+    display-scale rule.
+
+    Args:
+        design: Image design with ``elements`` (``x``/``y``/``width``/
+            ``height``, ``style.fontSize``/``fontWeight``) and ``canvas``.
+        top_band_ratio: Fraction of canvas height that counts as the header.
+        min_row_items: Members a row needs before it is a menu.
+        size_tolerance: Relative distance from the row's modal size.
+        max_label_chars: Longest text still read as a label.
+        nav_weight: Weight written for promoted owners.
+
+    Returns:
+        ``(calibrated_design, report)``.
+    """
+    from collections import Counter
+
+    calibrated = copy.deepcopy(dict(design))
+    report: dict[str, Any] = {
+        "schema_version": "grounding-nav-row-weight/1.0",
+        "status": "not-needed",
+        "canvas_height": None,
+        "top_band_ratio": top_band_ratio,
+        "rows": [],
+        "adjusted_count": 0,
+        "adjustments": [],
+        "skipped_non_free_text": 0,
+    }
+    elements = [
+        element
+        for element in calibrated.get("elements") or []
+        if isinstance(element, dict)
+    ]
+    canvas = calibrated.get("canvas")
+    height = None
+    if isinstance(canvas, Mapping):
+        raw_height = canvas.get("height")
+        if isinstance(raw_height, (int, float)) and float(raw_height) > 0:
+            height = float(raw_height)
+    if height is None:
+        bottoms = [
+            float(element.get("y") or 0) + float(element.get("height") or 0)
+            for element in elements
+        ]
+        height = max(bottoms) if bottoms else 0.0
+    if height <= 0:
+        return calibrated, report
+
+    candidates: list[dict[str, Any]] = []
+    heights: list[float] = []
+    for element in elements:
+        text = str(element.get("text") or "").strip()
+        if not text or element.get("type") not in {"text", "button"}:
+            continue
+        style = element.get("style")
+        if not isinstance(style, Mapping):
+            continue
+        role = str((element.get("imageMVP") or {}).get("role") or "")
+        content_ref = str(element.get("contentRef") or "")
+        control_type = str(element.get("controlType") or "")
+        # A menu item is written as a control, so ``role`` alone would drop the
+        # very labels this rule is for.  ``controlType == "navigation"`` is the
+        # structural discriminator: on dark-card-grid the header label ``社区``
+        # carries it while the neighbouring button (``控制台``) and the search
+        # input do not.
+        if role in {"table-cell", "table-header", "control"} and control_type != "navigation":
+            report["skipped_non_free_text"] += 1
+            continue
+        if content_ref.startswith(("table-cell:", "table-header:")):
+            report["skipped_non_free_text"] += 1
+            continue
+        size = style.get("fontSize")
+        if not isinstance(size, (int, float)) or float(size) <= 0:
+            continue
+        box = [
+            float(element.get(key) or 0) for key in ("x", "y", "width", "height")
+        ]
+        if box[2] <= 0:
+            continue
+        candidates.append(
+            {
+                "element": element,
+                "text": text,
+                "size": float(size),
+                "x": box[0],
+                "width": box[2],
+                "height": box[3],
+                "center": box[1] + box[3] / 2.0,
+            }
+        )
+        heights.append(box[3])
+    if len(candidates) < min_row_items:
+        return calibrated, report
+
+    heights.sort()
+    median_height = heights[len(heights) // 2] or 1.0
+    band = max(4.0, 0.3 * median_height)
+    candidates.sort(key=lambda item: item["center"])
+    groups: list[list[dict[str, Any]]] = []
+    for item in candidates:
+        if groups and abs(item["center"] - groups[-1][-1]["center"]) <= band:
+            groups[-1].append(item)
+        else:
+            groups.append([item])
+
+    for group in groups:
+        labels = [
+            item for item in group if len(item["text"]) <= max_label_chars
+        ]
+        if len(labels) < min_row_items:
+            continue
+        row_center = sorted(item["center"] for item in labels)[len(labels) // 2]
+        if row_center > top_band_ratio * height:
+            continue
+        sizes = [round(item["size"], 1) for item in labels]
+        modal = Counter(sizes).most_common(1)[0][0]
+        members = [
+            item
+            for item in labels
+            if abs(item["size"] - modal) / modal <= size_tolerance
+        ]
+        if len(members) < min_row_items:
+            continue
+        promoted: list[dict[str, Any]] = []
+        for item in sorted(members, key=lambda entry: entry["x"]):
+            style = item["element"].get("style")
+            if not isinstance(style, dict):
+                continue
+            if _normalize_font_weight(style.get("fontWeight")) != 400:
+                continue
+            style["fontWeight"] = nav_weight
+            promoted.append(
+                {
+                    "contentRef": item["element"].get("contentRef") or None,
+                    "text": item["text"][:48],
+                    "fontSize": round(item["size"], 2),
+                    "y": round(item["center"], 1),
+                    "previous": 400,
+                    "updated": nav_weight,
+                }
+            )
+        if not promoted:
+            continue
+        report["adjusted_count"] += len(promoted)
+        report["adjustments"].extend(promoted)
+        report["rows"].append(
+            {
+                "y": round(row_center, 1),
+                "modal_font_size": modal,
+                "member_count": len(members),
+                "promoted_count": len(promoted),
+                "labels": [item["text"][:24] for item in members],
+            }
+        )
+
+    report["canvas_height"] = round(height, 1)
+    if report["adjusted_count"]:
+        report["status"] = "applied"
+    return calibrated, report
 
 
 def calibrate_text_weight_from_render(
