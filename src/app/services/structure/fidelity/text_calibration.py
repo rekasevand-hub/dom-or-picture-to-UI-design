@@ -1340,6 +1340,103 @@ def _normalize_font_weight(value: Any) -> int | None:
     return min(_WEIGHT_LADDER, key=lambda step: abs(step - numeric))
 
 
+def measure_element_rotation(
+    image: Any,
+    bbox: Any,
+    *,
+    pad: int = 8,
+    search: float = 15.0,
+    step: float = 0.25,
+    dead_zone: float = 2.5,
+    threshold: int = 60,
+) -> dict[str, Any] | None:
+    """Measure how far a text block is tilted, in degrees counter-clockwise.
+
+    Deskew by projection profile: rotate the ink mask over a range of angles
+    and keep the one whose row sums are the most uneven.  Text lines become
+    sharp peaks exactly when their baselines are horizontal, so the peak
+    variance sits at the correction angle.  The reported tilt is the negation
+    of that correction, which also puts it in the sign convention Figma's
+    ``rotation`` property uses -- so a rotated node can be written without
+    flipping the sign again.
+
+    Why not the obvious estimators, both measured on dark-card-grid:
+
+    * ``cv2.minAreaRect`` over the ink returns **0.0°** for ``5.8折`` (truth
+      6.0°): that element spans two tilted lines, and the union of two
+      parallel tilted lines is nearly square, so the minimum-area rectangle
+      locks onto the axis-aligned hull.
+    * The ink's second moments have the same problem -- the cross-line spread
+      dominates the along-line spread at this aspect ratio.
+
+    The dead zone matters more than the precision: upright text scores a
+    best angle of 1-2° from anti-aliasing alone.  On 218 measured texts across
+    the three families, only the two tilted badges clear 2.5°, so the zone is
+    where the noise floor actually is, not a tuned constant.
+
+    Args:
+        image: ``(h, w, 3)`` RGB array.
+        bbox: ``[x, y, width, height]`` in source pixels.
+        pad: Pixels searched around the box; the box itself may clip glyphs.
+        search: Half-width of the angle sweep, in degrees.
+        step: Sweep resolution, in degrees.
+        dead_zone: Tilts below this are reported as ``0.0``.
+        threshold: Channel distance from the local background that counts as
+            ink.
+
+    Returns:
+        ``{"angle", "raw", "gain", "ink"}`` -- ``angle`` after the dead zone,
+        ``raw`` before it, ``gain`` the variance improvement of the best angle
+        over zero, ``ink`` the ink pixel count.  ``None`` when the box holds
+        too little ink to measure.
+    """
+    import cv2
+    import numpy as np
+
+    height, width = image.shape[:2]
+    x, y, box_w, box_h = (float(value) for value in list(bbox)[:4])
+    left, top = max(0, int(x) - pad), max(0, int(y) - pad)
+    right = min(width, int(x + box_w) + pad)
+    bottom = min(height, int(y + box_h) + pad)
+    if right - left < 8 or bottom - top < 8:
+        return None
+    window = image[top:bottom, left:right]
+    colors, counts = np.unique(window.reshape(-1, 3), axis=0, return_counts=True)
+    background = colors[int(counts.argmax())].astype(np.int16)
+    ink = (np.abs(window - background).max(axis=2) > threshold).astype(np.float32)
+    ink_count = int(ink.sum())
+    if ink_count < 30:
+        return None
+
+    rows, columns = ink.shape
+    centre = (columns / 2.0, rows / 2.0)
+
+    def _score(angle: float) -> float:
+        matrix = cv2.getRotationMatrix2D(centre, angle, 1.0)
+        rotated = cv2.warpAffine(
+            ink, matrix, (columns, rows), flags=cv2.INTER_LINEAR, borderValue=0
+        )
+        return float(rotated.sum(axis=1).var())
+
+    zero = _score(0.0)
+    best = (-1.0, 0.0)
+    angle = -search
+    while angle <= search + 1e-9:
+        score = _score(angle)
+        if score > best[0]:
+            best = (score, angle)
+        angle += step
+    # cv2's sweep angle is the rotation that *levels* the block, so the block's
+    # own tilt is its negation.
+    raw = -round(best[1], 2)
+    return {
+        "angle": 0.0 if abs(raw) < dead_zone else raw,
+        "raw": raw,
+        "gain": round(best[0] / zero, 3) if zero > 0 else 0.0,
+        "ink": ink_count,
+    }
+
+
 def _ink_stats(
     image: Any,
     bbox: Any,
