@@ -22,6 +22,29 @@ DEFAULT_FONT_STACK = (
 )
 
 
+def _font_weight(spec: dict[str, Any]) -> str | None:
+    """CSS ``font-weight`` for a text spec, or ``None`` to leave it unset.
+
+    ``style.fontWeight`` upstream is numeric (``_normalize_font_weight`` returns
+    400/500/700), but this adapter used to read only ``fontWeightValue`` or the
+    literal string ``"bold"``.  A numeric weight therefore fell through to the
+    default, and the mock drew Regular where Figma draws Bold -- 10 text owners
+    on dark-card-grid.  It is latent rather than active: ``ink-convergence``
+    measures the Figma export, not this render, so fixing it changes no pixel
+    (verified: 0 px between the two runs).  It stays fixed because a preview
+    that disagrees with the deliverable is a trap for the next reader.
+    """
+    value = spec.get("fontWeightValue")
+    if value is None:
+        value = spec.get("fontWeight")
+    if isinstance(value, (int, float)):
+        return str(int(value))
+    text = str(value or "").strip().lower()
+    if text in {"bold", "bolder", "normal", "lighter"}:
+        return text
+    return None
+
+
 class SVGMockAdapter(PrototypeAdapter):
     """SVG 兜底适配器。"""
 
@@ -517,10 +540,9 @@ class SVGMockAdapter(PrototypeAdapter):
         text_el.set("font-size", str(font_size))
         # 优先用节点 computed 字体栈（dom 直出），否则用输出端默认栈
         text_el.set("font-family", spec.get("fontFamily") or self.font_stack)
-        if spec.get("fontWeightValue") is not None:
-            text_el.set("font-weight", str(spec["fontWeightValue"]))
-        elif spec.get("fontWeight") == "bold":
-            text_el.set("font-weight", "bold")
+        weight = _font_weight(spec)
+        if weight is not None:
+            text_el.set("font-weight", weight)
         if str(spec.get("fontStyle") or "").lower() in {"italic", "oblique"}:
             text_el.set("font-style", "italic")
         if (
@@ -566,10 +588,9 @@ class SVGMockAdapter(PrototypeAdapter):
         text_el.set("fill", self._get_color(spec, "textColor", "#000000"))
         text_el.set("font-size", str(font_size))
         text_el.set("font-family", spec.get("fontFamily") or self.font_stack)
-        if spec.get("fontWeightValue") is not None:
-            text_el.set("font-weight", str(spec["fontWeightValue"]))
-        elif spec.get("fontWeight") == "bold":
-            text_el.set("font-weight", "bold")
+        weight = _font_weight(spec)
+        if weight is not None:
+            text_el.set("font-weight", weight)
         if str(spec.get("fontStyle") or "").lower() in {"italic", "oblique"}:
             text_el.set("font-style", "italic")
         if width > 0 and align == "center":
