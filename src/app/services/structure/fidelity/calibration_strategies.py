@@ -21,6 +21,7 @@ from src.app.services.structure.fidelity.text_calibration import (
     clamp_table_cell_font_outliers,
     drop_implausible_duplicate_owners,
     drop_text_fragment_images,
+    apply_text_rotation,
     resolve_same_slot_conflicts,
     synthesize_badge_outline,
     synthesize_selection_plate,
@@ -122,6 +123,12 @@ def _badge_outline(
     ctx: CalibrationContext,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     return synthesize_badge_outline(ctx.design, ctx.image)
+
+
+def _text_rotation(
+    ctx: CalibrationContext,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    return apply_text_rotation(ctx.design, ctx.image)
 
 
 def _drop_duplicate_owners(
@@ -367,6 +374,17 @@ CALIBRATION_GROUPS: tuple[CalibrationGroup, ...] = (
                 (),
                 (),
                 _nav_weight,
+                always=True,
+            ),
+            # A tilted sticker arrives axis-aligned because no layer has a
+            # rotation field; measure it off the screenshot so the SVG render
+            # and the Figma write can both honour it.  Upright text is cleared,
+            # not nudged -- the dead zone is where the measurement noise is.
+            _strategy(
+                "text-rotation",
+                (),
+                (),
+                _text_rotation,
                 always=True,
             ),
             _strategy("control-fonts", (), (), _control_fonts, always=True),

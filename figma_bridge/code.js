@@ -282,6 +282,20 @@ function applyStyle(node, params) {
   applyRadius(node, params);
   applyOpacity(node, params);
   applyEffects(node, params);
+  applyRotation(node, params);
+}
+
+// 源图里的贴纸/角标可能是斜的。Python 侧量出来的是逆时针角度，和 Figma
+// `rotation` 的符号一致，所以直接照抄，不再取反。旋转绕节点自身中心——
+// 与 SVG 侧 `rotate(deg cx cy)` 用同一个中心，两边的像素才对得上。
+function applyRotation(node, params) {
+  const degrees = Number(params.rotation);
+  if (!Number.isFinite(degrees) || Math.abs(degrees) < 0.01) return;
+  try {
+    node.rotation = degrees;
+  } catch (err) {
+    // 个别节点类型不支持 rotation，保持不旋转
+  }
 }
 
 function mixHex(hex, whiteWeight) {
@@ -861,6 +875,7 @@ async function createText(params) {
     text.x = tx;
     text.y = params.y || 0;
   }
+  applyRotation(text, params);
   return text.id;
 }
 
@@ -890,6 +905,7 @@ async function createImage(params) {
 
   appendToParent(rect, params);
   applyPluginData(rect, params);
+  applyRotation(rect, params);
   return rect.id;
 }
 
@@ -2674,6 +2690,9 @@ function readNodeTree(node, depth) {
     summary.gridRowSizes = node.gridRowSizes;
     summary.gridColumnSizes = node.gridColumnSizes;
   }
+  // 旋转是普通节点属性，但之前的摘要没带它，于是「按了没按上」只能靠
+  // 外接框反推。带上它，回读就能直接回答这个问题。
+  if ("rotation" in node) summary.rotation = node.rotation;
   if ("layoutAlign" in node) summary.layoutAlign = node.layoutAlign;
   if ("layoutGrow" in node) summary.layoutGrow = node.layoutGrow;
   if ("layoutPositioning" in node) summary.layoutPositioning = node.layoutPositioning;

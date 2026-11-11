@@ -2720,6 +2720,104 @@ def drop_implausible_duplicate_owners(
     }
 
 
+def apply_text_rotation(
+    design: Mapping[str, Any],
+    image_path: str | Path,
+    *,
+    dead_zone: float = 2.5,
+    min_ink: int = 30,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Write the measured tilt onto every text block that has one.
+
+    Rotation is a first-class field downstream (SVG wraps the element in
+    ``<g transform="rotate">``, the Figma bridge sets ``node.rotation``), but
+    nothing upstream produces it: the design schema has no such key, so a
+    tilted sticker arrives axis-aligned and the bitmap beside it is the only
+    thing that still looks tilted.
+
+    The angle comes from :func:`measure_element_rotation`, not from the node's
+    own size: that oracle only exists for Figma nodes, and it cannot give the
+    sign anyway.  ``dead_zone`` is the measured noise floor -- upright text
+    reaches 2.0 degrees from anti-aliasing alone across three families.
+
+    Args:
+        design: Image design with ``elements``.
+        image_path: Source screenshot the tilt is measured on.
+        dead_zone: Tilts below this are treated as upright and cleared.
+        min_ink: Ink pixels needed before a box is measurable.
+
+    Returns:
+        ``(calibrated_design, report)``.  ``rotation`` is removed from elements
+        that measure upright, so a second pass is a no-op.
+    """
+    import numpy as np
+    from PIL import Image
+
+    calibrated = copy.deepcopy(dict(design))
+    report: dict[str, Any] = {
+        "schema_version": "grounding-text-rotation/1.0",
+        "status": "not-needed",
+        "adjusted_count": 0,
+        "measured_count": 0,
+        "rotations": [],
+        "cleared": [],
+    }
+    elements = [
+        element
+        for element in calibrated.get("elements") or []
+        if isinstance(element, dict)
+    ]
+    targets = [
+        element
+        for element in elements
+        if str(element.get("type") or "") in {"text", "button"}
+        and str(element.get("text") or "").strip()
+        and float(element.get("width") or 0) >= 8
+        and float(element.get("height") or 0) >= 8
+    ]
+    if not targets:
+        return calibrated, report
+    try:
+        with Image.open(image_path) as handle:
+            pixels = np.asarray(handle.convert("RGB")).astype(np.int16)
+    except (OSError, ValueError):
+        return calibrated, report
+    for element in targets:
+        # ``_box_of`` returns corners; the measurement wants [x, y, w, h].
+        box = [
+            float(element.get("x") or 0),
+            float(element.get("y") or 0),
+            float(element.get("width") or 0),
+            float(element.get("height") or 0),
+        ]
+        measured = measure_element_rotation(pixels, box, dead_zone=dead_zone)
+        if measured is None or measured["ink"] < min_ink:
+            continue
+        report["measured_count"] += 1
+        angle = float(measured["angle"])
+        if abs(angle) < 0.01:
+            if "rotation" in element:
+                element.pop("rotation", None)
+                report["cleared"].append(str(element.get("text") or "")[:24])
+            continue
+        element["rotation"] = angle
+        report["rotations"].append(
+            {
+                "text": str(element.get("text") or "")[:24],
+                "angle": angle,
+                "raw": measured["raw"],
+                "gain": measured["gain"],
+                "ink": measured["ink"],
+                "bbox": [round(value, 1) for value in box],
+            }
+        )
+    if report["rotations"]:
+        calibrated["elements"] = elements
+        report["status"] = "applied"
+        report["adjusted_count"] = len(report["rotations"])
+    return calibrated, report
+
+
 def apply_nav_row_weight(
     design: Mapping[str, Any],
     *,

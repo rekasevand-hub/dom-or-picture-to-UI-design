@@ -227,15 +227,34 @@ class SVGMockAdapter(PrototypeAdapter):
 
         不用"把盒子裁小"的做法：文本基线吃 height（y + h/2 + 0.375em），改盒子会
         让基线跟着漂。裁边只该发生在绘制阶段。
+
+        倾斜同理只发生在绘制阶段：`rotation`（度，逆时针正，与 Figma 同向）
+        绕**元素盒子中心**旋转。中心与 Figma 侧 `node.rotation` 的旋转中心一致，
+        两边落笔才对得上。裁边要包在旋转外层——clip 是页面坐标，转过的形状
+        再裁就会错。
         """
+        node = el
+        degrees = spec.get("rotation")
+        if isinstance(degrees, (int, float)) and abs(float(degrees)) >= 0.01:
+            x = float(spec.get("x", 0))
+            y = float(spec.get("y", 0))
+            width = float(spec.get("width", 0))
+            height = float(spec.get("height", 0))
+            group = ET.Element("g")
+            group.set(
+                "transform",
+                "rotate(%g %g %g)" % (float(degrees), x + width / 2, y + height / 2),
+            )
+            group.append(el)
+            node = group
         cid = self._clip_id(spec)
         if not cid:
-            self.elements.append(el)
+            self.elements.append(node)
             return
-        group = ET.Element("g")
-        group.set("clip-path", "url(#%s)" % cid)
-        group.append(el)
-        self.elements.append(group)
+        clip_group = ET.Element("g")
+        clip_group.set("clip-path", "url(#%s)" % cid)
+        clip_group.append(node)
+        self.elements.append(clip_group)
 
     def create_rectangle(
         self, spec: dict[str, Any], parent_id: str | None = None
