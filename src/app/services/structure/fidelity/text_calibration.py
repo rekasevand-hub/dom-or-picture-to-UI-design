@@ -1549,22 +1549,6 @@ def _element_source_bbox(element: Mapping[str, Any]) -> list[float] | None:
     return None
 
 
-def _inside_outline(
-    element: Mapping[str, Any], outlines: list[Mapping[str, Any]]
-) -> bool:
-    """Whether this element's centre sits inside one of the drawn outlines."""
-    try:
-        box = [
-            float(element.get("x") or 0),
-            float(element.get("y") or 0),
-            float(element.get("width") or 0),
-            float(element.get("height") or 0),
-        ]
-    except (TypeError, ValueError):
-        return False
-    return _enclosing_outline(outlines, box) is not None
-
-
 def apply_display_weight_by_scale(
     design: Mapping[str, Any],
     *,
@@ -1589,8 +1573,7 @@ def apply_display_weight_by_scale(
       from another strategy is never overridden.
 
     ``display_threshold`` is deliberately conservative, and the free-text
-    filter is what makes it safe.  Text inside a drawn badge is excluded too:
-    that is a sticker, and the badge's own geometry already states its style.  Measured on the three families
+    filter is what makes it safe.  Measured on the three families
     (perception-frozen rerun, style_mm mismatches): without the filter, 1.8
     still promoted the light-table placeholders ``(选填)`` / ``请输入0~``
     (their ``fontSize`` is inflated from the input-box height, 48.5-78.75) and
@@ -1627,22 +1610,7 @@ def apply_display_weight_by_scale(
             or role in {"table-cell", "table-header", "control"}
         )
 
-    # Text inside a drawn outline is a sticker, not a heading.  A discount badge
-    # is display-*sized* (3.1x body here) but its weight comes from the sticker's
-    # own style, and this one is Regular in the source: promoting it doubled the
-    # ink (1820 px against 921), and the ink-convergence loop then shrank the
-    # font to 50.5 to compensate -- two rules fighting through one proxy.
-    outlines = [
-        element
-        for element in calibrated.get("elements") or []
-        if isinstance(element, dict)
-        and str(element.get("role") or "") == "badge-outline"
-    ]
-    free_text = [
-        element
-        for element in elements
-        if _is_free_text(element) and not _inside_outline(element, outlines)
-    ]
+    free_text = [element for element in elements if _is_free_text(element)]
     sizes = [
         round(float(element["style"]["fontSize"]), 1)
         for element in free_text
@@ -1660,7 +1628,6 @@ def apply_display_weight_by_scale(
     body_size = Counter(sizes).most_common(1)[0][0]
     adjustments: list[dict[str, Any]] = []
     skipped_roles = 0
-    skipped_badges = 0
     for element in elements:
         style = element.get("style")
         if not isinstance(style, dict):
@@ -1678,9 +1645,6 @@ def apply_display_weight_by_scale(
             "control",
         }:
             skipped_roles += 1
-            continue
-        if _inside_outline(element, outlines):
-            skipped_badges += 1
             continue
         size = style.get("fontSize")
         if not isinstance(size, (int, float)) or body_size <= 0:
@@ -1709,7 +1673,6 @@ def apply_display_weight_by_scale(
         "display_threshold": display_threshold,
         "adjusted_count": len(adjustments),
         "skipped_non_free_text": skipped_roles,
-        "skipped_badge_text": skipped_badges,
         "adjustments": adjustments,
     }
 
