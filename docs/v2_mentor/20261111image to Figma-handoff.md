@@ -922,3 +922,228 @@ dark 缺、light-table 多——**不是同一个判据在错，是不同族走�
 1. **不要**从"字号 + 字重"的表面相关推断字重规则的来源。light-table 的 10 个 bold 是 21pt、阈值是 20，看似吻合，实测 82 个 ≥20 的文本里只有 10 个 bold —— 归因要看代码，不看相关。
 2. **不要**以为 `fontWeight` 只有一个写入点。目前有 7 个（§18 表），改任何一个之前先用 `grep` 把其余六个找出来，否则会重演 §15.8 那种"两条规则互相抵消"。
 3. **不要**把 `style_resolver` 的 `role` 判据直接换成墨量判据。该函数手里确实有 `ink_count` / `contrast`，但 §2.2 已否证"墨量能分字重"（AUC 0.62）；换之前需要新的证据源。
+
+---
+
+## 19. 本轮总览与交接摘要（2026-11-11 下午，读这一节就够）
+
+下面 8 项对应交接要求；详细取证、踩坑与禁改项的**论证过程**在 §9–§18。
+
+**本轮提交**：17 笔（`443633c` … `df273a0`），全部本地，分支领先 `origin/main` 97 个提交。
+**工作区状态**：干净（`git status` 无输出）。
+
+### 19.1 本次任务的目标
+
+起点是本文档 §6.2 记的「角标重影」——`8.5折` / `6.6折` 上的文字被画了两遍。你选了**方案 B**：裁剪图换合成圆角描边。
+
+推进中扩成四段，每段都是上一段修完后才暴露的：
+
+| 段 | 目标 | 触发原因 |
+|---|---|---|
+| **A** | 小角标（`8.5折`/`6.6折`）重影 | 原始任务 |
+| **B** | 大角标（`5.8折`/`8.8折`）：6° 倾斜 + 双描边 + 两行 | 你指出"一直以为是带 6 度倾斜的 5.8 折"；实测它更严重（框内墨量是参考的 2.2 倍） |
+| **C** | 字体度量取证 | A/B 之后剩余偏差（低 12px、宽 27%、字重卡两档之间）全部指向字体 |
+| **D** | 字重来源地图 | C 过程中发现多余 bold 来自 7 个互不知情的入口 |
+
+**四段的共同目标**：让截图的视觉信息在 Figma 里**既像素接近又可编辑**，而不是靠一张位图把一切糊过去。
+
+### 19.2 已经完成的内容
+
+**A. 小角标重影（§9）**
+- 新策略 `badge-outline`：把"自带字形的角标裁剪图"**原地**换成合成圆角描边矩形（保 `id`、绘制顺序、`paintDepth = 0`）
+- 判据是**像素证据**，不是几何：一个强调色画出细闭合描边（左竖条 + 右竖条 + 上方横条同色）**且**同一强调色出现在标签框内
+- 每个拒绝都带原因：`控制台` → `crop is not wider than the label`；`hamburger` → `no bar left of the label`
+- 门禁：dark 94.84 → 94.79，`bitmap 5→3`，另两族**逐位不变**
+- 两个几何坑：上边界不能量在左竖条列（少 6px）；下边界不能在标签框下方扫（角标被截图裁在页边，最低命中是字形）
+
+**B. 旋转能力（§10–§11）**
+- 角度真值：金稿 `width/height` 与 `absolute` 外接框反解 → dark **4 个节点全 6.00°**（残差 0.00），另两族 0 个
+- 估计器：投影方差去斜。**否证** `minAreaRect`（对 `5.8折` 给 0°，真值 6.0）与二阶矩
+- 精度：合成数据 −8…+8° 误差 **0.00°**；三族 **218 条文本零误报**；2.5° 死区就是噪声底（直立文本实测到的最大 raw 2.0° / 1.25°）
+- 接线：`rotation`（度，逆时针正，与 Figma 同向）→ SVG `<g transform="rotate">`（中心 = 盒心）→ Figma `node.rotation`（同一支点）
+- **发现插件路径陷阱**：Figma 加载的是 `D:/LLM-Data/Figma_auto_agent`（另一份 checkout，停 `fe89f46`、`code.js` 是 11-08 的），**在 worktree 里改 `code.js` 从来没有生效过**
+
+**C. 行切分 + 按行字号 + 文本块重建（§12–§14）**
+- `measure_text_block_lines`：倾斜块**去斜后**才有 2 条带。轴对齐时两条斜行的墨迹在 y 上互相盖住，行剖面只有 1 个连通带（墨高 155 = 整个窗口）
+- `lineSizes`：SVG 每个 `<tspan>` 带自己字号 + 自己基线；Figma 走 `richRuns`；桥里 `setRangeLineHeight` 按行给行高
+- **否证过的捷径**：统一 46pt 会让 1.4em × 2 行 = 128px 超过块高 86px，第二行直接掉出框
+- `text-block-lines`：去斜 → 分带 → 切串 → 按带宽估字号。dark 实测 `5.8折` → `["5.8","折"]` / **64,30**（金稿 62,30，误差 4%），切分误差 0.04
+- 切串判据迭代两次：**宽度占比是错的**（两行字号不同，占比不成立，best 误差 0.336、两块被自己拒掉）→ 改成"带宽推字号 → 该字号预测墨高 → 对实测墨高"
+- 门禁：dark 94.79 → **95.06**
+
+**D. 双描边 + 倾斜大角标（§15）**
+- **纠正 §14.2 的错误归因**：不是"环几何只对直立形状成立"，是**两条同心环被当成一条**——`_run_near` 取最近那条，于是宽取内环 132、高取外环 152，圆角再被这个混合盒带成 61
+- 修法：取**最外层**描边 + 去斜后量圆角 + 描边按 **50% 覆盖率**读（重采样帧里 ±24 色差会稳定少 2px）
+- 实测 vs 真值：外环 151×150 / 描边 6 / 圆角 14（真值 152/6/15）；内环 131×130 / 描边 3 / 圆角 6（真值 132/3/6）；倾角 **5.98°**（真值 6.00）
+- 一张位图 → **两个矢量矩形**（外环原地替换，内环作兄弟节点）；元素 61→63；`bitmap 3→1`，`nodes 68→70`
+- Figma 侧三个真问题：文本盒宽取了墨迹宽（在 89px 处把 `5.8` 断成 `5.`/`8`）、一个节点只有一个行高（64/30 两行必然一松一挤）、区间样式在 `resize` 之前重放（会被折回节点级）
+- 加 `BRIDGE_BUILD` 版本戳 + `warnings` 数组：静默失败第一次可见
+- 门禁：dark 95.06 → 94.64（取舍见 19.6 B-1）
+
+**E. 多行文本旋转丢失（§15.9，你发现的）**
+- `createText` 的折行分支（`params.lines`）在函数末尾 `applyRotation` **之前**就 `return`，于是**所有多行文本都丢旋转**，只有单行正常
+- 修后回读：4 个 `badge-outline` = 5.98、2 个文本节点 = **5.98**
+
+**F. 字体度量取证（§16）**
+- 尺子：描边环内框是页面上**唯一不依赖感知框**的精确框。量源图墨迹（宽/高/墨量/顶边）→ 用**同一个元素**换族换重渲一遍 → 四项必须同时对上
+- 结论：源图是 **Medium 档**（`5.8` 数字区墨量 1462，Regular 1191 / Bold 1703）；同族 Noto Sans SC 改 **500** 可把墨量误差从 14.4% 降到 **6.9%**
+- **不需要换字体族**：最好的 SimHei 只好 1.9 个百分点，且是旧版字体、会动整页
+- 顺带修：`svg_adapter` 只认 `fontWeightValue` 或字符串 `"bold"`，数值 `700` 被静默忽略（dark 上 10 个文本 mock 画常规、Figma 画粗体）
+
+**G. 全量投票 + 字重地图（§17–§18）**
+- 尺子扩到 **228** 个金稿框（dark 45 / light-form 75 / light-table 108，只剔 8 个）。前提：`x/y` 是**相对父级**，必须沿树累加
+- 撞三堵墙：400 与 500 渲染像素相同（每族只两个面）、页面有两个族（`模型广场` 96pt / `本期好价` 52pt 是 Noto Serif SC Black）、**金稿本来就声明字重**（有金稿时是查表不是推断）
+- 改用查表对账：`display-weight` 前提成立（dark ≥1.8× 正文的 5 个全是 700/900），但它只覆盖这 5 个；**23 个金稿 Bold 里 20 个是小字 chrome**，无规则覆盖
+- §18：`fontWeight` 有 **7 个写入点，5 个不看像素**；最扎眼的是 `style_resolver.py:160`——`ink_box`/`ink_count`/`contrast` 全算出来了，字重却只看 `role == "table-header"`
+
+### 19.3 已修改的文件
+
+17 个，**+4426 / −38**：
+
+```
+docs/v2_mentor/20261111image to Figma-handoff.md   +584
+figma_bridge/code.js                               +107  -34
+src/app/services/structure/fidelity/text_calibration.py    +1422
+src/app/services/structure/fidelity/calibration_strategies.py  +54
+src/app/services/rendering/svg_adapter.py           +108  -4
+src/app/services/rendering/figma_adapter.py         +61
+scripts/p1_text_rotation_evidence.py                +235
+scripts/p1_source_font_metrics.py                   +432
+scripts/p1_display_weight_vote.py                   +393
+tests/v2/test_badge_outline.py                      +239
+tests/v2/test_badge_rings.py                        +177
+tests/v2/test_text_rotation_evidence.py             +107
+tests/v2/test_text_rotation_wiring.py               +141
+tests/v2/test_text_block_lines.py                   +90
+tests/v2/test_line_font_sizes.py                    +114
+tests/v2/test_source_font_metrics.py                +108
+tests/v2/test_display_weight_vote.py                +92
+```
+
+### 19.4 每个文件改了什么
+
+| 文件 | 改了什么 |
+|---|---|
+| `text_calibration.py` | 新增 20 个函数。对外能力 4 个：`synthesize_badge_outline`（角标裁剪→描边矩形，支持同心双环 + 倾斜）、`apply_text_rotation`（写 `rotation`，继承所在描边框角度）、`measure_text_block_lines`（去斜分带）、`restructure_tilted_text_block`（重建两行 + 按行字号）。另有 `measure_element_rotation`（投影方差测倾角）与 15 个测量辅助（`_badge_ring` / `_deskew_frame` / `_ring_tilt` / `_split_block_lines` 等） |
+| `calibration_strategies.py` | 注册 3 条新策略，全部 `always=True`（不增加渲染次数）：`badge-outline` → `text-rotation` → `text-block-lines`，顺序即依赖 |
+| `svg_adapter.py` | ① `_append` 支持把元素包进 `<g transform="rotate(deg cx cy)">`（裁边 `<g clip-path>` 在旋转**外层**）；② `_lines_text_element` 支持 `lineSizes`：每行 `<tspan>` 带自己 `font-size` + 自己基线，游标按该行行框累加；③ 新增 `_font_weight`，认数值字重（原来只认 `fontWeightValue`/"bold"） |
+| `figma_adapter.py` | 新增 `_line_font_runs`：由 `lines + lineSizes + lineHeight/fontSize` 生成 `richRuns`（每行一个字符区间，带 `fontSize` 与该行 `lineHeight`） |
+| `figma_bridge/code.js` | ① `applyRotation` → `node.rotation`，在 `applyStyle` / `createText`（**含折行分支**）/ `createImage` 三处调用；② `applyRichRuns` 抽成函数，在 `characters` 换行**之后**、`resize` **之后**各重放一次；③ `setRangeLineHeight` 按行行高；④ 文本盒宽取 `max(墨迹, 估宽×1.3)` + 居中；⑤ 回读摘要新增 `rotation` / `lineHeight`（`figma.mixed` → `"mixed"`）/ `bridgeBuild` / `warnings`；⑥ `BRIDGE_BUILD` 版本戳 |
+| `scripts/p1_text_rotation_evidence.py` | 只读取证：三族每条文本的倾角 + 去斜后行数。产物 `output/_p1_text_rotation_evidence/evidence.json` |
+| `scripts/p1_source_font_metrics.py` | 只读取证：用描边环内框给候选族/字重打分（四项对账）。样本先按**金稿字号**对齐。产物 `output/_p1_source_font_metrics/evidence*.json` |
+| `scripts/p1_display_weight_vote.py` | 只读取证：把同一套对账扩到金稿全部文本框，按字号档投票。docstring 写明三条限制（400≡500、页面两族、有金稿时应查表），并自动检测 `collapsed` 打告警 |
+| `test_badge_outline.py`（9 例） | 细描边识别、实心拒绝并记原因、容器拒绝、已处理元素幂等、`paintDepth` 归零 |
+| `test_badge_rings.py`（4 例） | 同心双环各成一元素、外环尺寸/描边/圆角、倾斜角度、内环圆角 |
+| `test_text_rotation_evidence.py`（7 例） | 双向精度、死区、符号约定（逆时针正）、gain 单调、空框、金稿真值反解 |
+| `test_text_rotation_wiring.py`（6 例） | 设计字段 → SVG `rotate()`、中心=盒心、裁边在旋转外层、继承描边框角度 |
+| `test_text_block_lines.py`（5 例） | 直立文本 1 行、倾斜块 2 行、零填充不裁角、窗口=元素框（不是扩框） |
+| `test_line_font_sizes.py`（5 例） | 无 `lineSizes` 时字节不变、每行字号、每行基线递增、Figma `richRuns` 区间与行高、行数与字号数不匹配时返回空 |
+| `test_source_font_metrics.py`（7 例） | 金稿字号对齐、候选覆盖权重、四项目标函数、未安装族与兜底一致、坐标系（相对盒而非画布） |
+| `test_display_weight_vote.py`（4 例） | 父级坐标累加、根节点偏移清零、裁切判据只在同轴两侧同时贴边、字号档划分 |
+| `20261111image to Figma-handoff.md` | 新增 §9–§19，含 6 组禁改项、4 张实测对账表、5 次自我纠正记录 |
+
+### 19.5 已运行的测试及结果
+
+| 测试 | 结果 |
+|---|---|
+| `tests/v2` 全量 | **1478 passed / 8 failed**（91s） |
+| 8 个失败 | **全部是既有问题，与本轮无交集**：4 个 axure holdout manifest（缺冻结输入）+ 4 个 p5 probe（环境态不符：期望 `failed`、实际 `completed-for-current-scope`） |
+| 新增用例 | 8 个文件 / **47 例**，全通过 |
+| ruff | 本轮改动的 8 个源文件 + 8 个测试文件干净（`inventory.py`、`fixed_canvas_compiler.py` 的既有告警不属于本轮） |
+| 三族门禁（`--rerun --policy 2.1`，最后完整跑在 §16 之后） | dark **94.65** / light-form **92.16** / light-table **95.17**，三族 PASS |
+| dark 详细 | `ink_ratio 0.900`(n=40) / `style_mm 20/41` / `critical 27/27` / `bitmap 1` / `nodes 70` |
+| `within30` 轨迹 | 94.84 → 94.79（`badge-outline`）→ **95.06**（`text-block-lines`）→ 94.64（双环）→ 94.65（字重回退）。**净 −0.19** |
+
+### 19.6 当前仍存在的问题
+
+**A. 真正的缺陷**
+
+1. **大角标文字整体低 12px**（参考墨顶 670 / 本轮 682）。原因：Noto Sans SC ascent 1.16em，参考字体约 0.97em，同一个 72px 行框基线差 ~12px。
+2. **数字宽 27%** → `ink-convergence` 只能压字号 64→50.5，高度随之 49（参考 52）。**宽与高不可兼得，由字体族决定**，不是排布逻辑。
+3. **字重卡在两档之间**（参考墨量 1462 介于 Regular 1191 与 Bold 1703），而 `fontWeight` 有 7 个写入点、判据互不相同。
+4. **小字 chrome 无字重规则**：20 个金稿 Bold 里 17 个是按钮/标签/表头，目前没有任何规则覆盖这一类。
+5. **`native text gate` 1/30**，dark `acceptance.status = blocked-fail` —— **唯一的硬红灯**，三族都未达标，30 个 owner 的 `baseline` 全是 `unknown`。
+6. `style_mm 20/41` 的主体是第 3、4 条，不是阈值偏了。
+
+**B. 已知取舍（不是 bug，别当 bug 修）**
+
+1. **`within30` 净降 0.19 是换来的，不是退步。** 被替换掉的位图**本身就是参考像素**，任何矢量复刻在那一块都不可能更接近。换来的是：位图里烤着的字形没了（重影在原理上消失）、`bitmap 5→1`、两块可编辑。角标区像素失配 11.2% → 33%，全部落在被矢量化的两块上。
+2. **基线故意没重注册。** 按当前 `ink_ratio 0.900` 重注册会把允许带从 0.119 放宽到 0.15，方向是**假通过**。
+3. **小角标现在"细字 + 干净描边"**，参考是"粗字 + 干净描边"。这份字重/字号失配是既有的，裁片一直盖着它。
+4. **大角标底边框多画一条**：参考里角标被截图裁在页面底边，发出去的矩形仍会在最后 3 行画出真图没有的描边（每处 105×3px）。矩形不能只有三条边，这是方案 B 的固有代价。
+
+**C. 未开工（原 §6 剩余项 + 更早的阻塞项）**
+
+| 项 | 状态 |
+|---|---|
+| `§6.3` 反色问题（`控制台` 该深底白字） | 未开始 |
+| `§6.4` ACCTOKEN logo 缺失 | 未开始（检测层缺口，9 个 asset 里没有它） |
+| `§6.5 / §6.8` 价格槽位 | 未开始（副价格只有 2 条样本） |
+| `§6.12` OCR 合并证据化 | 未开始（`image_contract.py:529` 仍只记 `{text, reason}`） |
+| `§3b` VLM 裁判 | 已上线但仍 advisory（标定 83% < 85% 门槛） |
+| `Phase 5` 结构发射 | 零改动，输出仍是扁平 1 层 |
+
+### 19.7 下一步应该从哪里继续
+
+**建议：`native text gate` 取证，先只读，不动代码。**
+
+理由：它是唯一的 `blocked-fail`；30 个 owner 的 `baseline` 全是 `unknown`，说明这块可能从来没被正经搭过；它比 `style_mm` 更根本——原生文字永远过不了门禁，Phase 5（可编辑性）就建在沙上。
+
+第一步只回答三个问题：
+
+1. 这个 gate 按什么判"这是原生文字"？
+2. 那 1 个通过的是什么、凭什么过？
+3. 是**判定太严**（其实已达标但没被认出），还是**实现没好**（真的还是位图）？
+
+答案决定它是"调整判定"还是"独立立项"，工作量差一个数量级。
+
+**不想做这个的话，两个更小、更"看得见"的选项**：`§6.3` 反色（`控制台` 深底白字、参考图是深底），`§6.4` ACCTOKEN logo 缺失。
+
+**不建议继续钻字重。** 收敛 7 个入口是跨 4 个模块的重构；而且收敛后证据仍不够——§2.2 已实测"墨量判字重 AUC 0.62"，统一入口之后还是撞这堵墙，除非引入新证据源。这已经是连续第六轮字重/字体迭代，边际收益在快速下降。
+
+### 19.8 哪些内容禁止再次修改
+
+§9.7 / §10.5 / §11.1 / §15.7 / §15.9 / §18.5 汇总去重后 23 条，按主题分组。**§1 的既有禁改项（11-09 / 11-10 那批）继续有效。**
+
+**A. 角标几何测量**
+
+1. **不要**用 `_run_near`（最近一条）量角标环——这些徽章是同心双描边，最近的是内环；宽高混用会得到 132×152 和一个 61 的圆角。
+2. **不要**在旋转形状的**最高一行**量圆角——那一行只切到一个角点，答案永远是半个宽。
+3. **不要**在重采样过的帧里用 ±24 色差量描边——会稳定少 2px（6→4、3→1）；那里要用"离背景一半距离"的 50% 覆盖定义。
+4. **不要**用左竖条那一列量上边界（少 6px），也不要用"标签框下方"找下边框（角标被裁在页边，最低命中是字形）。
+5. **不要**放开 `badge-outline` 的"图比标签宽"判据——那是它与 `fragment-image` 的分界线，两条同时放宽会让一块角标被处理两次。
+6. **不要**给 `badge-outline` 加"实心药丸"分支——三族 0 例，2 样本拟合在本仓库已被否过两次。
+7. **不要**把 `ring_fill_ratio` 改回阈值判据——它把"描边多细"和"里面装多少字"混在一个数里，分不开描边与实心。
+8. **不要**把成功判据写成只留 `{text, reason}`——现在记 `bbox / crop_bbox / stroke / radius / 两个颜色 / rotation / deskewed / ring_fill_ratio / label_ink_share`。
+
+**B. 旋转**
+
+9. **不要**用 `minAreaRect` 或二阶矩量文本倾斜——实测 `5.8折` 给 0.0°（真值 6.0），因为跨两条倾斜行的并集接近方形。
+10. **不要**把 2.5° 死区调小——直立文本的 raw 角度靠抗锯齿就能到 2.0°（dark）/ 1.25°（light-table），调小就开始转直角文本。
+11. **不要**用 `absolute` 外接框反解**方向**——cos 是偶函数，只能给 `|t|`，方向必须来自像素。
+12. **不要**只接旋转就宣称修好 `5.8折`——它同时是"两行被合成一行"，行切分 + 旋转 + 字号三样必须一起做。
+
+**C. 文本渲染**
+
+13. **不要**把文本盒宽设成墨迹宽——排版要的是前进宽，Figma 会在墨迹宽处软换行，把一行拆成两行顶出框外。
+14. **不要**在 `resize` 之前重放区间样式，也不要在其后再写节点级 `lineHeight`——两者都会把逐行样式折回节点级。
+15. **不要**往回读摘要里塞未经检查的 Figma 属性——`lineHeight` 可能是 `figma.mixed`（symbol），序列化会让整次回读崩在 `Cannot unwrap symbol`。
+16. `createText` 有多条 `return`：任何"末尾统一处理"的调用必须在**每个分支**里重复；新增分支时先数 `return`。
+
+**D. 插件 / 桥**
+
+17. **不要**改 `figma_bridge/` 而不同步 `D:/LLM-Data/Figma_auto_agent`——Figma 加载的是那一份，worktree 里的改动从不生效（已因此白跑三轮）。
+18. **不要**忘了改 `BRIDGE_BUILD`——它是唯一能证明"跑的是哪一版"的东西。
+
+**E. 字重**
+
+19. **不要**从"字号 + 字重"的表面相关推断字重规则的来源——light-table 的 10 个 bold 是 21pt、阈值是 20，看似吻合，实测该族 82 个 ≥20pt 的文本里只有 10 个 bold。
+20. **不要**以为 `fontWeight` 只有一个写入点——目前 7 个（§18 表），改任何一个前先用 `grep` 把其余六个找出来，否则会重演 §15.8 那种"两条规则互相抵消"。
+21. **不要**把 `style_resolver` 的 `role` 判据直接换成墨量判据——该函数手里确实有 `ink_count`/`contrast`，但 §2.2 已否证"墨量能分字重"（AUC 0.62）。
+
+**F. 数据 / 基线**
+
+22. **不要**按当前值重注册基线——会把允许带放宽，方向是假通过。
+23. **不要**在候选与源图**字号不同**时比较字体——设计是 50.5/64（被闭环压过），金稿是 62/30；不先对齐，量的是字号差。
+
+**附**：`calibrate_text_weight_from_render` 及其 9 个单测仍是不接线的**墓碑**（19 条改动只中 4 条，24/39→25/39）。它是防止有人重走死路的记录，不是待办。
