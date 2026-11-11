@@ -2720,6 +2720,125 @@ def drop_implausible_duplicate_owners(
     }
 
 
+def measure_text_block_lines(
+    image: Any,
+    bbox: Any,
+    *,
+    rotation: float | None = None,
+    gap: int = 2,
+    min_band_height: int = 5,
+) -> dict[str, Any] | None:
+    """Split a text block into its lines, deskewing first.
+
+    A tilted multi-line block cannot be split by rows as it stands: the ink of
+    two lines leaning the same way overlaps vertically, so ``5.8折`` measures
+    as **one** connected band (155 px of ink in a 105 px box) and any row-gap
+    test finds nothing.  Levelling the block first is what makes the lines
+    separate again -- measured on dark-card-grid, two bands come back at
+    89x47 and 30x29, matching the gold nodes ``5.8`` (62 pt, 95x70) and ``折``
+    (30 pt, 30x34).
+
+    The window is the element box itself, not a padded one: a padded window
+    reaches the badge outline and the outline's stroke makes every row
+    non-empty, which is the same failure in a different disguise.  Rotation
+    happens on a zero-padded canvas so the corners are not clipped.
+
+    Args:
+        image: ``(h, w, 3)`` RGB array.
+        bbox: ``[x, y, width, height]`` of the block in source pixels.
+        rotation: Tilt in degrees; measured when omitted.
+        gap: Empty rows needed between two lines.
+        min_band_height: Bands thinner than this are noise, not text.
+
+    Returns:
+        ``{"tilt", "line_count", "bands", "block"}`` where each band carries
+        ``top``/``height``/``left``/``width`` in the deskewed frame, relative
+        to the block's own top-left.  ``None`` when the box holds no ink.
+    """
+    import cv2
+    import numpy as np
+
+    x, y, box_w, box_h = (int(round(float(value))) for value in list(bbox)[:4])
+    if box_w < 8 or box_h < 8:
+        return None
+    height, width = image.shape[:2]
+    x, y = max(0, x), max(0, y)
+    box_w, box_h = min(box_w, width - x), min(box_h, height - y)
+    if box_w < 8 or box_h < 8:
+        return None
+    window = image[y : y + box_h, x : x + box_w]
+    colors, counts = np.unique(window.reshape(-1, 3), axis=0, return_counts=True)
+    background = colors[int(counts.argmax())].astype(np.int16)
+    ink = (np.abs(window - background).max(axis=2) > 60).astype(np.float32)
+    if ink.sum() < 30:
+        return None
+    tilt = float(rotation or 0.0)
+    if rotation is None:
+        measured = measure_element_rotation(image, [x, y, box_w, box_h])
+        tilt = float(measured["angle"]) if measured else 0.0
+
+    margin = int(np.ceil(max(box_w, box_h) * abs(np.sin(np.radians(tilt))))) + 6
+    canvas = np.zeros((box_h + 2 * margin, box_w + 2 * margin), dtype=np.float32)
+    canvas[margin : margin + box_h, margin : margin + box_w] = ink
+    rows, columns = canvas.shape
+    matrix = cv2.getRotationMatrix2D((columns / 2, rows / 2), -tilt, 1.0)
+    flat = cv2.warpAffine(
+        canvas, matrix, (columns, rows), flags=cv2.INTER_LINEAR, borderValue=0
+    )
+
+    profile = (flat > 0.3).sum(axis=1)
+    spans: list[tuple[int, int]] = []
+    start: int | None = None
+    blank = 0
+    for index, value in enumerate(profile):
+        if value > 0:
+            if start is None:
+                start = index
+            blank = 0
+        elif start is not None:
+            blank += 1
+            if blank >= gap:
+                spans.append((start, index - blank + 1))
+                start = None
+                blank = 0
+    if start is not None:
+        spans.append((start, len(profile)))
+    spans = [span for span in spans if span[1] - span[0] >= min_band_height]
+    if not spans:
+        return None
+
+    bands: list[dict[str, int]] = []
+    for top, bottom in spans:
+        columns_hit = np.flatnonzero((flat[top:bottom] > 0.3).any(axis=0))
+        if not columns_hit.size:
+            continue
+        bands.append(
+            {
+                "top": int(top - margin),
+                "height": int(bottom - top),
+                "left": int(columns_hit.min() - margin),
+                "width": int(columns_hit.max() - columns_hit.min() + 1),
+            }
+        )
+    if not bands:
+        return None
+    block_top = min(band["top"] for band in bands)
+    block_bottom = max(band["top"] + band["height"] for band in bands)
+    block_left = min(band["left"] for band in bands)
+    block_right = max(band["left"] + band["width"] for band in bands)
+    return {
+        "tilt": round(tilt, 2),
+        "line_count": len(bands),
+        "bands": bands,
+        "block": {
+            "left": block_left,
+            "top": block_top,
+            "width": block_right - block_left,
+            "height": block_bottom - block_top,
+        },
+    }
+
+
 def apply_text_rotation(
     design: Mapping[str, Any],
     image_path: str | Path,

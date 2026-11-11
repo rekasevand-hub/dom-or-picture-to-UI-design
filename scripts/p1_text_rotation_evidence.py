@@ -40,6 +40,7 @@ if str(ROOT) not in sys.path:
 
 from src.app.services.structure.fidelity.text_calibration import (  # noqa: E402
     measure_element_rotation,
+    measure_text_block_lines,
 )
 
 FIXTURES = ROOT / "tests" / "fixtures" / "benchmark_families"
@@ -161,6 +162,12 @@ def measure_family(family: str) -> dict[str, Any]:
         item = {"text": str(element.get("text"))[:24], "box": box, **measured}
         estimates.append(item)
     rotated = [item for item in estimates if abs(item["angle"]) >= 2.5]
+    for item in rotated:
+        # A tilted multi-line block reports one band until it is levelled, so
+        # the line count is measured after deskewing, not from the raw box.
+        item["lines"] = measure_text_block_lines(
+            reference, item["box"], rotation=item["angle"]
+        )
     upright = [abs(item["raw"]) for item in estimates if abs(item["angle"]) < 2.5]
     return {
         "family": family,
@@ -207,9 +214,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         print(f"   可测文本 {family['measured_texts']} 条")
         for item in family["detected"]:
+            lines = item.get("lines") or {}
+            bands = " + ".join(
+                f"{band['width']}x{band['height']}" for band in lines.get("bands") or []
+            )
             print(
                 f"   检测: {item['text']!r} {item['angle']:+.2f}° "
-                f"(gain {item['gain']}, ink {item['ink']})"
+                f"(gain {item['gain']}, ink {item['ink']}) -> "
+                f"{lines.get('line_count', '?')} 行: {bands or '不可测'}"
             )
         quiet = family["upright_abs_tilt"]
         print(
