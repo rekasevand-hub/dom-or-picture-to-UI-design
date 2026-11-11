@@ -968,6 +968,11 @@ class FigmaBridgeAdapter(PrototypeAdapter):
         self, spec: dict[str, Any], parent_id: str | None = None
     ) -> str | None:
         params = _with_parent(spec, parent_id)
+        runs = _line_font_runs(spec.get("lines"), spec.get("lineSizes"))
+        if runs:
+            # Figma 的 richRuns 是字符区间样式；块内每行一个区间，字号各自独立
+            # （价格 62pt + 单位 30pt 这种）。SVG 端用 `lineSizes` 达成同一件事。
+            params["richRuns"] = runs
         node_id = self._send("create_text", params)
         self._native_text_nodes = [
             *getattr(self, "_native_text_nodes", []),
@@ -1207,6 +1212,39 @@ class FigmaBridgeAdapter(PrototypeAdapter):
     def flush(self) -> None:
         self.finalize_semantic_componentization()
         self.disconnect()
+
+
+
+def _line_font_runs(lines: Any, sizes: Any) -> list[dict[str, Any]]:
+    """One ``richRuns`` entry per line, carrying that line's font size.
+
+    Offsets count the newlines: ``lines.join("\n")`` is what the bridge writes
+    into ``characters``, so a two-line block spans ``len(line0) + 1 + len(line1)``
+    characters and the second run starts one past the end of the first.
+
+    Args:
+        lines: The block's lines, in order.
+        sizes: Font size per line; rows that are not a positive number are
+            skipped, leaving that line at the block's own ``fontSize``.
+
+    Returns:
+        ``[]`` when the two lists do not line up (nothing to override).
+    """
+    if not isinstance(lines, list) or not isinstance(sizes, list):
+        return []
+    if not lines or len(lines) != len(sizes):
+        return []
+    runs: list[dict[str, Any]] = []
+    start = 0
+    for line, size in zip(lines, sizes):
+        text = str(line)
+        end = start + len(text)
+        if isinstance(size, (int, float)) and size > 0:
+            runs.append(
+                {"start": start, "end": end, "style": {"fontSize": int(size)}}
+            )
+        start = end + 1
+    return runs
 
 
 def _with_parent(

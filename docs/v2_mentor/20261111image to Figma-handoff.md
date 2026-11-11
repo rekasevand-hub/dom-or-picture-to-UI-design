@@ -573,3 +573,39 @@ Figma 里那个 dev plugin **不是从任何 worktree 导入的**，而是
 3. 两端一致后再接 `lines` + 块框 + 每行字号，然后跑三族门禁。
 
 在此之前，`measure_text_block_lines` 是**只读能力**：能回答"这块有几行、每行多大"，但还没有任何策略调用它。
+
+---
+
+## 13. 按行字号（①b 第二步）：两端都通了
+
+**已完成**：`lineSizes`（与 `lines` 平行的一行一个字号）在 SVG 与 Figma 两端都生效，5 个单测（`tests/v2/test_line_font_sizes.py`）。
+
+### 13.1 为什么不能共用一个字号
+
+金稿这两行是 **62pt / 30pt**（`5.8` 与 `折`），比例 2.07。用一个字号时：
+- 取大 → `折` 变成和 `5.8` 一样大，观感错；
+- 取中（46pt）→ SVG 按 1.4em 排行距，两行 46pt = 128px，超过块高 86px，第二行直接掉出框（已渲图验证）。
+- 且不同字号的 em 基线不在同一条线上，**不能共用 `dy`**。
+
+### 13.2 两端实现
+
+| 端 | 做法 |
+|---|---|
+| SVG | `_lines_text_element` 新增分支：`lineSizes` 存在时每个 `<tspan>` 带自己的 `font-size`，并按**自己的行框**（`size × 行框比`）累加游标算基线；行框比取自 `lineHeight / fontSize`，所以显式 `lineHeight` 仍然生效 |
+| Figma | `figma_adapter.create_text` 由 `lines + lineSizes` 生成 `richRuns`（字符区间 = 该行在 `lines.join("\n")` 里的位置） |
+| 桥 | `applyRichRuns` 抽成独立函数，并在**折行分支写入 `characters` 之后重放一次**——区间是对着字符算的，先设字符再设区间，否则区间落在旧串上 |
+
+**字节兼容**：没有 `lineSizes` 时走原分支，`<tspan>` 不带 `font-size`，`<text>` 上仍是单一字号（`test_svg_without_line_sizes_keeps_the_old_shape` 锁住）。
+
+### 13.3 本地验证（未接线）
+
+把 `5.8折` 改成 `lines=["5.8","折"]`、`lineSizes=[62,30]`、`lineHeight=70`、块框 95×104，本地渲图对比：`5.8` 大、`折` 小、两行、基本装进描边框——与参考的字号关系一致。
+
+**仍然乱的原因**：位图里那份 `5.8`/`折` 还在（描边框本身就是那张位图）。这是 ①b 的第 2 件事，见 §14 的计划。
+
+### 13.4 尚未做
+
+1. 把 `measure_text_block_lines` 的结果接成策略（写 `lines` / `lineSizes` / 块框）；
+2. 消掉位图重复：`badge-outline` 现在要求标签完全落在裁剪框内，而这块的标签溢出 27px；放开判据并让它发出的矩形带上 `rotation`。
+
+两件都做完才谈得上"对上参考"。在此之前新能力是**惰性**的：没有任何策略写 `lineSizes`。

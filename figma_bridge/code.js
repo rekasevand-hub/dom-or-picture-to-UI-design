@@ -748,20 +748,9 @@ function applyLetterSpacing(text, params) {
   }
 }
 
-async function createText(params) {
-  validateParent(params);
-  // 先解析字体再建节点：strict 失败时不留下未挂载的孤立文本节点。
-  const resolvedFont = await loadFirstAvailableFont(
-    params.fontFamily,
-    params.fontWeightValue ?? params.fontWeight,
-    params.fontPolicy === "strict",
-    params.fontStyle
-  );
-  const text = figma.createText();
-  // 必须先落地字体，再写 characters（否则按创建时的默认字体排版）
-  text.fontName = resolvedFont;
-  text.characters = params.text || "";
-  text.fontSize = params.fontSize || 16;
+// richRuns 是**字符区间**样式，区间必须对着当前的 characters 算。折行分支会把
+// characters 换成 lines.join("\n"), 所以那段之后要重放一次，否则区间落在旧串上。
+async function applyRichRuns(text, params) {
   const richRuns = Array.isArray(params.richRuns) ? params.richRuns : [];
   for (const run of richRuns) {
     const start = Math.max(0, Math.min(text.characters.length, Number(run.start) || 0));
@@ -781,11 +770,27 @@ async function createText(params) {
     }
     const runColor = hexToRgb(style.textColor || params.textColor);
     if (runColor) {
-      try {
-        text.setRangeFills(start, end, [{ type: "SOLID", color: runColor }]);
-      } catch (err) {}
+      try { text.setRangeFills(start, end, [{ type: "SOLID", color: runColor }]); } catch (err) {}
     }
   }
+}
+
+async function createText(params) {
+  validateParent(params);
+  // 先解析字体再建节点：strict 失败时不留下未挂载的孤立文本节点。
+  const resolvedFont = await loadFirstAvailableFont(
+    params.fontFamily,
+    params.fontWeightValue ?? params.fontWeight,
+    params.fontPolicy === "strict",
+    params.fontStyle
+  );
+  const text = figma.createText();
+  // 必须先落地字体，再写 characters（否则按创建时的默认字体排版）
+  text.fontName = resolvedFont;
+  text.characters = params.text || "";
+  text.fontSize = params.fontSize || 16;
+  await applyRichRuns(text, params);
+
   // CSS line-height affects the glyph position even for single-line text.
   // Apply it before the single/multi-line branches so Figma does not use its
   // default line box for one-line blocks.
@@ -826,6 +831,8 @@ async function createText(params) {
     // 显式换行 + 固定宽度 + 禁用 auto-resize：Figma 若再按真实字宽自动换行，
     // 会多折出一行把盒子撑破（估算再准也不敢保证与真实字体度量逐字一致）。
     text.characters = lines.join("\n");
+    // 换行会重排 characters，字符区间跟着平移——按新串重放一次每行字号。
+    await applyRichRuns(text, params);
     const boxWidth = params.width || text.width;
     try {
       // Browser-measured line breaks are authoritative. HEIGHT lets Figma wrap

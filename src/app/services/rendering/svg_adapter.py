@@ -579,13 +579,43 @@ class SVGMockAdapter(PrototypeAdapter):
         self._apply_letter_spacing(text_el, spec)
         self._apply_opacity(text_el, spec)
         top = spec.get("y", 0) + self._baseline_inset(spec)
-        for i, line in enumerate(lines):
-            tspan = ET.SubElement(text_el, "tspan")
-            tspan.set("x", str(x))
-            tspan.set(
-                "y", str(text_baseline_y(top + i * line_height, line_height, font_size))
+        line_sizes = spec.get("lineSizes")
+        mixed = (
+            isinstance(line_sizes, list)
+            and len(line_sizes) == len(lines)
+            and any(
+                isinstance(value, (int, float)) and value > 0 and int(value) != font_size
+                for value in line_sizes
             )
-            tspan.text = line
+        )
+        if not mixed:
+            for i, line in enumerate(lines):
+                tspan = ET.SubElement(text_el, "tspan")
+                tspan.set("x", str(x))
+                tspan.set(
+                    "y",
+                    str(text_baseline_y(top + i * line_height, line_height, font_size)),
+                )
+                tspan.text = line
+        else:
+            # 一个块里的行可以有不同字号（价格 + 单位：`5.8` 62pt、`折` 30pt）。
+            # 各行按**自己**的字号算行框与基线——不同字号的 em 基线不在同一条
+            # 线上，共用一个 line_height 会让大行压住小行。行框比例沿用上面算出的
+            # `line_height / font_size`，这样显式 lineHeight 仍然生效。
+            ratio = (line_height / font_size) if font_size else 1.4
+            cursor = top
+            for i, line in enumerate(lines):
+                size = line_sizes[i]
+                size = int(size) if isinstance(size, (int, float)) and size > 0 else font_size
+                box_height = max(1, int(round(size * ratio)))
+                tspan = ET.SubElement(text_el, "tspan")
+                tspan.set("x", str(x))
+                tspan.set("font-size", str(size))
+                tspan.set(
+                    "y", str(text_baseline_y(cursor, box_height, size))
+                )
+                tspan.text = line
+                cursor += box_height
         self._apply_text_whitespace(
             text_el,
             "\n".join(str(line) for line in lines),
