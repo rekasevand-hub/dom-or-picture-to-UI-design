@@ -1804,6 +1804,7 @@ def synthesize_badge_outline(
     label_ink_share: float = 0.03,
     margin_ratio: float = 0.9,
     min_label_coverage: float = 0.5,
+    min_badge_tilt: float = 2.5,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Swap a badge crop that carries its own label for a drawn outline.
 
@@ -1864,6 +1865,9 @@ def synthesize_badge_outline(
         min_label_coverage: Share of the label's box the crop must contain.
             A tilted badge's crop clips the block it surrounds, so enclosure is
             too strong a requirement (measured: 74 % coverage on 5.8折).
+        min_badge_tilt: Tilt below which the replacement is left axis-aligned.
+            Same dead zone as ``text-rotation``: upright outlines measure 0.00
+            degrees, the tilted ones 6.02.
 
     Returns:
         ``(calibrated_design, report)``.  Each applied badge is replaced in
@@ -1900,6 +1904,7 @@ def synthesize_badge_outline(
             pixels = np.asarray(handle.convert("RGB")).astype(np.int16)
     except (OSError, ValueError):
         return calibrated, report
+    additions: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
     for element in elements:
         if str(element.get("type") or "") != "image":
             continue
@@ -1920,15 +1925,22 @@ def synthesize_badge_outline(
             label_h = label_box[3] - label_box[1]
             if label_w <= 0 or label_h <= 0:
                 continue
-            # Containment, not enclosure: the detector box around a tilted
-            # badge crops the block it sits under (5.8折 overhangs the crop by
-            # 27 px at the bottom), so requiring the whole label inside leaves
-            # exactly the worst badge unfixed.  What the rule actually needs is
-            # that the crop carries most of the label -- half its area and its
-            # centre -- which a neighbouring element's box never does.
-            if crop[0] > label_box[0] + 4 or crop[2] < label_box[2] - 4:
+            # Coverage, not enclosure: the detector box around a tilted badge
+            # clips the block it surrounds -- 5.8折's crop stops 27 px above the
+            # label box's bottom -- so requiring the whole label inside leaves
+            # out exactly the badge that needs this most.  What the rule needs
+            # is that the crop carries most of the label (half its area and its
+            # centre), which a neighbouring element's box never does.
+            overlap_w = min(crop[2], label_box[2]) - max(crop[0], label_box[0])
+            overlap_h = min(crop[3], label_box[3]) - max(crop[1], label_box[1])
+            if overlap_w <= 0 or overlap_h <= 0:
                 continue
-            if crop[1] > label_box[1] + 4 or crop[3] < label_box[3] - 4:
+            if overlap_w * overlap_h < min_label_coverage * label_w * label_h:
+                continue
+            if not (
+                crop[0] <= (label_box[0] + label_box[2]) / 2 <= crop[2]
+                and crop[1] <= (label_box[1] + label_box[3]) / 2 <= crop[3]
+            ):
                 continue
             # From here the crop does hold the label, so a refusal is worth a
             # record: these are the candidates a reader would expect to see.
@@ -1951,7 +1963,13 @@ def synthesize_badge_outline(
             ring, reason = _badge_ring(
                 pixels,
                 label_box,
-                pad=max(pad, int(0.35 * max(label_w, label_h))),
+                # The window has to hold the badge, which is wider than its own
+                # label by a margin no fixed constant covers (46 px above the
+                # label box here).  The scan may go further: it only follows
+                # pixels of the outline's own colour, so an unrelated element
+                # cannot be reached by accident.
+                window_pad=max(pad, int(0.6 * max(label_w, label_h))),
+                scan_limit=max(pad, int(margin_ratio * max(label_w, label_h))),
                 saturation_threshold=saturation_threshold,
                 background_distance=background_distance,
                 label_ink_share=label_ink_share,
@@ -1973,65 +1991,80 @@ def synthesize_badge_outline(
             element["name"] = "badge-outline"
             element["contentRef"] = None
             element["paintDepth"] = 0
-            # The ring scan returns an axis-aligned box.  For a tilted badge that
-            # is the *bounding* box, not the badge: writing it as width/height
-            # and then rotating would draw a shape too big on both axes.  Undo
-            # the rotation instead -- for a tilt t, an own size (w, h) shows up
-            # as (w·cos t + h·sin t, w·sin t + h·cos t) -- so the rect is the
-            # badge itself and `rotation` puts it back where the source had it.
-            left, top, right, bottom = (float(value) for value in ring["bbox"])
-            span_w, span_h = right - left, bottom - top
-            tilt = 0.0
-            measured_tilt = measure_element_rotation(
-                pixels,
-                [
-                    label_box[0],
-                    label_box[1],
-                    label_box[2] - label_box[0],
-                    label_box[3] - label_box[1],
-                ],
-            )
-            if measured_tilt is not None and abs(measured_tilt["angle"]) >= 2.5:
-                tilt = float(measured_tilt["angle"])
-            if tilt:
-                radians = math.radians(tilt)
-                cos_t, sin_t = math.cos(radians), math.sin(radians)
-                own_w = span_w * cos_t - span_h * sin_t
-                own_h = span_h * cos_t - span_w * sin_t
-            else:
-                own_w, own_h = span_w, span_h
-            centre_x = (left + right) / 2
-            centre_y = (top + bottom) / 2
-            element["x"] = centre_x - own_w / 2
-            element["y"] = centre_y - own_h / 2
-            element["width"] = own_w
-            element["height"] = own_h
-            if tilt:
-                element["rotation"] = tilt
-            else:
-                element.pop("rotation", None)
-            element["style"] = {
-                "fillColor": ring["fill"],
-                "borderColor": ring["accent"],
-                "borderWidth": ring["stroke"],
-                "borderRadius": ring["radius"],
-            }
+            # The ring scan reports where the strokes cross the label's centre
+            # row and column, i.e. the outline's *own* box -- on a tilted badge
+            # that is the badge, not its bounding box, so the measured size goes
+            # straight into width/height and `rotation` puts it back in place.
+            # (Undoing the rotation arithmetically, as an earlier attempt did,
+            # shrinks a box that was never inflated: 152 px became 136.)
+            tilt = float(ring["tilt"])
+            if abs(tilt) < min_badge_tilt:
+                tilt = 0.0
+            shapes = ring["rings"]
+            extras: list[dict[str, Any]] = []
+            for index, shape in enumerate(shapes):
+                if index == 0:
+                    target = element
+                else:
+                    # A second concentric stroke is part of the badge itself,
+                    # so it becomes its own vector node instead of being lost.
+                    target = {
+                        "id": f"{element.get('id')}:ring{index}",
+                        "type": "rectangle",
+                        "text": "",
+                        "role": "badge-outline",
+                        "name": "badge-outline",
+                        "contentRef": None,
+                        "paintDepth": 0,
+                    }
+                    extras.append(target)
+                left, top, right, bottom = (float(value) for value in shape["bbox"])
+                target["x"] = left
+                target["y"] = top
+                target["width"] = right - left
+                target["height"] = bottom - top
+                target["style"] = {
+                    "fillColor": ring["fill"],
+                    "borderColor": ring["accent"],
+                    "borderWidth": shape["stroke"],
+                    "borderRadius": shape["radius"],
+                }
+                if tilt:
+                    target["rotation"] = tilt
+                else:
+                    target.pop("rotation", None)
+            if extras:
+                additions.append((element, extras))
             report["badges"].append(
                 {
                     "id": element.get("id"),
                     "text": str(label.get("text") or "")[:24],
                     "crop_bbox": [round(value, 1) for value in crop],
-                    "bbox": [float(value) for value in ring["bbox"]],
-                    "stroke": ring["stroke"],
-                    "radius": ring["radius"],
+                    "bbox": [float(value) for value in shapes[0]["bbox"]],
+                    "stroke": shapes[0]["stroke"],
+                    "radius": shapes[0]["radius"],
+                    "rings": [
+                        {
+                            "bbox": [float(value) for value in shape["bbox"]],
+                            "stroke": shape["stroke"],
+                            "radius": shape["radius"],
+                        }
+                        for shape in shapes
+                    ],
                     "fillColor": ring["fill"],
                     "borderColor": ring["accent"],
                     "rotation": round(tilt, 2),
+                    "deskewed": bool(ring.get("deskewed")),
                     "ring_fill_ratio": round(float(ring["ring_fill_ratio"]), 3),
                     "label_ink_share": round(float(ring["label_ink_share"]), 3),
                 }
             )
             break
+    # Inserted after the pass, by identity, because splicing during the loop
+    # would make it visit the elements it just created.
+    for anchor, extras in reversed(additions):
+        position = elements.index(anchor) + 1
+        elements[position:position] = extras
     if report["badges"]:
         calibrated["elements"] = elements
         report["status"] = "applied"
@@ -2091,22 +2124,213 @@ def _hex_colour(value: Any) -> str:
     return f"#{red:02X}{green:02X}{blue:02X}"
 
 
+def _runs_outward(line: Any, start: int, step: int, limit: int) -> list[tuple[int, int]]:
+    """Every ``True`` run found walking outward from ``start``, nearest first.
+
+    ``_run_near`` stops at the first run it meets.  That is right for a single
+    stroke and wrong for a badge drawn with two concentric ones: it returns the
+    inner frame, so a box built from "nearest on each axis" mixes the inner
+    frame's width with the outer frame's height -- measured 132x152 on a badge
+    that is 152x152, with a 61 px corner radius instead of 15.
+
+    Args:
+        line: One-dimensional boolean row or column.
+        start: Index to begin at; it may already be ``True``.
+        step: ``-1`` to walk left/up, ``+1`` to walk right/down.
+        limit: How many pixels to cover before giving up.
+
+    Returns:
+        Inclusive ``(low, high)`` runs, nearest first.
+    """
+    runs: list[tuple[int, int]] = []
+    position = start
+    for _ in range(limit + 1):
+        if not 0 <= position < line.size:
+            break
+        if line[position]:
+            run = _run_through(line, position)
+            runs.append(run)
+            position = run[0] - 1 if step < 0 else run[1] + 1
+        else:
+            position += step
+    return runs
+
+
+def _neighbour_gap(runs: list[tuple[int, int]]) -> int | None:
+    """Largest gap between neighbouring runs, or ``None`` when they overlap."""
+    ordered = sorted(runs)
+    widest = 0
+    for near, far in zip(ordered, ordered[1:]):
+        gap = far[0] - near[1] - 1
+        if gap < 0:
+            return None
+        widest = max(widest, gap)
+    return widest
+
+
+def _span_length(line: Any, anchor: int, fallback: tuple[int, int]) -> int:
+    """Length of the run of ``line`` containing ``anchor``, else ``fallback``'s."""
+    run = _run_through(line, anchor) if 0 <= anchor < line.size else None
+    if run is None:
+        run = fallback
+    return int(run[1] - run[0] + 1)
+
+
+def _rotate_point(
+    x: float, y: float, centre_x: float, centre_y: float, degrees: float
+) -> tuple[float, float]:
+    """Rotate a point about a pivot; positive ``degrees`` is counter-clockwise.
+
+    Screen coordinates, so y grows downward and the sine term flips: this is the
+    same convention as ``rotation`` in the design and in Figma.
+    """
+    radians = math.radians(degrees)
+    cos_t, sin_t = math.cos(radians), math.sin(radians)
+    dx, dy = x - centre_x, y - centre_y
+    return (centre_x + dx * cos_t + dy * sin_t, centre_y - dx * sin_t + dy * cos_t)
+
+
+def _deskew_frame(
+    window: Any, label_local: Any, tilt: float, background: Any, pad: int
+) -> tuple[Any, tuple[float, float, float, float], tuple[float, float]]:
+    """Rotate a window level, carrying the label box into the rotated frame.
+
+    Measuring a tilted outline in axis-aligned coordinates fails in a way that
+    looks like a geometry bug: the topmost row of a rotated rounded rectangle
+    touches one corner, so "where does the straight edge begin on this row"
+    answers with half the width (61 px on a 15 px corner).  Levelling first is
+    the only way to read the radius, the stroke and the own size off the shape.
+
+    Args:
+        window: ``(h, w, 3)`` pixels around the badge.
+        label_local: Label box in ``window`` coordinates.
+        tilt: The frame's tilt in degrees, counter-clockwise positive.
+        background: Fill colour for the padded border.
+        pad: Pixels added on every side so the rotated corners are not clipped.
+
+    Returns:
+        ``(pixels, label_box, pivot)`` where ``pivot`` is the rotation centre in
+        the padded frame (needed to map measurements back).
+    """
+    import numpy as np
+    from PIL import Image
+
+    canvas = np.empty(
+        (window.shape[0] + 2 * pad, window.shape[1] + 2 * pad, 3), dtype=np.int16
+    )
+    canvas[:, :] = background
+    canvas[pad : pad + window.shape[0], pad : pad + window.shape[1]] = window
+    height, width = canvas.shape[:2]
+    pivot = (width / 2, height / 2)
+    rotated = Image.fromarray(canvas.astype(np.uint8)).rotate(
+        -tilt,
+        resample=Image.BICUBIC,
+        center=pivot,
+        fillcolor=tuple(int(channel) for channel in background),
+    )
+    box = (
+        label_local[0] + pad,
+        label_local[1] + pad,
+        label_local[2] + pad,
+        label_local[3] + pad,
+    )
+    corners = [
+        (box[0], box[1]),
+        (box[2], box[1]),
+        (box[2], box[3]),
+        (box[0], box[3]),
+    ]
+    moved = [_rotate_point(x, y, pivot[0], pivot[1], -tilt) for x, y in corners]
+    return (
+        np.asarray(rotated).astype(np.int16),
+        (
+            min(x for x, _ in moved),
+            min(y for _, y in moved),
+            max(x for x, _ in moved),
+            max(y for _, y in moved),
+        ),
+        pivot,
+    )
+
+
+def _ring_tilt(same: Any, top: int, left: int, right: int) -> float:
+    """Tilt of an outline's top edge in degrees, counter-clockwise positive.
+
+    Fitted on the middle of the edge, away from the rounded corners.  This is
+    the measurement a badge needs: the row-variance estimator scores the *text*
+    inside the frame and reads 6.75 degrees on a badge tilted 6.00, while the
+    frame's own edge reproduces 6.02 on both tilted badges and 0.00 on the
+    upright ones.
+
+    Args:
+        same: Boolean mask of pixels matching the outline's colour.
+        top: Row the outline's top edge sits on, in ``same`` coordinates.
+        left: Left edge column, in ``same`` coordinates.
+        right: Right edge column, in ``same`` coordinates.
+
+    Returns:
+        Degrees, or ``0.0`` when the edge is too short to fit or touches
+        something above it (a clipped edge has no slope to measure).
+    """
+    import numpy as np
+
+    span = right - left
+    if span < 24:
+        return 0.0
+    inset = int(round(0.2 * span))
+    band_top = max(0, top - 4)
+    band_bottom = min(same.shape[0], top + max(16, int(0.2 * span)))
+    columns: list[int] = []
+    rows: list[int] = []
+    for column in range(max(0, left + inset), min(same.shape[1], right - inset + 1)):
+        starts = np.flatnonzero(same[band_top:band_bottom, column])
+        if starts.size == 0 or int(starts[0]) == 0:
+            # Either nothing here or something accent-coloured above the edge:
+            # both mean this column cannot report where the edge starts.
+            continue
+        columns.append(column)
+        rows.append(band_top + int(starts[0]))
+    if len(columns) < 12:
+        return 0.0
+    slope = float(
+        np.polyfit(
+            np.asarray(columns, dtype=float), np.asarray(rows, dtype=float), 1
+        )[0]
+    )
+    return round(math.degrees(math.atan(-slope)), 2)
+
+
 def _badge_ring(
     pixels: Any,
     label_box: tuple[float, float, float, float],
     *,
-    pad: int,
+    window_pad: int,
+    scan_limit: int,
     saturation_threshold: int,
     background_distance: int,
     label_ink_share: float,
     margin_ratio: float,
+    min_deskew_tilt: float = 1.5,
+    _deskewed: bool = False,
 ) -> tuple[dict[str, Any] | None, str]:
-    """Measure the thin outline drawn around ``label_box``, if there is one.
+    """Measure the thin outline(s) drawn around ``label_box``, if there is one.
 
     Scans outward from the label instead of labelling connected components:
     ``scipy`` is not a declared dependency, and the directional evidence -- a
     vertical bar left of the label, one right of it, a horizontal bar above it,
     all one colour -- is what "closed outline" means anyway.
+
+    **The outline is the outermost stroke.**  These badges are drawn with two
+    concentric frames (dark-card-grid's large one: 6 px outside, 4 px gap, 3 px
+    inside), so ``_run_near``'s nearest-run answer measures the *inner* frame
+    while the top/bottom scan measures the *outer* one.  That mixed box is the
+    132x152 reading that made a previous attempt draw an ellipse.  Rings are
+    returned outer-first and each one is measured consistently.
+
+    Frames a few pixels apart are one badge; frames tens of pixels apart are
+    two elements.  The gap between neighbouring strokes must therefore stay of
+    the same order as the strokes themselves, which is what keeps a card border
+    or a sibling badge from being absorbed into this one.
 
     The vertical extent comes from the middle column, not from the left bar.
     Scanning the left bar's own column looks like the better ruler -- a bar
@@ -2124,9 +2348,10 @@ def _badge_ring(
     Returns:
         ``(ring, reason)``.  ``ring`` is ``None`` when nothing was measured and
         ``reason`` says which check refused it; when ``ring`` is not ``None``
-        the reason is empty.  ``ring`` holds ``bbox`` (source pixels, right and
-        bottom exclusive), ``stroke``, ``radius``, ``fill``, ``accent``,
-        ``ring_fill_ratio`` and ``label_ink_share``.
+        the reason is empty.  ``ring`` holds ``rings`` (outer first, each with
+        ``bbox`` in source pixels with right/bottom exclusive, ``stroke`` and
+        ``radius``), ``tilt``, ``fill``, ``accent``, ``ring_fill_ratio`` and
+        ``label_ink_share``.
     """
     import numpy as np
 
@@ -2134,10 +2359,10 @@ def _badge_ring(
     label_w = lx1 - lx0
     label_h = ly1 - ly0
     image_h, image_w = pixels.shape[:2]
-    x0 = max(0, int(lx0) - pad)
-    y0 = max(0, int(ly0) - pad)
-    x1 = min(image_w, int(lx1) + pad)
-    y1 = min(image_h, int(ly1) + pad)
+    x0 = max(0, int(lx0) - window_pad)
+    y0 = max(0, int(ly0) - window_pad)
+    x1 = min(image_w, int(lx1) + window_pad)
+    y1 = min(image_h, int(ly1) + window_pad)
     if x1 - x0 < 8 or y1 - y0 < 8:
         return None, "window too small"
     window = pixels[y0:y1, x0:x1]
@@ -2162,85 +2387,137 @@ def _badge_ring(
 
     colour = np.median(window[accent], axis=0).astype(np.int16)
     same = np.abs(window - colour).max(axis=2) <= 24
+    # Which pixels count as "the stroke" depends on the frame.  On the source
+    # screenshot a stroke's edge is one anti-aliased pixel wide, and matching the
+    # colour within 24 finds the drawn width exactly (3 px for the small badges).
+    # After the frame has been rotated for measurement the anti-aliased band is
+    # wider, so the same tolerance eats a pixel off each side -- a 6 px stroke
+    # reads 4, a 3 px stroke reads 1.  There the width is read at half coverage
+    # instead, which is what a stroke's edge means geometrically rather than a
+    # constant fitted to either case.
+    measure = same
+    if _deskewed:
+        half = max(1, int(np.abs(colour - background).max()))
+        measure = (np.abs(window - background).max(axis=2) * 2) >= half
 
     mid_row = min(same.shape[0] - 1, max(0, int((ly0 + ly1) / 2) - y0))
-    left_run = _run_near(same[mid_row], int(lx0) - x0 - 1, -1, pad + 4)
-    if left_run is None:
+    left_runs = _runs_outward(same[mid_row], int(lx0) - x0 - 1, -1, scan_limit)
+    if not left_runs:
         return None, "no bar left of the label"
-    right_run = _run_near(same[mid_row], int(lx1) - x0, 1, pad + 4)
-    if right_run is None:
+    right_runs = _runs_outward(same[mid_row], int(lx1) - x0, 1, scan_limit)
+    if not right_runs:
         return None, "no bar right of the label"
-    left_outer, left_inner = left_run
-    right_inner, right_outer = right_run
+    for runs in (left_runs, right_runs):
+        if len(runs) > 3:
+            return None, "more than three accent bars on one side"
+    gap_limit = max(6, 2 * max(high - low + 1 for low, high in left_runs + right_runs))
+    for runs in (left_runs, right_runs):
+        gap = _neighbour_gap(runs)
+        if gap is None or gap > gap_limit:
+            return None, "accent bars are too far apart to be one outline"
+
+    left_ordered = sorted(left_runs)
+    right_ordered = sorted(right_runs)
+    # Count rings on the narrower side: a second bar on one side only is a
+    # neighbour that happens to share the colour, not a second frame.
+    ring_count = min(len(left_ordered), len(right_ordered))
+    left_outer, left_inner = left_ordered[0]
+    right_inner, right_outer = right_ordered[-1]
     if left_outer >= int(lx0) - x0 or right_outer <= int(lx1) - x0:
         return None, "bars do not straddle the label"
 
-    # The vertical extent is measured on the middle column, where the top and
-    # bottom edges are straight.  Measuring it on the left bar instead reads
-    # short: that column sits in the rounded corner, so it only starts a radius
-    # below the real top edge (measured 1298 vs 1292 on dark-card-grid).
     middle_column = (left_outer + right_outer) // 2
     height = same.shape[0]
-    top_bar = _run_near(same[:, middle_column], 0, 1, height)
-    if top_bar is None:
-        return None, "no top edge above the label"
-    top_outer = top_bar[0]
-    # The bottom edge may be *outside* the screenshot: these badges sit on the
-    # last row of the page, so their bottom border is clipped away and the
-    # lowest run on the middle column is a glyph, not an edge (measured: no bar
-    # at all below 1331, page bottom at 1336).  Taking the furthest extent of
-    # either column handles both the clipped badge and the ordinary one, where
-    # the middle column reaches the real bottom edge.
-    bar_column = (left_outer + left_inner) // 2
-    bottom_outer = max(
-        int(np.flatnonzero(same[:, bar_column]).max()),
-        int(np.flatnonzero(same[:, middle_column]).max()),
-    )
-    if not top_outer < mid_row < bottom_outer:
+    column_runs = _runs_outward(same[:, middle_column], 0, 1, height - 1)
+    if ring_count >= 2 and len(column_runs) >= 2 * ring_count:
+        tops = [run[0] for run in column_runs[:ring_count]]
+        bottoms = [run[1] for run in reversed(column_runs[-ring_count:])]
+    else:
+        if not column_runs:
+            return None, "no top edge above the label"
+        ring_count = 1
+        tops = [column_runs[0][0]]
+        # The bottom edge may be *outside* the screenshot: these badges sit on
+        # the last row of the page, so their bottom border is clipped away and
+        # the lowest run on the middle column is a glyph, not an edge (measured:
+        # no bar at all below 1331, page bottom at 1336).  Taking the furthest
+        # extent of either column handles both the clipped badge and the
+        # ordinary one, where the middle column reaches the real bottom edge.
+        bar_column = (left_outer + left_inner) // 2
+        bottoms = [
+            max(
+                int(np.flatnonzero(same[:, bar_column]).max()),
+                int(np.flatnonzero(same[:, middle_column]).max()),
+            )
+        ]
+
+    if not tops[0] < mid_row < bottoms[0]:
         return None, "outline does not enclose the label"
 
-    stroke = _median_int(
-        [
-            left_inner - left_outer + 1,
-            right_outer - right_inner + 1,
-            top_bar[1] - top_bar[0] + 1,
+    shapes: list[dict[str, Any]] = []
+    for index in range(ring_count):
+        left_low, left_high = left_ordered[index]
+        right_low, right_high = right_ordered[-1 - index]
+        top = tops[index]
+        bottom = bottoms[index]
+        ring_w = right_high - left_low + 1
+        ring_h = bottom - top + 1
+        if ring_w <= 0 or ring_h <= 0:
+            return None, "empty outline box"
+        thickness = [
+            _span_length(measure[mid_row], left_low, (left_low, left_high)),
+            _span_length(measure[mid_row], right_low, (right_low, right_high)),
         ]
-    )
-    ring_w = right_outer - left_outer + 1
-    ring_h = bottom_outer - top_outer + 1
-    if ring_w <= 0 or ring_h <= 0:
-        return None, "empty outline box"
-    # A blob is rejected by its stroke, not by its fill ratio: scanning outward
-    # from the label through a solid area returns a run as deep as the blob, so
-    # a "stroke" wider than a quarter of the badge cannot be an outline.
-    if stroke > max(4, int(0.25 * min(ring_w, ring_h))):
-        return None, "accent area too thick to be an outline"
-    if not 0.5 * label_h <= ring_h <= 2.5 * label_h:
+        if index < len(column_runs) and column_runs[index][0] == top:
+            thickness.append(
+                _span_length(
+                    measure[:, middle_column],
+                    top,
+                    (column_runs[index][0], column_runs[index][1]),
+                )
+            )
+        stroke = _median_int(thickness)
+        # A blob is rejected by its stroke, not by its fill ratio: scanning
+        # outward from the label through a solid area returns a run as deep as
+        # the blob, so a "stroke" wider than a quarter of the badge cannot be
+        # an outline.
+        if stroke > max(4, int(0.25 * min(ring_w, ring_h))):
+            return None, "accent area too thick to be an outline"
+        top_run = _run_through(same[top], middle_column)
+        radius = max(0, top_run[0] - left_low) if top_run is not None else 0
+        shapes.append(
+            {
+                "bbox": (
+                    left_low + x0,
+                    top + y0,
+                    right_high + x0 + 1,
+                    bottom + y0 + 1,
+                ),
+                "stroke": max(1, int(stroke)),
+                "radius": int(min(radius, max(0, min(ring_w, ring_h) // 2))),
+            }
+        )
+
+    outer = shapes[0]
+    span_h = outer["bbox"][3] - outer["bbox"][1]
+    if not 0.5 * label_h <= span_h <= 2.5 * label_h:
         return None, "outline height is not a badge height"
     label_centre = (ly0 + ly1) / 2 - y0
-    if abs((top_outer + bottom_outer) / 2 - label_centre) > 0.6 * label_h:
+    if abs((tops[0] + bottoms[0]) / 2 - label_centre) > 0.6 * label_h:
         return None, "outline is not centred on the label"
     margin_limit = max(20.0, margin_ratio * max(label_w, label_h))
     margins = (
         int(lx0) - x0 - left_outer,
         right_outer - (int(lx1) - x0),
-        int(ly0) - y0 - top_outer,
-        bottom_outer - (int(ly1) - y0),
+        int(ly0) - y0 - tops[0],
+        bottoms[0] - (int(ly1) - y0),
     )
     if max(abs(value) for value in margins) > margin_limit:
         return None, "outline sits too far from the label"
 
-    # Corner radius: on the top row the outline starts `radius` in from its own
-    # left edge.  Measured on this row only -- the bottom edge can be clipped by
-    # the screenshot, where the same measurement returns garbage.
-    top_row_run = _run_through(same[top_outer], middle_column)
-    radius = 0
-    if top_row_run is not None:
-        radius = max(0, top_row_run[0] - left_outer)
-
     interior = window[
-        top_outer + stroke + 2 : bottom_outer - stroke - 1,
-        left_outer + stroke + 2 : right_outer - stroke - 1,
+        tops[0] + outer["stroke"] + 2 : bottoms[0] - outer["stroke"] - 1,
+        left_outer + outer["stroke"] + 2 : right_outer - outer["stroke"] - 1,
     ]
     if interior.size < 30:
         return None, "no interior to sample"
@@ -2252,17 +2529,74 @@ def _badge_ring(
         # Interior is the accent colour: a solid pill, not an outline.  There is
         # no rule for that shape yet, so leave the crop alone rather than guess.
         return None, "interior is filled with the accent colour"
-    ring_pixels = same[top_outer : bottom_outer + 1, left_outer : right_outer + 1]
+    tilt = _ring_tilt(same, tops[0], left_outer, right_outer)
+    if not _deskewed and abs(tilt) >= min_deskew_tilt:
+        # Measure the levelled frame instead of this one.  Everything above was
+        # a yes/no screen (is this a thin closed outline at all); the numbers
+        # that go into the drawing have to come from the shape's own axes.
+        pad = int(math.ceil(0.25 * max(right_outer - left_outer, bottoms[0] - tops[0]))) + 4
+        levelled, levelled_label, pivot = _deskew_frame(
+            window,
+            (lx0 - x0, ly0 - y0, lx1 - x0, ly1 - y0),
+            tilt,
+            background,
+            pad,
+        )
+        refined, refusal = _badge_ring(
+            levelled,
+            levelled_label,
+            window_pad=window_pad,
+            scan_limit=scan_limit,
+            saturation_threshold=saturation_threshold,
+            background_distance=background_distance,
+            label_ink_share=label_ink_share,
+            margin_ratio=margin_ratio,
+            min_deskew_tilt=min_deskew_tilt,
+            _deskewed=True,
+        )
+        if refined is None:
+            return None, refusal
+        offset_x = x0 - pad
+        offset_y = y0 - pad
+        mapped = []
+        for shape in refined["rings"]:
+            left, top, right, bottom = shape["bbox"]
+            centre_x, centre_y = _rotate_point(
+                (left + right) / 2, (top + bottom) / 2, pivot[0], pivot[1], tilt
+            )
+            half_w = (right - left) / 2
+            half_h = (bottom - top) / 2
+            mapped.append(
+                {
+                    "bbox": (
+                        centre_x - half_w + offset_x,
+                        centre_y - half_h + offset_y,
+                        centre_x + half_w + offset_x,
+                        centre_y + half_h + offset_y,
+                    ),
+                    "stroke": shape["stroke"],
+                    "radius": shape["radius"],
+                }
+            )
+        return (
+            {
+                "rings": mapped,
+                "tilt": tilt,
+                "deskewed": True,
+                "fill": refined["fill"],
+                "accent": refined["accent"],
+                "ring_fill_ratio": refined["ring_fill_ratio"],
+                "label_ink_share": refined["label_ink_share"],
+            },
+            "",
+        )
+
+    ring_pixels = same[tops[0] : bottoms[0] + 1, left_outer : right_outer + 1]
     return (
         {
-            "bbox": (
-                left_outer + x0,
-                top_outer + y0,
-                right_outer + x0 + 1,
-                bottom_outer + y0 + 1,
-            ),
-            "stroke": max(1, int(stroke)),
-            "radius": int(min(radius, max(0, min(ring_w, ring_h) // 2))),
+            "rings": shapes,
+            "tilt": tilt,
+            "deskewed": False,
             "fill": _hex_colour(fill),
             "accent": _hex_colour(colour),
             # Diagnostic only, and deliberately not a threshold: on a badge
@@ -3067,13 +3401,37 @@ def restructure_tilted_text_block(
             advance = sum(_char_advance(character) for character in part)
             sizes.append(max(1, int(round(band["width"] / advance))) if advance else 1)
         block_height = sum(max(1, int(round(size * line_box_ratio))) for size in sizes)
-        block_width = max(band["width"] for band in bands)
+        # The box has to be wide enough that the renderer will not wrap a line
+        # again on its own metrics.  A band's width is its *ink*, which is
+        # narrower than the advance width the layout needs: 5.8 measures 89 px
+        # of ink and Figma still broke it after "5." in an 89 px box.  The
+        # estimate below is the same advance model used to split the string, and
+        # the margin covers a font whose digits are wider than the model's.  The
+        # extra room is invisible because the block is centred, not left-aligned.
+        estimated = max(
+            sizes[index] * sum(_char_advance(character) for character in part)
+            for index, part in enumerate(parts)
+        )
+        block_width = max(max(band["width"] for band in bands), estimated * 1.3)
         centre_x = box[0] + box[2] / 2
         centre_y = box[1] + box[3] / 2
         element["lines"] = parts
         element["lineSizes"] = sizes
         element["fontSize"] = float(sizes[0])
         element["lineHeight"] = float(round(sizes[0] * line_box_ratio))
+        style = element.get("style")
+        if isinstance(style, dict):
+            # The renderers merge ``{**element, **style}``, so a stale
+            # ``style.fontSize`` silently wins over the line sizes and every
+            # line box is derived from the *block* size -- which is how 折 ended
+            # up drawn on top of 5.8.  Both keys must carry the same number.
+            style["fontSize"] = element["fontSize"]
+            style["lineHeight"] = element["lineHeight"]
+            # Two different sizes cannot share one line box, and we no longer
+            # know where each line's left edge sits (the design merged two gold
+            # nodes into one string).  Centring is the neutral answer: it keeps
+            # the ink inside the box wherever the box has to grow.
+            style["textAlign"] = "center"
         element["width"] = float(block_width)
         element["height"] = float(block_height)
         element["x"] = centre_x - block_width / 2
@@ -3094,6 +3452,37 @@ def restructure_tilted_text_block(
         report["status"] = "applied"
         report["adjusted_count"] = len(report["blocks"])
     return calibrated, report
+
+
+def _enclosing_outline(
+    outlines: list[Mapping[str, Any]], box: list[float]
+) -> Mapping[str, Any] | None:
+    """The drawn outline whose own box holds this element's centre.
+
+    A badge drawn with two concentric strokes exposes two candidates; the outer
+    one is the badge, so the larger box wins.
+
+    Args:
+        outlines: Elements carrying ``role == "badge-outline"``.
+        box: ``[x, y, width, height]`` of the element being measured.
+
+    Returns:
+        The enclosing outline, or ``None`` when the element stands alone.
+    """
+    centre_x = box[0] + box[2] / 2
+    centre_y = box[1] + box[3] / 2
+    best: tuple[float, Mapping[str, Any]] | None = None
+    for outline in outlines:
+        left = float(outline.get("x") or 0)
+        top = float(outline.get("y") or 0)
+        width = float(outline.get("width") or 0)
+        height = float(outline.get("height") or 0)
+        if not (left <= centre_x <= left + width and top <= centre_y <= top + height):
+            continue
+        area = width * height
+        if best is None or area > best[0]:
+            best = (area, outline)
+    return best[1] if best else None
 
 
 def apply_text_rotation(
@@ -3158,6 +3547,15 @@ def apply_text_rotation(
             pixels = np.asarray(handle.convert("RGB")).astype(np.int16)
     except (OSError, ValueError):
         return calibrated, report
+    # Text inside a drawn outline is rotated *with* the outline, and the outline
+    # states its angle exactly (fitted on its own edge: 5.98 against a gold
+    # 6.00, where row variance on the two merged text lines reads 6.8).
+    outlines = [
+        element
+        for element in elements
+        if str(element.get("role") or "") == "badge-outline"
+        and isinstance(element.get("rotation"), (int, float))
+    ]
     for element in targets:
         # ``_box_of`` returns corners; the measurement wants [x, y, w, h].
         box = [
@@ -3166,6 +3564,19 @@ def apply_text_rotation(
             float(element.get("width") or 0),
             float(element.get("height") or 0),
         ]
+        outline = _enclosing_outline(outlines, box)
+        if outline is not None:
+            angle = float(outline["rotation"])
+            element["rotation"] = angle
+            report["rotations"].append(
+                {
+                    "text": str(element.get("text") or "")[:24],
+                    "angle": angle,
+                    "source": "outline",
+                    "bbox": [round(value, 1) for value in box],
+                }
+            )
+            continue
         measured = measure_element_rotation(pixels, box, dead_zone=dead_zone)
         if measured is None or measured["ink"] < min_ink:
             continue
@@ -3181,6 +3592,7 @@ def apply_text_rotation(
             {
                 "text": str(element.get("text") or "")[:24],
                 "angle": angle,
+                "source": "measured",
                 "raw": measured["raw"],
                 "gain": measured["gain"],
                 "ink": measured["ink"],

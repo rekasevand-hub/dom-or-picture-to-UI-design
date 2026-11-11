@@ -4,6 +4,20 @@ figma.showUI(__html__, { width: 320, height: 220 });
 
 let actionQueue = Promise.resolve();
 const PLUGIN_CONFIG_KEY = "figmaBridgePluginConfig";
+// 插件代码是从磁盘上另一个 checkout 加载的，改完不进 Figma 也不会报错——只会
+// 静默跑旧版。这个版本戳随每次改动递增，并出现在回读摘要里，于是"跑的是哪一版"
+// 可以一眼查证，不用再靠猜。改 code.js 时务必同步改这里。
+const BRIDGE_BUILD = "2026-11-11-ring-resize-order";
+// 插件里所有"尽力而为"的 setter 都是 try/catch 吞异常的，于是一个不存在或参数
+// 非法的 API 会表现成"什么也没发生"，而不是报错。这些告警进回读摘要，让静默失败
+// 有据可查。
+let lastWarnings = [];
+
+function noteWarning(where, err) {
+  const message = String((err && err.message) || err || "unknown");
+  lastWarnings.push(`${where}: ${message}`);
+  if (lastWarnings.length > 8) lastWarnings.shift();
+}
 
 function classifyFigmaError(err) {
   const message = String((err && err.message) || err || "unknown error");
@@ -768,6 +782,16 @@ async function applyRichRuns(text, params) {
     if (runSize > 0) {
       try { text.setRangeFontSize(start, end, runSize); } catch (err) {}
     }
+    // 行高也是"每行"的量：一个节点只有一个 lineHeight，64pt 与 30pt 两行共用
+    // 一个值必然一行过松、一行过挤。区间行高让每行用自己的行框。
+    const runLineHeight = Number(style.lineHeight);
+    if (runLineHeight > 0) {
+      try {
+        text.setRangeLineHeight(start, end, { unit: "PIXELS", value: runLineHeight });
+      } catch (err) {
+        noteWarning("setRangeLineHeight", err);
+      }
+    }
     const runColor = hexToRgb(style.textColor || params.textColor);
     if (runColor) {
       try { text.setRangeFills(start, end, [{ type: "SOLID", color: runColor }]); } catch (err) {}
@@ -798,7 +822,9 @@ async function createText(params) {
   if (lineHeight > 0) {
     try {
       text.lineHeight = { unit: "PIXELS", value: lineHeight };
-    } catch (err) {}
+    } catch (err) {
+      noteWarning("lineHeight", err);
+    }
   }
   applyLetterSpacing(text, params);
   const textColor = hexToRgb(params.textColor);
@@ -831,8 +857,6 @@ async function createText(params) {
     // 显式换行 + 固定宽度 + 禁用 auto-resize：Figma 若再按真实字宽自动换行，
     // 会多折出一行把盒子撑破（估算再准也不敢保证与真实字体度量逐字一致）。
     text.characters = lines.join("\n");
-    // 换行会重排 characters，字符区间跟着平移——按新串重放一次每行字号。
-    await applyRichRuns(text, params);
     const boxWidth = params.width || text.width;
     try {
       // Browser-measured line breaks are authoritative. HEIGHT lets Figma wrap
@@ -840,7 +864,13 @@ async function createText(params) {
       // lines into neighbouring text. Keep the measured box fixed instead.
       text.textAutoResize = "NONE";
       text.resize(boxWidth, Math.max(1, Number(params.height) || text.height));
-    } catch (err) {}
+    } catch (err) {
+      noteWarning("resize", err);
+    }
+    // 区间样式放在 resize 之后重放：换行会平移字符区间，而 resize /
+    // textAutoResize 这一对也可能把逐区间样式折回节点级。两件事都发生过，
+    // 顺序在这里是语义的一部分，不只是风格。
+    await applyRichRuns(text, params);
     const align = params.textAlign === "center" ? "CENTER"
                 : params.textAlign === "end" ? "RIGHT" : "LEFT";
     try { text.textAlignHorizontal = align; } catch (err) {}
@@ -2660,6 +2690,8 @@ function paintSummary(paints) {
 function readNodeTree(node, depth) {
   const box = node.absoluteBoundingBox;
   const summary = {
+    bridgeBuild: BRIDGE_BUILD,
+    warnings: lastWarnings.slice(),
     id: node.id,
     name: node.name,
     type: node.type,
@@ -2700,6 +2732,14 @@ function readNodeTree(node, depth) {
   // 旋转是普通节点属性，但之前的摘要没带它，于是「按了没按上」只能靠
   // 外接框反推。带上它，回读就能直接回答这个问题。
   if ("rotation" in node) summary.rotation = node.rotation;
+  // 行高是"设了没设上"的重灾区：它是可读属性，直接暴露比靠像素反推可靠。
+  // 逐区间设过之后这个属性是 figma.mixed（一个 symbol），而 symbol 过不了
+  // postMessage——直接透传会让整次回读崩在 "Cannot unwrap symbol"。
+  if ("lineHeight" in node) {
+    summary.lineHeight =
+      typeof node.lineHeight === "symbol" ? "mixed" : node.lineHeight;
+  }
+  if ("textAutoResize" in node) summary.textAutoResize = node.textAutoResize;
   if ("layoutAlign" in node) summary.layoutAlign = node.layoutAlign;
   if ("layoutGrow" in node) summary.layoutGrow = node.layoutGrow;
   if ("layoutPositioning" in node) summary.layoutPositioning = node.layoutPositioning;

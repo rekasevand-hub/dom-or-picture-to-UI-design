@@ -968,7 +968,12 @@ class FigmaBridgeAdapter(PrototypeAdapter):
         self, spec: dict[str, Any], parent_id: str | None = None
     ) -> str | None:
         params = _with_parent(spec, parent_id)
-        runs = _line_font_runs(spec.get("lines"), spec.get("lineSizes"))
+        runs = _line_font_runs(
+            spec.get("lines"),
+            spec.get("lineSizes"),
+            spec.get("lineHeight"),
+            spec.get("fontSize"),
+        )
         if runs:
             # Figma 的 richRuns 是字符区间样式；块内每行一个区间，字号各自独立
             # （价格 62pt + 单位 30pt 这种）。SVG 端用 `lineSizes` 达成同一件事。
@@ -1215,7 +1220,12 @@ class FigmaBridgeAdapter(PrototypeAdapter):
 
 
 
-def _line_font_runs(lines: Any, sizes: Any) -> list[dict[str, Any]]:
+def _line_font_runs(
+    lines: Any,
+    sizes: Any,
+    line_height: Any = None,
+    base_size: Any = None,
+) -> list[dict[str, Any]]:
     """One ``richRuns`` entry per line, carrying that line's font size.
 
     Offsets count the newlines: ``lines.join("\n")`` is what the bridge writes
@@ -1234,15 +1244,28 @@ def _line_font_runs(lines: Any, sizes: Any) -> list[dict[str, Any]]:
         return []
     if not lines or len(lines) != len(sizes):
         return []
+    ratio = 0.0
+    if (
+        isinstance(line_height, (int, float))
+        and isinstance(base_size, (int, float))
+        and line_height > 0
+        and base_size > 0
+    ):
+        ratio = float(line_height) / float(base_size)
     runs: list[dict[str, Any]] = []
     start = 0
     for line, size in zip(lines, sizes):
         text = str(line)
         end = start + len(text)
         if isinstance(size, (int, float)) and size > 0:
-            runs.append(
-                {"start": start, "end": end, "style": {"fontSize": int(size)}}
-            )
+            style: dict[str, Any] = {"fontSize": int(size)}
+            # A node carries one line-height for every line.  With lines at 64
+            # and 30 pt that box is either too tall for the small line or too
+            # short for the big one, so each run states its own -- the same
+            # line box the SVG renderer advances by.
+            if ratio > 0:
+                style["lineHeight"] = int(round(size * ratio))
+            runs.append({"start": start, "end": end, "style": style})
         start = end + 1
     return runs
 
