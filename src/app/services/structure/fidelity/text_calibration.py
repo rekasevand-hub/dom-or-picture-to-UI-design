@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import math
 import statistics
 from collections.abc import Mapping
 from pathlib import Path
@@ -1802,6 +1803,7 @@ def synthesize_badge_outline(
     background_distance: int = 60,
     label_ink_share: float = 0.03,
     margin_ratio: float = 0.9,
+    min_label_coverage: float = 0.5,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Swap a badge crop that carries its own label for a drawn outline.
 
@@ -1859,6 +1861,9 @@ def synthesize_badge_outline(
         margin_ratio: How far the outline may sit from the label, relative to
             the label's longer side.  Stops a card border enclosing the badge
             from being mistaken for the badge.
+        min_label_coverage: Share of the label's box the crop must contain.
+            A tilted badge's crop clips the block it surrounds, so enclosure is
+            too strong a requirement (measured: 74 % coverage on 5.8折).
 
     Returns:
         ``(calibrated_design, report)``.  Each applied badge is replaced in
@@ -1915,6 +1920,12 @@ def synthesize_badge_outline(
             label_h = label_box[3] - label_box[1]
             if label_w <= 0 or label_h <= 0:
                 continue
+            # Containment, not enclosure: the detector box around a tilted
+            # badge crops the block it sits under (5.8折 overhangs the crop by
+            # 27 px at the bottom), so requiring the whole label inside leaves
+            # exactly the worst badge unfixed.  What the rule actually needs is
+            # that the crop carries most of the label -- half its area and its
+            # centre -- which a neighbouring element's box never does.
             if crop[0] > label_box[0] + 4 or crop[2] < label_box[2] - 4:
                 continue
             if crop[1] > label_box[1] + 4 or crop[3] < label_box[3] - 4:
@@ -1940,7 +1951,7 @@ def synthesize_badge_outline(
             ring, reason = _badge_ring(
                 pixels,
                 label_box,
-                pad=max(pad, int(0.8 * max(label_w, label_h))),
+                pad=max(pad, int(0.35 * max(label_w, label_h))),
                 saturation_threshold=saturation_threshold,
                 background_distance=background_distance,
                 label_ink_share=label_ink_share,
@@ -1962,10 +1973,43 @@ def synthesize_badge_outline(
             element["name"] = "badge-outline"
             element["contentRef"] = None
             element["paintDepth"] = 0
-            element["x"] = float(ring["bbox"][0])
-            element["y"] = float(ring["bbox"][1])
-            element["width"] = float(ring["bbox"][2] - ring["bbox"][0])
-            element["height"] = float(ring["bbox"][3] - ring["bbox"][1])
+            # The ring scan returns an axis-aligned box.  For a tilted badge that
+            # is the *bounding* box, not the badge: writing it as width/height
+            # and then rotating would draw a shape too big on both axes.  Undo
+            # the rotation instead -- for a tilt t, an own size (w, h) shows up
+            # as (w·cos t + h·sin t, w·sin t + h·cos t) -- so the rect is the
+            # badge itself and `rotation` puts it back where the source had it.
+            left, top, right, bottom = (float(value) for value in ring["bbox"])
+            span_w, span_h = right - left, bottom - top
+            tilt = 0.0
+            measured_tilt = measure_element_rotation(
+                pixels,
+                [
+                    label_box[0],
+                    label_box[1],
+                    label_box[2] - label_box[0],
+                    label_box[3] - label_box[1],
+                ],
+            )
+            if measured_tilt is not None and abs(measured_tilt["angle"]) >= 2.5:
+                tilt = float(measured_tilt["angle"])
+            if tilt:
+                radians = math.radians(tilt)
+                cos_t, sin_t = math.cos(radians), math.sin(radians)
+                own_w = span_w * cos_t - span_h * sin_t
+                own_h = span_h * cos_t - span_w * sin_t
+            else:
+                own_w, own_h = span_w, span_h
+            centre_x = (left + right) / 2
+            centre_y = (top + bottom) / 2
+            element["x"] = centre_x - own_w / 2
+            element["y"] = centre_y - own_h / 2
+            element["width"] = own_w
+            element["height"] = own_h
+            if tilt:
+                element["rotation"] = tilt
+            else:
+                element.pop("rotation", None)
             element["style"] = {
                 "fillColor": ring["fill"],
                 "borderColor": ring["accent"],
@@ -1982,6 +2026,7 @@ def synthesize_badge_outline(
                     "radius": ring["radius"],
                     "fillColor": ring["fill"],
                     "borderColor": ring["accent"],
+                    "rotation": round(tilt, 2),
                     "ring_fill_ratio": round(float(ring["ring_fill_ratio"]), 3),
                     "label_ink_share": round(float(ring["label_ink_share"]), 3),
                 }
@@ -2837,6 +2882,218 @@ def measure_text_block_lines(
             "height": block_bottom - block_top,
         },
     }
+
+
+# 每个字符占多少 em：只用来**分配**字符串与**估**字号，不参与任何几何判定。
+# 数字/标点取常见无衬线体的前进宽度，CJK 取全角。
+_ADVANCE_EM = {"digit": 0.55, "punct": 0.28, "cjk": 1.0, "other": 0.62}
+
+
+def _char_advance(character: str) -> float:
+    """Estimated advance of one character, in em."""
+    if "\u4e00" <= character <= "\u9fff":
+        return _ADVANCE_EM["cjk"]
+    if character.isdigit():
+        return _ADVANCE_EM["digit"]
+    if character in ".,:;'\u00b7":
+        return _ADVANCE_EM["punct"]
+    return _ADVANCE_EM["other"]
+
+
+# 墨高 / 字号：CJK 几乎填满 em，数字只占 x-height 到 cap-height 之间。
+# 这是**字体度量**，不是从这两处样本拟出来的阈值——它只用来判断"这个切法
+# 能不能同时解释宽度和高度"，不参与任何几何输出。
+_INK_HEIGHT_EM = {"cjk": 0.90, "latin": 0.72}
+
+
+def _ink_height_em(part: str) -> float:
+    """Expected ink height for ``part``, in em, from its dominant script."""
+    if any("\u4e00" <= character <= "\u9fff" for character in part):
+        return _INK_HEIGHT_EM["cjk"]
+    return _INK_HEIGHT_EM["latin"]
+
+
+def _split_block_lines(
+    text: str, bands: list[dict[str, int]]
+) -> tuple[list[str], float] | None:
+    """Cut ``text`` into one part per band, judged by width *and* height.
+
+    Comparing width shares is wrong here: the two lines have different font
+    sizes, so a share of the total width says nothing about which characters
+    belong together.  What does hold is that one cut has to explain **two
+    independent measurements at once** -- each band's width gives a size, and
+    that size has to predict the band's ink height.
+
+    Measured on dark-card-grid (bands 89x47 and 30x29, text ``5.8折``):
+    cutting after ``5.8`` predicts 46.4 px and 27.6 px against 47 and 29
+    (about 3 % error); cutting after ``5.`` predicts 77 px for the first line
+    against 47, so it is rejected by a factor of twenty.
+
+    Returns:
+        ``(parts, error)`` with ``error`` the mean relative height error, or
+        ``None`` when the text cannot be cut into that many parts.
+    """
+    import itertools
+
+    total = len(bands)
+    if total < 2 or len(text) < total:
+        return None
+    advances = [_char_advance(character) for character in text]
+    best: tuple[float, list[str]] | None = None
+    for cuts in itertools.combinations(range(1, len(text)), total - 1):
+        bounds = (0, *cuts, len(text))
+        error = 0.0
+        feasible = True
+        for index in range(total):
+            part = text[bounds[index] : bounds[index + 1]]
+            advance = sum(advances[bounds[index] : bounds[index + 1]])
+            band_height = bands[index]["height"]
+            if advance <= 0 or band_height <= 0:
+                feasible = False
+                break
+            size = bands[index]["width"] / advance
+            predicted = size * _ink_height_em(part)
+            error += abs(predicted - band_height) / band_height
+        if not feasible:
+            continue
+        score = error / total
+        if best is None or score < best[0]:
+            best = (score, [text[bounds[i] : bounds[i + 1]] for i in range(total)])
+    return (best[1], best[0]) if best else None
+
+
+def restructure_tilted_text_block(
+    design: Mapping[str, Any],
+    image_path: str | Path,
+    *,
+    min_angle: float = 2.5,
+    line_box_ratio: float = 1.13,
+    max_split_error: float = 0.15,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Rebuild a tilted multi-line block as one node with per-line sizes.
+
+    The design merges ``5.8`` and ``折`` into a single ``5.8折`` element and
+    sizes it from the *block* height, which is how it ends up at 86.5 pt in a
+    105 px box: bigger than either real line, and spilling out of the badge.
+    The two real lines sit 62 pt and 30 pt (gold nodes), so one size can never
+    fit -- that is why ``lineSizes`` exists.
+
+    Only tilted blocks are touched: a paragraph is upright, and rewriting its
+    line structure from ink bands would be guessing.  The tilt is the structural
+    signal that says "this is a sticker with a price and a unit".
+
+    Sizes come from each band's ink width divided by its estimated advance
+    width, not from its ink height: height-to-size depends on the script (a
+    CJK glyph fills nearly the whole em, a digit about 0.7), so one ratio
+    cannot serve both lines.  Measured: 89 px of ``5.8`` -> 64.5 pt against a
+    gold 62, and 30 px of ``折`` -> 30.0 pt against a gold 30.
+
+    Args:
+        design: Image design with ``elements``; ``rotation`` must already be set
+            (``text-rotation`` runs before this).
+        image_path: Source screenshot the bands are measured on.
+        min_angle: Blocks tilted less than this are left alone.
+        line_box_ratio: Line box height over font size, measured on this
+            family's gold (70/62 and 34/30).
+        max_split_error: Refuse to cut when the best cut does not explain the
+            band widths well; a wrong cut would rewrite the visible string.
+
+    Returns:
+        ``(calibrated_design, report)``.
+    """
+    import numpy as np
+    from PIL import Image
+
+    calibrated = copy.deepcopy(dict(design))
+    report: dict[str, Any] = {
+        "schema_version": "grounding-text-block-lines/1.0",
+        "status": "not-needed",
+        "adjusted_count": 0,
+        "blocks": [],
+        "skipped": [],
+    }
+    elements = [
+        element
+        for element in calibrated.get("elements") or []
+        if isinstance(element, dict)
+    ]
+    targets = [
+        element
+        for element in elements
+        if str(element.get("type") or "") in {"text", "button"}
+        and len(str(element.get("text") or "").strip()) >= 2
+        and isinstance(element.get("rotation"), (int, float))
+        and abs(float(element["rotation"])) >= min_angle
+    ]
+    if not targets:
+        return calibrated, report
+    try:
+        with Image.open(image_path) as handle:
+            pixels = np.asarray(handle.convert("RGB")).astype(np.int16)
+    except (OSError, ValueError):
+        return calibrated, report
+    for element in targets:
+        text = str(element.get("text") or "").strip()
+        box = [
+            float(element.get("x") or 0),
+            float(element.get("y") or 0),
+            float(element.get("width") or 0),
+            float(element.get("height") or 0),
+        ]
+        measured = measure_text_block_lines(
+            pixels, box, rotation=float(element["rotation"])
+        )
+        if measured is None or measured["line_count"] < 2:
+            continue
+        bands = measured["bands"]
+        if len(bands) > 4:
+            report["skipped"].append(
+                {"text": text[:24], "reason": "more than four lines"}
+            )
+            continue
+        split = _split_block_lines(text, bands)
+        if split is None or split[1] > max_split_error:
+            report["skipped"].append(
+                {
+                    "text": text[:24],
+                    "reason": "no cut explains the band widths and heights",
+                    "error": None if split is None else round(split[1], 3),
+                }
+            )
+            continue
+        parts = split[0]
+        sizes: list[int] = []
+        for part, band in zip(parts, bands):
+            advance = sum(_char_advance(character) for character in part)
+            sizes.append(max(1, int(round(band["width"] / advance))) if advance else 1)
+        block_height = sum(max(1, int(round(size * line_box_ratio))) for size in sizes)
+        block_width = max(band["width"] for band in bands)
+        centre_x = box[0] + box[2] / 2
+        centre_y = box[1] + box[3] / 2
+        element["lines"] = parts
+        element["lineSizes"] = sizes
+        element["fontSize"] = float(sizes[0])
+        element["lineHeight"] = float(round(sizes[0] * line_box_ratio))
+        element["width"] = float(block_width)
+        element["height"] = float(block_height)
+        element["x"] = centre_x - block_width / 2
+        element["y"] = centre_y - block_height / 2
+        report["blocks"].append(
+            {
+                "text": text[:24],
+                "lines": parts,
+                "lineSizes": sizes,
+                "band_boxes": [[b["left"], b["top"], b["width"], b["height"]] for b in bands],
+                "block": [round(element["x"], 1), round(element["y"], 1), block_width, block_height],
+                "split_error": round(split[1], 3),
+                "rotation": round(float(element["rotation"]), 2),
+            }
+        )
+    if report["blocks"]:
+        calibrated["elements"] = elements
+        report["status"] = "applied"
+        report["adjusted_count"] = len(report["blocks"])
+    return calibrated, report
 
 
 def apply_text_rotation(

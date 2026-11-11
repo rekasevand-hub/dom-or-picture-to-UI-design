@@ -22,6 +22,7 @@ from src.app.services.structure.fidelity.text_calibration import (
     drop_implausible_duplicate_owners,
     drop_text_fragment_images,
     apply_text_rotation,
+    restructure_tilted_text_block,
     resolve_same_slot_conflicts,
     synthesize_badge_outline,
     synthesize_selection_plate,
@@ -129,6 +130,12 @@ def _text_rotation(
     ctx: CalibrationContext,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     return apply_text_rotation(ctx.design, ctx.image)
+
+
+def _text_block_lines(
+    ctx: CalibrationContext,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    return restructure_tilted_text_block(ctx.design, ctx.image)
 
 
 def _drop_duplicate_owners(
@@ -385,6 +392,17 @@ CALIBRATION_GROUPS: tuple[CalibrationGroup, ...] = (
                 (),
                 (),
                 _text_rotation,
+                always=True,
+            ),
+            # A tilted block of ink is a sticker (price + unit), not a
+            # paragraph, and the design merged its lines into one string sized
+            # from the block height.  Runs after text-rotation, which is where
+            # the tilt it keys on comes from.
+            _strategy(
+                "text-block-lines",
+                (),
+                (),
+                _text_block_lines,
                 always=True,
             ),
             _strategy("control-fonts", (), (), _control_fonts, always=True),
