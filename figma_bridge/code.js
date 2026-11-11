@@ -7,7 +7,7 @@ const PLUGIN_CONFIG_KEY = "figmaBridgePluginConfig";
 // 插件代码是从磁盘上另一个 checkout 加载的，改完不进 Figma 也不会报错——只会
 // 静默跑旧版。这个版本戳随每次改动递增，并出现在回读摘要里，于是"跑的是哪一版"
 // 可以一眼查证，不用再靠猜。改 code.js 时务必同步改这里。
-const BRIDGE_BUILD = "2026-11-11-ring-resize-order";
+const BRIDGE_BUILD = "2026-11-11-multiline-rotation";
 // 插件里所有"尽力而为"的 setter 都是 try/catch 吞异常的，于是一个不存在或参数
 // 非法的 API 会表现成"什么也没发生"，而不是报错。这些告警进回读摘要，让静默失败
 // 有据可查。
@@ -881,6 +881,9 @@ async function createText(params) {
         ((params.height || 0) - text.height) / 2
       )
       : (params.y || 0);
+    // 这条分支以前在这里直接 return，于是折行文本永远走不到函数末尾的
+    // applyRotation——角标的两条描边环转了 6°，环里的字却是正的。
+    applyRotation(text, params);
     return text.id;
   }
   if (params.textAnchor === "start") {
