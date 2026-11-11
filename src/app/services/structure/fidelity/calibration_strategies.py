@@ -22,6 +22,7 @@ from src.app.services.structure.fidelity.text_calibration import (
     drop_implausible_duplicate_owners,
     drop_text_fragment_images,
     resolve_same_slot_conflicts,
+    synthesize_badge_outline,
     synthesize_selection_plate,
     calibrate_control_fonts,
     calibrate_form_fonts_from_render,
@@ -115,6 +116,12 @@ def _drop_fragment_images(
     ctx: CalibrationContext,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     return drop_text_fragment_images(ctx.design)
+
+
+def _badge_outline(
+    ctx: CalibrationContext,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    return synthesize_badge_outline(ctx.design, ctx.image)
 
 
 def _drop_duplicate_owners(
@@ -281,6 +288,17 @@ CALIBRATION_GROUPS: tuple[CalibrationGroup, ...] = (
                 (),
                 (),
                 _drop_fragment_images,
+                always=True,
+            ),
+            # The mirror image of the case above: a badge crop that is *wider*
+            # than its label (so fragment-image cannot fire) but too short to
+            # hold the badge carries the glyphs too.  Replace it with the
+            # outline it was standing in for; keep the label, drop the copy.
+            _strategy(
+                "badge-outline",
+                (),
+                (),
+                _badge_outline,
                 always=True,
             ),
             # A selected header tab is a filled shape the asset pass does not

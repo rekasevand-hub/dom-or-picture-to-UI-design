@@ -1695,6 +1695,445 @@ def _box_of(element: Mapping[str, Any]) -> tuple[float, float, float, float]:
     return (x, y, x + float(element.get("width") or 0), y + float(element.get("height") or 0))
 
 
+def synthesize_badge_outline(
+    design: Mapping[str, Any],
+    image_path: str | Path,
+    *,
+    pad: int = 24,
+    max_area_ratio: float = 3.0,
+    saturation_threshold: int = 60,
+    background_distance: int = 60,
+    label_ink_share: float = 0.03,
+    margin_ratio: float = 0.9,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Swap a badge crop that carries its own label for a drawn outline.
+
+    ``6.6折`` / ``8.5折`` on dark-card-grid are red rounded outlines, and the
+    detector box around one is 153x43 while the outline is 105x44: the box is
+    wider than the label but *shorter* than the badge, so the crop clips the
+    top and bottom edges and bakes the glyphs in.  The label is emitted natively
+    too, so the render stacks two copies 2 px apart -- the ghosting the pixel
+    gates cannot see because both copies sit inside the tolerance.
+
+    ``drop_text_fragment_images`` cannot fire here: it requires the crop to be
+    *narrower* than the label, on the reasoning that a badge surrounds its
+    label.  That assumption breaks exactly when the crop overshoots sideways
+    and undershoots vertically.
+
+    What separates "badge with baked label" from any other crop is pixel
+    evidence, not geometry:
+
+    * one accent colour draws a **thin closed outline** around the label --
+      measured as a vertical run left of the label, a vertical run right of it,
+      and a horizontal run above it, all the same colour;
+    * that same accent colour also shows up **inside** the label box, i.e. the
+      glyphs were baked into the crop.
+
+    Both must hold.  A filled plate (``控制台``) has no thin outline; a card
+    photo has no accent inside the label; an icon beside a label has no
+    outline around it.
+
+    The replacement keeps what the crop was carrying -- outline colour, stroke
+    width, corner radius and interior fill -- and loses what it was faking
+    (the baked glyphs).  Gradients and inner shadows are *not* reproduced:
+    none of the measured badges have them, and inventing them would be a
+    constant rather than an inference.  A badge whose interior is the accent
+    colour (white text on a solid pill) is refused and recorded: that shape has
+    no evidence yet, so it has no rule.
+
+    Every refused candidate lands in the report with the check that refused it,
+    so a run can answer "why was this one left alone" without a re-run.
+
+    Args:
+        design: Image design with ``elements`` and ``canvas``.
+        image_path: Source screenshot the outline colours are read from.  The
+            crop itself is not used: it is clipped, so its own pixels cannot
+            recover the missing edges.
+        pad: Minimum pixels searched around the label box on each side.
+        max_area_ratio: Largest crop-to-label area ratio still treated as "a
+            frame around the label".  light-form's 1744x448 container holds a
+            whole table (ratio > 50) and must never be replaced.
+        saturation_threshold: ``max(rgb) - min(rgb)`` above which a pixel
+            counts as coloured rather than neutral.
+        background_distance: Per-channel distance from the window's background
+            that counts as "not background".
+        label_ink_share: Share of the label box that must be accent-coloured
+            for the glyphs to count as baked into the crop.  Measured 0.27.
+        margin_ratio: How far the outline may sit from the label, relative to
+            the label's longer side.  Stops a card border enclosing the badge
+            from being mistaken for the badge.
+
+    Returns:
+        ``(calibrated_design, report)``.  Each applied badge is replaced in
+        place, so the element keeps its id and its paint order.
+    """
+    import numpy as np
+    from PIL import Image
+
+    calibrated = copy.deepcopy(dict(design))
+    report: dict[str, Any] = {
+        "schema_version": "grounding-badge-outline/1.0",
+        "status": "not-needed",
+        "adjusted_count": 0,
+        "badges": [],
+        "skipped": [],
+    }
+    elements = [
+        element
+        for element in calibrated.get("elements") or []
+        if isinstance(element, dict)
+    ]
+    labels = [
+        element
+        for element in elements
+        if str(element.get("type") or "") in {"text", "button"}
+        and str(element.get("text") or "").strip()
+        and float(element.get("width") or 0) > 0
+        and float(element.get("height") or 0) > 0
+    ]
+    if not labels:
+        return calibrated, report
+    try:
+        with Image.open(image_path) as handle:
+            pixels = np.asarray(handle.convert("RGB")).astype(np.int16)
+    except (OSError, ValueError):
+        return calibrated, report
+    for element in elements:
+        if str(element.get("type") or "") != "image":
+            continue
+        try:
+            crop = _box_of(element)
+        except (TypeError, ValueError):
+            continue
+        crop_w = crop[2] - crop[0]
+        crop_h = crop[3] - crop[1]
+        if crop_w <= 0 or crop_h <= 0:
+            continue
+        for label in labels:
+            try:
+                label_box = _box_of(label)
+            except (TypeError, ValueError):
+                continue
+            label_w = label_box[2] - label_box[0]
+            label_h = label_box[3] - label_box[1]
+            if label_w <= 0 or label_h <= 0:
+                continue
+            if crop[0] > label_box[0] + 4 or crop[2] < label_box[2] - 4:
+                continue
+            if crop[1] > label_box[1] + 4 or crop[3] < label_box[3] - 4:
+                continue
+            # From here the crop does hold the label, so a refusal is worth a
+            # record: these are the candidates a reader would expect to see.
+            if crop_w <= label_w:
+                # fragment-image's case, not this one: this rule is for a badge
+                # that surrounds the label but is clipped vertically.
+                report["skipped"].append(
+                    {
+                        "text": str(label.get("text") or "")[:24],
+                        "crop_bbox": [round(value, 1) for value in crop],
+                        "reason": "crop is not wider than the label",
+                    }
+                )
+                continue
+            if crop_w * crop_h / (label_w * label_h) > max_area_ratio:
+                # Coarse shape filter, not a judgement: a container holding a
+                # whole table would otherwise add one entry per label inside it
+                # (20 on light-form) without telling anyone anything.
+                continue
+            ring, reason = _badge_ring(
+                pixels,
+                label_box,
+                pad=max(pad, int(0.8 * max(label_w, label_h))),
+                saturation_threshold=saturation_threshold,
+                background_distance=background_distance,
+                label_ink_share=label_ink_share,
+                margin_ratio=margin_ratio,
+            )
+            if ring is None:
+                report["skipped"].append(
+                    {
+                        "text": str(label.get("text") or "")[:24],
+                        "crop_bbox": [round(value, 1) for value in crop],
+                        "reason": reason,
+                    }
+                )
+                continue
+            element["type"] = "rectangle"
+            element.pop("imageBase64", None)
+            element["text"] = ""
+            element["role"] = "badge-outline"
+            element["name"] = "badge-outline"
+            element["contentRef"] = None
+            element["paintDepth"] = 0
+            element["x"] = float(ring["bbox"][0])
+            element["y"] = float(ring["bbox"][1])
+            element["width"] = float(ring["bbox"][2] - ring["bbox"][0])
+            element["height"] = float(ring["bbox"][3] - ring["bbox"][1])
+            element["style"] = {
+                "fillColor": ring["fill"],
+                "borderColor": ring["accent"],
+                "borderWidth": ring["stroke"],
+                "borderRadius": ring["radius"],
+            }
+            report["badges"].append(
+                {
+                    "id": element.get("id"),
+                    "text": str(label.get("text") or "")[:24],
+                    "crop_bbox": [round(value, 1) for value in crop],
+                    "bbox": [float(value) for value in ring["bbox"]],
+                    "stroke": ring["stroke"],
+                    "radius": ring["radius"],
+                    "fillColor": ring["fill"],
+                    "borderColor": ring["accent"],
+                    "ring_fill_ratio": round(float(ring["ring_fill_ratio"]), 3),
+                    "label_ink_share": round(float(ring["label_ink_share"]), 3),
+                }
+            )
+            break
+    if report["badges"]:
+        calibrated["elements"] = elements
+        report["status"] = "applied"
+        report["adjusted_count"] = len(report["badges"])
+    return calibrated, report
+
+
+def _run_near(line: Any, start: int, step: int, limit: int) -> tuple[int, int] | None:
+    """First ``True`` run in ``line`` from ``start`` stepping by ``step``.
+
+    Args:
+        line: One-dimensional boolean row or column of the accent mask.
+        start: Index to begin at; it may already be ``True``.
+        step: ``-1`` to scan left/up, ``+1`` to scan right/down.
+        limit: How many pixels to step before giving up.
+
+    Returns:
+        Inclusive ``(low, high)`` index range of the run, or ``None``.
+    """
+    position = start
+    for _ in range(limit + 1):
+        if not 0 <= position < line.size:
+            return None
+        if line[position]:
+            inner = position
+            following = position + step
+            while 0 <= following < line.size and line[following]:
+                inner = following
+                following += step
+            return (min(position, inner), max(position, inner))
+        position += step
+    return None
+
+
+def _run_through(line: Any, anchor: int) -> tuple[int, int] | None:
+    """Inclusive range of the ``True`` run of ``line`` containing ``anchor``."""
+    if not 0 <= anchor < line.size or not line[anchor]:
+        return None
+    low = anchor
+    while low - 1 >= 0 and line[low - 1]:
+        low -= 1
+    high = anchor
+    while high + 1 < line.size and line[high + 1]:
+        high += 1
+    return (low, high)
+
+
+def _median_int(values: list[int]) -> int:
+    """Median of a small integer list, always rounded to an ``int``."""
+    ordered = sorted(values)
+    return int(ordered[len(ordered) // 2])
+
+
+def _hex_colour(value: Any) -> str:
+    """``#RRGGBB`` for an ``(r, g, b)`` triple."""
+    red, green, blue = (int(channel) for channel in value[:3])
+    return f"#{red:02X}{green:02X}{blue:02X}"
+
+
+def _badge_ring(
+    pixels: Any,
+    label_box: tuple[float, float, float, float],
+    *,
+    pad: int,
+    saturation_threshold: int,
+    background_distance: int,
+    label_ink_share: float,
+    margin_ratio: float,
+) -> tuple[dict[str, Any] | None, str]:
+    """Measure the thin outline drawn around ``label_box``, if there is one.
+
+    Scans outward from the label instead of labelling connected components:
+    ``scipy`` is not a declared dependency, and the directional evidence -- a
+    vertical bar left of the label, one right of it, a horizontal bar above it,
+    all one colour -- is what "closed outline" means anyway.
+
+    The vertical extent comes from the middle column, not from the left bar.
+    Scanning the left bar's own column looks like the better ruler -- a bar
+    should span the full height -- but that column sits inside the rounded
+    corner, so it starts one radius below the real top edge (measured 1298
+    against a true 1292, i.e. 6 px short of a 44 px badge).  The label box is
+    also not tight around its glyphs: on these badges the box bottom is the
+    page bottom while the outline's bottom edge sits above it, so scanning
+    below the label finds nothing at all.
+
+    Every rejection carries a reason.  A rule that only answers "applied / not
+    applied" cannot be reviewed afterwards, which is the failure this repo
+    already paid for once (the OCR merge that silently swallowed 模型广场).
+
+    Returns:
+        ``(ring, reason)``.  ``ring`` is ``None`` when nothing was measured and
+        ``reason`` says which check refused it; when ``ring`` is not ``None``
+        the reason is empty.  ``ring`` holds ``bbox`` (source pixels, right and
+        bottom exclusive), ``stroke``, ``radius``, ``fill``, ``accent``,
+        ``ring_fill_ratio`` and ``label_ink_share``.
+    """
+    import numpy as np
+
+    lx0, ly0, lx1, ly1 = (float(value) for value in label_box)
+    label_w = lx1 - lx0
+    label_h = ly1 - ly0
+    image_h, image_w = pixels.shape[:2]
+    x0 = max(0, int(lx0) - pad)
+    y0 = max(0, int(ly0) - pad)
+    x1 = min(image_w, int(lx1) + pad)
+    y1 = min(image_h, int(ly1) + pad)
+    if x1 - x0 < 8 or y1 - y0 < 8:
+        return None, "window too small"
+    window = pixels[y0:y1, x0:x1]
+    colors, counts = np.unique(window.reshape(-1, 3), axis=0, return_counts=True)
+    background = colors[int(counts.argmax())].astype(np.int16)
+    saturation = window.max(axis=2) - window.min(axis=2)
+    distance = np.abs(window - background).max(axis=2)
+    accent = (saturation > saturation_threshold) & (distance > background_distance)
+    if accent.mean() < 0.01:
+        return None, "no accent colour around the label"
+
+    # The label's glyphs and the outline share one colour -- that is what makes
+    # the label "baked in".  A crop with a coloured border but neutral glyphs
+    # keeps failing here, which is why 控制台 (a filled light plate) is skipped.
+    ink = accent[
+        max(0, int(ly0) - y0) : max(1, int(ly1) - y0),
+        max(0, int(lx0) - x0) : max(1, int(lx1) - x0),
+    ]
+    ink_share = float(ink.mean()) if ink.size else 0.0
+    if ink_share < label_ink_share:
+        return None, "label glyphs are not baked into the crop"
+
+    colour = np.median(window[accent], axis=0).astype(np.int16)
+    same = np.abs(window - colour).max(axis=2) <= 24
+
+    mid_row = min(same.shape[0] - 1, max(0, int((ly0 + ly1) / 2) - y0))
+    left_run = _run_near(same[mid_row], int(lx0) - x0 - 1, -1, pad + 4)
+    if left_run is None:
+        return None, "no bar left of the label"
+    right_run = _run_near(same[mid_row], int(lx1) - x0, 1, pad + 4)
+    if right_run is None:
+        return None, "no bar right of the label"
+    left_outer, left_inner = left_run
+    right_inner, right_outer = right_run
+    if left_outer >= int(lx0) - x0 or right_outer <= int(lx1) - x0:
+        return None, "bars do not straddle the label"
+
+    # The vertical extent is measured on the middle column, where the top and
+    # bottom edges are straight.  Measuring it on the left bar instead reads
+    # short: that column sits in the rounded corner, so it only starts a radius
+    # below the real top edge (measured 1298 vs 1292 on dark-card-grid).
+    middle_column = (left_outer + right_outer) // 2
+    height = same.shape[0]
+    top_bar = _run_near(same[:, middle_column], 0, 1, height)
+    if top_bar is None:
+        return None, "no top edge above the label"
+    top_outer = top_bar[0]
+    # The bottom edge may be *outside* the screenshot: these badges sit on the
+    # last row of the page, so their bottom border is clipped away and the
+    # lowest run on the middle column is a glyph, not an edge (measured: no bar
+    # at all below 1331, page bottom at 1336).  Taking the furthest extent of
+    # either column handles both the clipped badge and the ordinary one, where
+    # the middle column reaches the real bottom edge.
+    bar_column = (left_outer + left_inner) // 2
+    bottom_outer = max(
+        int(np.flatnonzero(same[:, bar_column]).max()),
+        int(np.flatnonzero(same[:, middle_column]).max()),
+    )
+    if not top_outer < mid_row < bottom_outer:
+        return None, "outline does not enclose the label"
+
+    stroke = _median_int(
+        [
+            left_inner - left_outer + 1,
+            right_outer - right_inner + 1,
+            top_bar[1] - top_bar[0] + 1,
+        ]
+    )
+    ring_w = right_outer - left_outer + 1
+    ring_h = bottom_outer - top_outer + 1
+    if ring_w <= 0 or ring_h <= 0:
+        return None, "empty outline box"
+    # A blob is rejected by its stroke, not by its fill ratio: scanning outward
+    # from the label through a solid area returns a run as deep as the blob, so
+    # a "stroke" wider than a quarter of the badge cannot be an outline.
+    if stroke > max(4, int(0.25 * min(ring_w, ring_h))):
+        return None, "accent area too thick to be an outline"
+    if not 0.5 * label_h <= ring_h <= 2.5 * label_h:
+        return None, "outline height is not a badge height"
+    label_centre = (ly0 + ly1) / 2 - y0
+    if abs((top_outer + bottom_outer) / 2 - label_centre) > 0.6 * label_h:
+        return None, "outline is not centred on the label"
+    margin_limit = max(20.0, margin_ratio * max(label_w, label_h))
+    margins = (
+        int(lx0) - x0 - left_outer,
+        right_outer - (int(lx1) - x0),
+        int(ly0) - y0 - top_outer,
+        bottom_outer - (int(ly1) - y0),
+    )
+    if max(abs(value) for value in margins) > margin_limit:
+        return None, "outline sits too far from the label"
+
+    # Corner radius: on the top row the outline starts `radius` in from its own
+    # left edge.  Measured on this row only -- the bottom edge can be clipped by
+    # the screenshot, where the same measurement returns garbage.
+    top_row_run = _run_through(same[top_outer], middle_column)
+    radius = 0
+    if top_row_run is not None:
+        radius = max(0, top_row_run[0] - left_outer)
+
+    interior = window[
+        top_outer + stroke + 2 : bottom_outer - stroke - 1,
+        left_outer + stroke + 2 : right_outer - stroke - 1,
+    ]
+    if interior.size < 30:
+        return None, "no interior to sample"
+    fill_colors, fill_counts = np.unique(
+        interior.reshape(-1, 3), axis=0, return_counts=True
+    )
+    fill = fill_colors[int(fill_counts.argmax())]
+    if np.abs(fill.astype(np.int16) - colour).max() <= 24:
+        # Interior is the accent colour: a solid pill, not an outline.  There is
+        # no rule for that shape yet, so leave the crop alone rather than guess.
+        return None, "interior is filled with the accent colour"
+    ring_pixels = same[top_outer : bottom_outer + 1, left_outer : right_outer + 1]
+    return (
+        {
+            "bbox": (
+                left_outer + x0,
+                top_outer + y0,
+                right_outer + x0 + 1,
+                bottom_outer + y0 + 1,
+            ),
+            "stroke": max(1, int(stroke)),
+            "radius": int(min(radius, max(0, min(ring_w, ring_h) // 2))),
+            "fill": _hex_colour(fill),
+            "accent": _hex_colour(colour),
+            # Diagnostic only, and deliberately not a threshold: on a badge
+            # carrying its own glyphs the outline and the glyphs share one
+            # colour, so this ratio mixes "thin outline" with "how much text is
+            # inside".  The exact separation is the interior check above.
+            "ring_fill_ratio": float(ring_pixels.mean()),
+            "label_ink_share": ink_share,
+        },
+        "",
+    )
+
+
 def apply_adjudicated_conflicts(
     design: Mapping[str, Any],
     decisions: list[Mapping[str, Any]],
