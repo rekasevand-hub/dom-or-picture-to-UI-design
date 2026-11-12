@@ -45,6 +45,10 @@ from src.app.services.structure.fidelity.perception_contract import (  # noqa: E
     evaluate_native_fidelity,
     run_perception_contract,
 )
+from src.app.services.rendering.bridge_build import (  # noqa: E402
+    build_mismatch,
+    runtime_identity,
+)
 from src.main import load_config  # noqa: E402
 
 
@@ -382,6 +386,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
 
     initial_readback = _read_json(run_root / "readback.json")
+    # The plugin loads from a separate checkout, so "the code on disk" and "the
+    # code that rendered" are two different facts.  Refuse the run rather than
+    # produce pixels nobody can attribute.
+    runtime = runtime_identity(readback=initial_readback)
+    mismatch = build_mismatch(runtime)
+    if mismatch:
+        blocked = {
+            "schema_version": "image-figma-real-run/1.0",
+            "status": "blocked-environment",
+            "sample_id": str(truth.get("sample_id") or ""),
+            "frame_id": run_summary.get("frame_id"),
+            "error": f"FigmaBridgeError: {mismatch}",
+            "runtime": runtime,
+            "calls": run_summary.get("calls") or [],
+        }
+        _write_json(output / "acceptance.json", blocked)
+        print(json.dumps(blocked, ensure_ascii=True))
+        return 2
     regions = _fidelity_regions(geometry)
     original_design = copy.deepcopy(design)
     calibration_render_count = 0
@@ -520,6 +542,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         policy=acceptance_policy,
     )
     report["pipeline"] = prepared
+    report["runtime"] = runtime_identity(
+        readback=initial_readback,
+        strategies=calibration.selected_groups,
+    )
     report["artifacts"] = {
         "image_reference": "pipeline/image_reference.json",
         "image_ir": "pipeline/image_ir.json",
