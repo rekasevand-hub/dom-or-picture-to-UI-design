@@ -883,7 +883,7 @@ def paint_order(elements: list[dict]) -> list[tuple[int, dict]]:
             return int(el["paintDepth"])
         return _depth(idx)
 
-    return sorted(
+    ordered = sorted(
         enumerate(elements),
         key=lambda pair: (
             1 if pair[1].get("overlay") else 0,
@@ -893,6 +893,89 @@ def paint_order(elements: list[dict]) -> list[tuple[int, dict]]:
             pair[0],
         ),
     )
+    return _unbury_text(ordered, elements)
+
+
+def _reference_ink_rect(element: dict) -> tuple[int, int, int, int] | None:
+    """Where the *glyphs* are, according to the source pixels.
+
+    ``styleEvidence.ink_bbox`` is measured on the reference image inside the
+    element's window, so it is the only box that describes the drawn run.
+    The element box is a layout box and can be several times wider -- a whole
+    table cell, or a row of a card.
+    """
+    evidence = element.get("styleEvidence")
+    if not isinstance(evidence, Mapping):
+        return None
+    values = evidence.get("evidence")
+    if not isinstance(values, Mapping):
+        return None
+    ink = values.get("ink_bbox")
+    if not isinstance(ink, (list, tuple)) or len(ink) != 4:
+        return None
+    try:
+        rect = tuple(int(round(float(value))) for value in ink)
+    except (TypeError, ValueError):
+        return None
+    if rect[2] <= 0 or rect[3] <= 0:
+        return None
+    return rect
+
+
+def _is_opaque_fill(element: dict) -> bool:
+    """A solid ``#rrggbb`` fill -- the only thing that can hide glyphs."""
+    fill = (element.get("style") or {}).get("fillColor")
+    return isinstance(fill, str) and len(fill) == 7 and fill.startswith("#")
+
+
+def _unbury_text(
+    ordered: list[tuple[int, dict]], elements: list[dict]
+) -> list[tuple[int, dict]]:
+    """Lift a text out from under the card its own box sticks out of.
+
+    Depth is counted from the element *box*, and a text box is often a whole
+    cell: the holdout's ``< 1 分钟`` is 438 px wide inside a 270 px card, so
+    the card is one level deeper than the text and paints over it.  The node
+    is in the document and the glyphs are not in the export -- exactly what
+    ``failed-missing-rendered-ink`` reports.
+
+    The repair is local and evidence-based: only a text whose *reference ink*
+    is fully covered by an opaque element that paints later is moved, and it
+    moves to just above its highest blocker.  Everything else keeps its
+    relative order, so a page with no buried text is byte-identical.
+    """
+    if not ordered:
+        return ordered
+    rects = {
+        index: PrototypeAdapter._element_rect(element) for index, element in ordered
+    }
+    targets: dict[int, int] = {}
+    for rank, (index, element) in enumerate(ordered):
+        if str(element.get("type") or "") != "text":
+            continue
+        ink = _reference_ink_rect(element)
+        if ink is None:
+            continue
+        blockers = [
+            later_rank
+            for later_rank in range(rank + 1, len(ordered))
+            if _is_opaque_fill(ordered[later_rank][1])
+            and str(ordered[later_rank][1].get("type") or "") != "text"
+            and rects[ordered[later_rank][0]] is not None
+            and PrototypeAdapter._covers(rects[ordered[later_rank][0]], ink)
+        ]
+        if blockers:
+            targets[index] = ordered[max(blockers)][0]
+    if not targets:
+        return ordered
+    repaired: list[tuple[int, dict]] = []
+    for index, element in ordered:
+        if index not in targets:
+            repaired.append((index, element))
+        for moved, blocker in targets.items():
+            if blocker == index:
+                repaired.append((moved, elements[moved]))
+    return repaired
 
 
 def _single_node(spec: dict) -> bool:
