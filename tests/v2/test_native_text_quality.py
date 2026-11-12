@@ -631,6 +631,10 @@ def test_native_text_quality_treats_a_wrapped_label_as_native(
 
     owner = report["owners"][0]
     assert owner["nativeText"] is True
+    # Same predicate, same answer: the owner status used to keep the exact
+    # match while ``nativeText`` had moved on, so a wrapped paragraph with
+    # four green checks still reported ``status: fail``.
+    assert owner["status"] == "pass"
     assert report["gate"]["criticalText"]["matchedCount"] == 1
 
 

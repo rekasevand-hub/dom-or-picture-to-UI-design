@@ -868,14 +868,13 @@ def build_native_text_quality(
                 "baseline": "unknown",
                 "checks": geometry_checks,
                 "geometryStatus": ("pass" if all(geometry_checks.values()) else "fail"),
+                # `native_text` is the compact (whitespace-normalised) test the
+                # gate itself uses; the raw membership test below it would fail
+                # a paragraph that the emitter wrapped, while `nativeText` still
+                # reported true -- one owner, two answers. It is the same
+                # predicate, so it has to be the same expression.
                 "status": (
-                    "pass"
-                    if text in native_characters
-                    and geometry_checks["position"]
-                    and geometry_checks["size"]
-                    and geometry_checks["coverage"]
-                    and geometry_checks["edgeF1"]
-                    else "fail"
+                    "pass" if native_text and all(geometry_checks.values()) else "fail"
                 ),
             }
         )
