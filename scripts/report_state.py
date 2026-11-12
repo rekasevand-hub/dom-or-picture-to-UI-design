@@ -28,6 +28,9 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 BEGIN = "<!-- BEGIN GENERATED: state -->"
 END = "<!-- END GENERATED: state -->"
 
+# 位图覆盖超过这个比例的页面，native-only 与 within30 差距会大到不可比，表里加粗提示。
+NATIVE_ONLY_BOLD_RATIO = 0.10
+
 PAGES = (
     ("holdout #4 内容审核", "output/_p25_mech2"),
     ("dark-card-grid", "output/_benchmark_families/rerun/dark-card-grid"),
@@ -61,6 +64,7 @@ def _page(label: str, run_dir: Path) -> dict[str, Any] | None:
     critical = acceptance.get("critical_text") or {}
     native = _native(acceptance)
     runtime = acceptance.get("runtime") or {}
+    native_only = visual.get("native_only") or {}
     quality_path = run_dir / "native_text_quality.json"
     failures: Counter[tuple[str, ...]] = Counter()
     if quality_path.is_file():
@@ -75,6 +79,15 @@ def _page(label: str, run_dir: Path) -> dict[str, Any] | None:
         "label": label,
         "status": acceptance.get("status"),
         "within30": visual.get("within30_pct"),
+        "nativeOnly": (
+            {
+                "within30": native_only.get("within30_pct"),
+                "coveredRatio": native_only.get("covered_pixel_ratio"),
+                "regionCount": native_only.get("region_count"),
+            }
+            if native_only
+            else None
+        ),
         "criticalPassed": critical.get("matched_count"),
         "criticalTotal": critical.get("required_count"),
         "nativePassed": native.get("ownerPassCount"),
@@ -96,6 +109,37 @@ def collect() -> list[dict[str, Any]]:
         if page is not None:
             pages.append(page)
     return pages
+
+
+def _fmt_pct(value: Any) -> str:
+    return f"{value:.2f}" if isinstance(value, (int, float)) else "—"
+
+
+def _fmt_ratio(value: Any) -> str:
+    return f"{value * 100:.1f}%" if isinstance(value, (int, float)) else "—"
+
+
+def _native_only_lines(pages: list[dict[str, Any]]) -> list[str]:
+    """位图覆盖会把 within30 抬高，跨族只认这一列 —— 所以它也必须生成，不能手抄。"""
+    lines = [
+        "> native-only：把位图覆盖区域从分子分母同时剔除后重算的 within30。跨族只比这一列。",
+        "",
+        "| 页面 | within30 | native-only | 位图覆盖 |",
+        "|---|---|---|---|",
+    ]
+    for page in pages:
+        extra = page.get("nativeOnly") or {}
+        covered = extra.get("coveredRatio")
+        bold = isinstance(covered, (int, float)) and covered >= NATIVE_ONLY_BOLD_RATIO
+        native_only = _fmt_pct(extra.get("within30"))
+        coverage = _fmt_ratio(covered)
+        if bold:
+            native_only, coverage = f"**{native_only}**", f"**{coverage}**"
+        lines.append(
+            f"| {page['label']} | {_fmt_pct(page['within30'])} | "
+            f"{native_only} | {coverage} |"
+        )
+    return lines
 
 
 def render_block(pages: list[dict[str, Any]]) -> str:
@@ -120,6 +164,8 @@ def render_block(pages: list[dict[str, Any]]) -> str:
             f"| {page['label']} | {display} | "
             f"{page['criticalPassed']}/{page['criticalTotal']} | {native} | {build} |"
         )
+    lines.append("")
+    lines.extend(_native_only_lines(pages))
     lines.append("")
     lines.append("剩余 native 失败（按缺失维度）：")
     lines.append("")
