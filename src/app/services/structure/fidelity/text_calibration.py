@@ -4326,6 +4326,8 @@ def calibrate_ink_convergence_from_render(
     image: str,
     export_path: str,
     readback: dict[str, Any],
+    *,
+    types: tuple[str, ...] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Converge every text fontSize until rendered ink matches source ink.
 
@@ -4354,7 +4356,8 @@ def calibrate_ink_convergence_from_render(
     Skip band [0.85, 1.175]: owners already matching are untouched.  A single
     ratio step is clamped to [0.7, 1.5] so one pass moves at most ~50%, and
     repeated calibration iterations converge geometrically.  The band applies
-    to the height channel only; the width channel is already gated at 4 %.
+    to the height channel only; the width channel is gated at 3 % on runs of
+    4 em or more and 4 % below that.
 
     Both numbers were re-tested on 2026-11-10 and are load-bearing:
 
@@ -4401,6 +4404,13 @@ def calibrate_ink_convergence_from_render(
         # the label's own box (not the button), so it measures like any other
         # run.  Keying off ``type == "text"`` left every control label out.
         if not str(element.get("text") or "").strip():
+            continue
+        # A second convergence pass has to stay off controls: their label size
+        # is written through the control's own fields, so the first pass's
+        # `style.fontSize` never reaches the canvas and the second pass would
+        # re-apply the same ratio to a frame that did not move (light-table
+        # ``展开查询`` 19.75 -> 21.75, width -20 px).
+        if types is not None and str(element.get("type") or "") not in types:
             continue
         evidence = (element.get("styleEvidence") or {}).get("evidence") or {}
         ink_bbox = evidence.get("ink_bbox")
@@ -4484,7 +4494,14 @@ def calibrate_ink_convergence_from_render(
             if conflicts:
                 skipped += 1
                 continue
-            if abs(width_ratio - 1.0) > 0.04:
+            # The gate's size tolerance is max(3 px, 3 %).  On a long run 3 %
+            # is already 5 px, well clear of the 1 px quantisation, so the
+            # deadband does not have to be wider there; on a short run 3 % is
+            # a single pixel and stays inside the noise floor.  Measured on
+            # the four pages, the tighter band reaches exactly one label per
+            # page that the gate was failing (``REQ-OIBFZVUES`` 172 vs 178).
+            width_deadband = 0.03 if rendered_width >= 4 * float(size) else 0.04
+            if abs(width_ratio - 1.0) > width_deadband:
                 ratio = width_ratio
                 basis = "width"
         if basis == "height" and 0.85 <= ratio <= 1.175:

@@ -273,6 +273,15 @@ def _ink_convergence(ctx: CalibrationContext) -> tuple[dict[str, Any], dict[str,
     )
 
 
+def _ink_convergence_text(
+    ctx: CalibrationContext,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Second pass, text only -- a control's label size lives in other fields."""
+    return calibrate_ink_convergence_from_render(
+        ctx.design, ctx.image, _export(ctx), ctx.readback, types=("text",)
+    )
+
+
 def _weight_convergence(
     ctx: CalibrationContext,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -588,6 +597,25 @@ CALIBRATION_GROUPS: tuple[CalibrationGroup, ...] = (
                 ("table", "form", "toolbar", "page", "search"),
                 _ink_convergence,
                 always=True,
+            ),
+        ),
+    ),
+    # Width convergence is a fixed point, not a formula: a run measured at
+    # 140 px is scaled to the reference 172, and the renderer answers 178 --
+    # advance is not linear in font size (hinting, tracking, the odd glyph).
+    # One pass therefore lands close and leaves the last few pixels on the
+    # table (``REQ-OIBFZVUES`` 19 -> 23.25, still 6 px wide). The second pass
+    # measures the *rendered* frame again and only runs when the size residual
+    # is still there, so a page that converged pays nothing.
+    CalibrationGroup(
+        name="ink-convergence-second",
+        render_suffix="figma_ink_converged_2",
+        strategies=(
+            _strategy(
+                "ink-convergence-second",
+                ("size",),
+                ("table", "form", "toolbar", "page", "search"),
+                _ink_convergence_text,
             ),
         ),
     ),
