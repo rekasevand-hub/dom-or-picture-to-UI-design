@@ -11,6 +11,7 @@ Usage:
   python scripts/report_state.py --write docs/STATE.md
   python scripts/report_state.py            # print the block only
 """
+
 from __future__ import annotations
 
 import argparse
@@ -28,7 +29,7 @@ BEGIN = "<!-- BEGIN GENERATED: state -->"
 END = "<!-- END GENERATED: state -->"
 
 PAGES = (
-    ("holdout #4 内容审核", "output/_p23_fix"),
+    ("holdout #4 内容审核", "output/_p25_mech2"),
     ("dark-card-grid", "output/_benchmark_families/rerun/dark-card-grid"),
     ("light-form", "output/_benchmark_families/rerun/light-form"),
     ("light-table", "output/_benchmark_families/rerun/light-table"),
@@ -82,7 +83,9 @@ def _page(label: str, run_dir: Path) -> dict[str, Any] | None:
         "buildMatches": runtime.get("buildMatches"),
         "gitSha": runtime.get("gitSha"),
         "strategies": runtime.get("strategies") or [],
-        "failureCounts": {"/".join(key) or "(none)": count for key, count in failures.most_common()},
+        "failureCounts": {
+            "/".join(key) or "(none)": count for key, count in failures.most_common()
+        },
     }
 
 
@@ -121,7 +124,9 @@ def render_block(pages: list[dict[str, Any]]) -> str:
     lines.append("剩余 native 失败（按缺失维度）：")
     lines.append("")
     for page in pages:
-        detail = "、".join(f"{key}×{value}" for key, value in page["failureCounts"].items())
+        detail = "、".join(
+            f"{key}×{value}" for key, value in page["failureCounts"].items()
+        )
         lines.append(f"- **{page['label']}**：{detail or '无'}")
     lines.append("")
     builds = {page["bridgeBuild"] for page in pages}
