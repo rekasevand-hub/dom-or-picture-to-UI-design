@@ -46,7 +46,7 @@ light-form 有一半画布是贴上去的裁剪图：它的 within30 不是"画�
 **2. `scripts/audit_structure.py`：结构契约审计（Phase 5 第 1 步）。** 四页一致：
 
 ```
-depth 1    FRAME 1（仅根）    Auto Layout 0    孤立顶层叶子 41 / 69 / 144 / 164
+depth 1    FRAME 1（含根；工具打印 0 是不含根）    Auto Layout 0    孤立顶层叶子 41 / 69 / 144 / 164
 ```
 
 L1 四项里，「单根 Frame」「原生文字」「回读一致」三项已满足，缺的是容器语义；「无父子溢出」有两处真违规——holdout 的右栏段落越出画布右边 3px，dark 的 `Kimi K3` 越出下边 10px。
