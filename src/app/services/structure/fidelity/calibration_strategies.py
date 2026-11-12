@@ -39,6 +39,7 @@ from src.app.services.structure.fidelity.text_calibration import (
     calibrate_table_fonts_from_render,
     calibrate_table_letter_spacing_from_render,
     calibrate_table_positions_from_render,
+    calibrate_text_positions_from_render,
     calibrate_toolbar_font_weight_from_render,
     calibrate_toolbar_letter_spacing_from_render,
 )
@@ -278,6 +279,12 @@ def _weight_convergence(
     return calibrate_weight_from_render(
         ctx.design, ctx.image, _export(ctx), ctx.readback
     )
+
+
+def _text_positions(
+    ctx: CalibrationContext,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    return calibrate_text_positions_from_render(ctx.design, ctx.image, _export(ctx))
 
 
 def _strategy(
@@ -599,6 +606,24 @@ CALIBRATION_GROUPS: tuple[CalibrationGroup, ...] = (
                 ("table", "form", "toolbar", "page", "search", "header", "sidebar"),
                 _weight_convergence,
                 always=True,
+            ),
+        ),
+    ),
+    # Position comes last: size and weight both move the ink box, so a
+    # translation measured before them is stale.  The element box is a layout
+    # box -- its left slack is 0…13 px *within one card* -- so this is a
+    # per-element translation, not a container constant.  Gated on the
+    # position residual alone: a page whose runs already sit on the reference
+    # pays no render.
+    CalibrationGroup(
+        name="text-positions",
+        render_suffix="figma_positioned",
+        strategies=(
+            _strategy(
+                "text-positions",
+                ("position",),
+                (),
+                _text_positions,
             ),
         ),
     ),

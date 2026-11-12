@@ -4190,10 +4190,10 @@ def _ink_height(gray, box, pad: int = 4) -> int | None:
     return extent[1] if extent else None
 
 
-def _text_run_width(
+def _text_run_box(
     gray, box, size: float, *, max_width: float | None = None
-) -> int | None:
-    """Width of the glyph run inside ``box``, ignoring rules and neighbours.
+) -> tuple[int, int, int, int] | None:
+    """Glyph run at the left edge of ``box``: ``(x, y, width, height)``.
 
     ``styleEvidence.ink_bbox`` is the *element* box, not a tight glyph box:
     the ``请求编号`` cell carries 328 px where the four characters occupy 72,
@@ -4202,6 +4202,9 @@ def _text_run_width(
     bands that span the window (table rules) are dropped, and the extent is
     taken from the **leftmost** run, because these labels are left aligned
     inside their box while icons and the next cell sit to the right.
+
+    The vertical extent is read inside that run's own columns, so a neighbour
+    above or below cannot stretch it.
     """
     import numpy as np
 
@@ -4257,7 +4260,25 @@ def _text_run_width(
         hi = column
         previous = column
     run = hi - lo + 1
-    return run if run >= 3 else None
+    if run < 3:
+        return None
+    rows = np.where(mask[:, lo : hi + 1].any(axis=1))[0]
+    if rows.size == 0:
+        return None
+    return (
+        left + lo,
+        top + int(rows.min()),
+        run,
+        int(rows.max() - rows.min() + 1),
+    )
+
+
+def _text_run_width(
+    gray, box, size: float, *, max_width: float | None = None
+) -> int | None:
+    """Width of the run found by ``_text_run_box``; same guards, same window."""
+    box_extent = _text_run_box(gray, box, size, max_width=max_width)
+    return None if box_extent is None else box_extent[2]
 
 
 def _stroke_width(gray, box, pad: int = 4) -> float | None:
@@ -4675,6 +4696,115 @@ def calibrate_weight_from_render(
         "adjustments": adjustments,
     }
     return design, report
+
+
+def calibrate_text_positions_from_render(
+    design: dict[str, Any],
+    reference_path: str,
+    rendered_path: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Move each text run onto the reference run, per element.
+
+    The element box is a *layout* box, not a glyph box: on the content-review
+    page the grounding box of ``请求编号`` starts 6 px left of its first glyph,
+    and the same page has 2, 4, 5, 6, 7 and 13 px slacks side by side inside
+    one card.  Text is emitted at the box origin, so each element lands
+    ``slack - bearing`` away from where the reference drew it -- a
+    per-element error, not a per-container constant, which is why a single
+    padding number cannot fix it.
+
+    Both sides are measured with the same meter (``_text_run_box``) on the
+    same window (the element box), so the difference is a translation, not a
+    difference of instruments.  Guards reject the cases where the window
+    caught something that is not the run: a run narrower than a glyph, a
+    height that disagrees with the render, or a jump larger than three
+    quarters of an em.
+    """
+    import numpy as np
+    from PIL import Image
+
+    calibrated = copy.deepcopy(dict(design))
+    report: dict[str, Any] = {
+        "schema_version": "grounding-text-position-calibration/1.0",
+        "status": "not-needed",
+        "adjusted_count": 0,
+        "skipped_count": 0,
+        "adjustments": [],
+        "skipped": [],
+    }
+    with Image.open(reference_path) as source:
+        reference = np.asarray(source.convert("L"), dtype=np.int16)
+    with Image.open(rendered_path) as source:
+        rendered = np.asarray(source.convert("L"), dtype=np.int16)
+
+    for element in calibrated.get("elements") or []:
+        if not isinstance(element, dict):
+            continue
+        if str(element.get("type") or "") != "text":
+            continue
+        text = str(element.get("text") or "")
+        if not text.strip():
+            continue
+        style = element.get("style") or {}
+        size = style.get("fontSize")
+        if not isinstance(size, (int, float)) or float(size) <= 0:
+            report["skipped_count"] += 1
+            continue
+        try:
+            box = [
+                float(element.get("x") or 0),
+                float(element.get("y") or 0),
+                float(element.get("width") or 0),
+                float(element.get("height") or 0),
+            ]
+        except (TypeError, ValueError):
+            report["skipped_count"] += 1
+            continue
+        if box[2] <= 0 or box[3] <= 0:
+            report["skipped_count"] += 1
+            continue
+        reference_run = _text_run_box(reference, box, float(size))
+        rendered_run = _text_run_box(rendered, box, float(size))
+        if reference_run is None or rendered_run is None:
+            report["skipped"].append({"text": text[:20], "reason": "no-run"})
+            report["skipped_count"] += 1
+            continue
+        if reference_run[2] < 0.6 * size or rendered_run[2] < 0.6 * size:
+            # A run narrower than one glyph is a stroke fragment or a rule.
+            report["skipped"].append({"text": text[:20], "reason": "run-too-short"})
+            report["skipped_count"] += 1
+            continue
+        if abs(reference_run[3] - rendered_run[3]) > max(3.0, 0.3 * size):
+            report["skipped"].append({"text": text[:20], "reason": "height-mismatch"})
+            report["skipped_count"] += 1
+            continue
+        delta_x = reference_run[0] - rendered_run[0]
+        delta_y = reference_run[1] - rendered_run[1]
+        if abs(delta_x) > 0.75 * size or abs(delta_y) > 0.75 * size:
+            # Beyond three quarters of an em the window is not measuring this
+            # run: it found a neighbour, an icon or a different line.
+            report["skipped"].append({"text": text[:20], "reason": "delta-too-large"})
+            report["skipped_count"] += 1
+            continue
+        if abs(delta_x) < 0.5 and abs(delta_y) < 0.5:
+            report["skipped_count"] += 1
+            continue
+        element["x"] = round(float(element.get("x") or 0) + delta_x, 2)
+        element["y"] = round(float(element.get("y") or 0) + delta_y, 2)
+        report["adjustments"].append(
+            {
+                "text": text[:20],
+                "contentRef": element.get("contentRef"),
+                "delta_x": round(delta_x, 2),
+                "delta_y": round(delta_y, 2),
+                "reference_run": list(reference_run),
+                "rendered_run": list(rendered_run),
+            }
+        )
+    if report["adjustments"]:
+        report["status"] = "applied"
+        report["adjusted_count"] = len(report["adjustments"])
+    return calibrated, report
 
 
 def synthesize_selection_plate(
