@@ -497,3 +497,18 @@ depth 1 / FRAME 1（只有根）/ Auto Layout 0 / 41–164 个孤立顶层叶子
 | 不在 holdout #4 上继续调参 | 感知、装饰、调色板、字号、字重、定位、埋字，七轮都在这张图上 |
 | 感知类改动必须固定在冻结产物上做 A/B（`--reuse-prepared`） | 全量跑会重新采样 VLM，方差能盖过被测改动 |
 | 一次只动一件事，四组全跑 | 单看一族的好转，八成是另一族在出血（§2.5 第二遍收敛就是实例） |
+
+---
+
+## 9. 补记（03:12）：把 native-only 表也变成生成的
+
+§2.4 那张表当时是手抄的，第二天核对时 dark 写着 95.51、产物是 95.49 —— 0.02，正是 §1.3 想消灭的那类账。表已并入 `report_state.py` 的生成块，并加两条守卫：**块必须等于现算**、**表头只能出现一次**。顺带校正了 STATE 正文三处停在旧结论上的段落（瓶颈 #4 已修、第 1/2/3 项已收口、`FRAME 0 → 1`）。
+
+- 改：`scripts/report_state.py`（`_page` 收 `visual.native_only`；新增 `_native_only_lines()`，覆盖 ≥10% 加粗）、`docs/STATE.md`
+- 增：`tests/v2/test_report_state_native_only.py`（8 例）
+- 测试：`tests/v2` **1550 passed / 8 failed**（同既有 8 项）
+- 提交：`5ebb8d0` 正文校正、`001d606` 表并入、`a16bebf` 删手抄表
+- 论证与新增禁改项：`20261113_instruments_and_mechanics.md` §6
+
+**行为变化**：跑完新验收不刷新 STATE，`test_the_committed_block_is_what_the_script_would_generate` 会红，报错里带修复命令。这是故意的。
+
