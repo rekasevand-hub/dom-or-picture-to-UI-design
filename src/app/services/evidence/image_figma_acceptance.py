@@ -91,6 +91,100 @@ _PASSING_REPAIR_STATUSES = {
 }
 
 
+def bitmap_regions(
+    readback_tree: Mapping[str, Any],
+) -> list[tuple[int, int, int, int]]:
+    """Boxes filled with an image, in export coordinates (frame origin at 0,0).
+
+    A pasted crop and a freshly drawn rectangle score the same on a pixel
+    metric, so a page that leans on bitmaps looks closer to the reference than
+    one that redraws everything.  These boxes are what ``native_only`` excludes.
+    """
+    origin = readback_tree.get("absolute") or {}
+    try:
+        origin_x = float(origin.get("x") or 0)
+        origin_y = float(origin.get("y") or 0)
+    except (TypeError, ValueError):
+        origin_x = origin_y = 0.0
+    regions: list[tuple[int, int, int, int]] = []
+    for node in _iter_nodes(readback_tree):
+        if node is readback_tree:
+            continue
+        fills = node.get("fills") or []
+        if not any(
+            isinstance(fill, Mapping)
+            and str(fill.get("type") or "") == "IMAGE"
+            and bool(fill.get("visible", True))
+            for fill in fills
+        ):
+            continue
+        box = node.get("absolute") or {}
+        try:
+            x = int(round(float(box.get("x") or 0) - origin_x))
+            y = int(round(float(box.get("y") or 0) - origin_y))
+            width = int(round(float(box.get("width") or 0)))
+            height = int(round(float(box.get("height") or 0)))
+        except (TypeError, ValueError):
+            continue
+        if width > 0 and height > 0:
+            regions.append((x, y, width, height))
+    return regions
+
+
+def native_only_visual_metrics(
+    reference_path: str | Path,
+    render_path: str | Path,
+    regions: Sequence[tuple[int, int, int, int]],
+    *,
+    max_diff: int = 30,
+) -> dict[str, Any]:
+    """``within30`` with every bitmap region removed from numerator and denominator.
+
+    Diagnostic only -- it never feeds the gate.  Its job is to make two pages
+    comparable: light-form carries 28-32 pasted crops, light-table 12, dark 1,
+    and without this the family that pastes more simply scores higher.
+    """
+    import cv2
+    import numpy as np
+
+    reference = cv2.imread(str(reference_path))
+    render = cv2.imread(str(render_path))
+    if reference is None or render is None:
+        return {"status": "not-evaluated", "reason": "image-unreadable"}
+    if reference.shape[:2] != render.shape[:2]:
+        render = cv2.resize(render, (reference.shape[1], reference.shape[0]))
+    height, width = reference.shape[:2]
+    diff = np.abs(render.astype(np.int16) - reference.astype(np.int16)).max(axis=2)
+    covered = np.zeros((height, width), dtype=bool)
+    clipped = 0
+    for x, y, box_width, box_height in regions:
+        left, top = max(0, x), max(0, y)
+        right, bottom = min(width, x + box_width), min(height, y + box_height)
+        if right <= left or bottom <= top:
+            clipped += 1
+            continue
+        covered[top:bottom, left:right] = True
+    scored = ~covered
+    scored_count = int(scored.sum())
+    if scored_count == 0:
+        return {
+            "status": "not-evaluated",
+            "reason": "no-uncovered-pixels",
+            "region_count": len(regions),
+        }
+    bad = int(((diff > max_diff) & scored).sum())
+    return {
+        "status": "measured",
+        "within30_pct": float((scored_count - bad) / scored_count * 100),
+        "bad_pixel_count": bad,
+        "scored_pixel_count": scored_count,
+        "scored_pixel_ratio": float(scored_count / (height * width)),
+        "covered_pixel_ratio": float(1 - scored_count / (height * width)),
+        "region_count": len(regions),
+        "regions_outside_canvas": clipped,
+    }
+
+
 def visual_similarity_metrics(
     reference_path: str | Path,
     render_path: str | Path,
@@ -400,6 +494,12 @@ def build_image_acceptance_report(
     reference = Path(reference_path)
     export = Path(export_path)
     metrics = visual_similarity_metrics(reference, export)
+    # Diagnostic sibling of within30: the same metric with pasted crops taken
+    # out, so a page that leans on bitmaps cannot look better than one that
+    # redraws. Never read by the gate.
+    metrics["native_only"] = native_only_visual_metrics(
+        reference, export, bitmap_regions(readback_tree)
+    )
     fidelity_truth = {
         **dict(truth),
         "reference_image_path": str(reference),
@@ -718,6 +818,7 @@ def _iter_nodes(root: Mapping[str, Any]):
     for child in root.get("children") or []:
         if isinstance(child, Mapping):
             yield from _iter_nodes(child)
+
 
 
 def _normalize(value: Any) -> str:
