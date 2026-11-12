@@ -1787,3 +1787,154 @@ class ImageContractTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_ocr_merge_keeps_a_long_paragraph_and_attaches_line_boxes() -> None:
+    """A wrapped paragraph keeps the grounder's text and gains OCR line boxes.
+
+    The paragraph was deleted by the "overlong" branch because one OCR line was
+    a fragment of it, while the OCR line that could have rebuilt it had already
+    been skipped as "already-covered".  Net result was a four-character stub.
+    Text must stay authoritative; OCR only supplies the line geometry.
+    """
+    paragraph = "系统正在对当前内容进行安全审核，请保持页面开启。审核完成后，系统会更新处理状态。"
+    graph = {
+        "elements": [
+            {
+                "id": 7,
+                "type": "text",
+                "text": paragraph,
+                "bbox": [238, 500, 1075, 65],
+                "source": "grounding",
+            }
+        ],
+        "containers": [],
+    }
+    observations = [
+        {
+            "text": "系统正在对当前内容进行安全审核。请保持页面开启。审核完成后。系统会更新",
+            "bbox": [239, 499, 856, 36],
+            "confidence": 0.91,
+        },
+        {"text": "处理状态。", "bbox": [239, 545, 116, 36], "confidence": 0.99},
+    ]
+
+    merged, report = merge_ocr_candidates(graph, observations)
+
+    assert [item["text"] for item in merged["elements"]] == [paragraph]
+    measured = merged["elements"][0]["measuredLines"]
+    assert len(measured) == 2
+    assert "".join(line["text"] for line in measured) == paragraph
+    assert [line["box"] for line in measured] == [
+        [239, 499, 856, 36],
+        [239, 545, 116, 36],
+    ]
+    assert report["attached_line_group_count"] == 1
+    assert report["replaced_covered_count"] == 0
+    assert report["added_count"] == 0
+
+
+def test_ocr_merge_never_deletes_a_paragraph_for_a_single_fragment() -> None:
+    """One covering fragment is not a rebuild plan, so the paragraph stays."""
+    paragraph = "系统正在对当前内容进行安全审核，请保持页面开启。审核完成后，系统会更新处理状态。"
+    graph = {
+        "elements": [
+            {
+                "id": 3,
+                "type": "text",
+                "text": paragraph,
+                "bbox": [238, 500, 1075, 65],
+                "source": "grounding",
+            }
+        ],
+        "containers": [],
+    }
+
+    merged, report = merge_ocr_candidates(
+        graph,
+        [{"text": "处理状态。", "bbox": [239, 545, 116, 36], "confidence": 0.99}],
+    )
+
+    assert [item["text"] for item in merged["elements"]] == [paragraph]
+    assert "measuredLines" not in merged["elements"][0]
+    # The lone fragment is redundant with the paragraph text, so it is not
+    # added either -- the paragraph keeps the content.
+    assert report["added_count"] == 0
+    assert report["replaced_covered_count"] == 0
+
+
+def test_ocr_merge_attaches_lines_when_no_line_is_overlong() -> None:
+    """Two short lines inside one element still describe a wrapped paragraph.
+
+    The right-hand paragraph was never "overlong" against a single line, so the
+    overlong branch never ran; both lines were then skipped as "already
+    covered" and the element kept one flat 653x65 box.  The renderer drew that
+    box as a single line that overflowed the column.  Line geometry must be
+    attached whenever the stacked lines reproduce the element text, whatever
+    their individual length.
+    """
+    paragraph = "我们会检查内容完整性、风险特征和访问环境，为页面提供稳定的安全保护。"
+    graph = {
+        "elements": [
+            {
+                "id": 11,
+                "type": "text",
+                "text": paragraph,
+                "bbox": [1267, 439, 653, 65],
+                "source": "grounding",
+            }
+        ],
+        "containers": [],
+    }
+    observations = [
+        {
+            "text": "我们会检查内容完整性。风险特征和访问环",
+            "bbox": [1266, 440, 412, 32],
+            "confidence": 0.89,
+        },
+        {
+            "text": "境;为页面提供稳定的安全保护。",
+            "bbox": [1268, 478, 306, 30],
+            "confidence": 0.65,
+        },
+    ]
+
+    merged, report = merge_ocr_candidates(graph, observations)
+
+    assert [item["text"] for item in merged["elements"]] == [paragraph]
+    measured = merged["elements"][0]["measuredLines"]
+    assert [line["box"] for line in measured] == [
+        [1266, 440, 412, 32],
+        [1268, 478, 306, 30],
+    ]
+    assert "".join(line["text"] for line in measured) == paragraph
+    assert report["attached_line_group_count"] == 1
+    assert report["added_count"] == 0
+
+
+def test_ocr_merge_keeps_side_by_side_cells_out_of_line_geometry() -> None:
+    """Cells on one row are not paragraph lines, even inside a wider box."""
+    row = "工时管理个人信息展开查询我的工时看板"
+    graph = {
+        "elements": [
+            {
+                "id": 12,
+                "type": "text",
+                "text": row,
+                "bbox": [100, 300, 900, 40],
+                "source": "grounding",
+            }
+        ],
+        "containers": [],
+    }
+    observations = [
+        {"text": "工时管理", "bbox": [100, 302, 120, 36], "confidence": 0.93},
+        {"text": "个人信息", "bbox": [300, 302, 120, 36], "confidence": 0.92},
+        {"text": "展开查询", "bbox": [500, 302, 120, 36], "confidence": 0.91},
+        {"text": "我的工时看板", "bbox": [700, 302, 160, 36], "confidence": 0.9},
+    ]
+
+    merged, report = merge_ocr_candidates(graph, observations)
+
+    assert "measuredLines" not in merged["elements"][0]
+    assert report["attached_line_group_count"] == 0

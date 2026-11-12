@@ -19,6 +19,13 @@ from src.app.services.structure.fidelity.container_manifest import (
     build_container_manifest,
 )
 from src.app.services.structure.fidelity.contracts import normalize_bbox
+from src.app.services.structure.fidelity.decoration_pixels import (
+    ReferencePixels,
+    control_palette,
+    page_background,
+    panel_decorations,
+    solid_decorations,
+)
 from src.app.services.structure.fidelity.style_resolver import resolve_text_style
 
 
@@ -211,12 +218,8 @@ def _control_element(
     node_by_id: Mapping[str, Mapping[str, Any]],
     index: int,
     group_fill: str | None = None,
+    reference_pixels: ReferencePixels | None = None,
 ) -> dict[str, Any]:
-    from src.app.services.structure.image_contract import (
-        _dominant_color,
-        _sample_border_color,
-    )
-
     bbox = _node_bbox(node, width, height)
     x, y, box_width, box_height = bbox
     control_type = str(node.get("control_type") or "button").lower()
@@ -256,16 +259,32 @@ def _control_element(
         parent_bbox=bbox,
         role="control",
     )
-    fill = _dominant_color(image_path, bbox, inset=2)
+    # Fill and ink are measured, not assumed: a label that looks like a button
+    # (``控制台`` in a dark nav) is mostly glyphs, and taking its most common
+    # colour as the fill paints a light chip with dark text -- the inverse of
+    # the screenshot.
+    palette = (
+        control_palette(reference_pixels, bbox) if group_fill is None else {}
+    )
     if group_fill is not None:
         fill = group_fill
+    elif palette.get("hasSurface"):
+        fill = str(palette["surface"])
+    else:
+        fill = "transparent"
+    border: str | None = None
+    border_width = 0
+    # A control that owns no fill owns no outline either: whatever edge the
+    # screenshot shows belongs to the panel behind it, and the panel layer
+    # already emits it.  Drawing it here as well would double the stroke.
+    if group_fill is None and palette.get("hasSurface") and reference_pixels is not None:
+        border = reference_pixels.border_of(bbox, fill)
+        border_width = 1 if border else 0
     style_spec = {
         "fillColor": fill,
-        "borderColor": (
-            _sample_border_color(image_path, bbox, fill) if group_fill is None else fill
-        ),
-        "borderWidth": 0 if group_fill is not None else 1,
-        "textColor": style["textColor"],
+        "borderColor": border or fill,
+        "borderWidth": border_width,
+        "textColor": palette.get("ink") or style["textColor"],
         "fontSize": style["fontSize"],
         "fontWeight": "normal",
         "fontFamily": style["fontFamily"],
@@ -1144,6 +1163,7 @@ def compile_scene_plan_to_design(
         width=width,
         height=height,
     )
+    reference_pixels = ReferencePixels.load(image_path)
     table_ordinal = 0
     for index, node in enumerate(nodes):
         node_type = str(node.get("type") or "")
@@ -1200,6 +1220,7 @@ def compile_scene_plan_to_design(
                         node_by_id=node_by_id,
                         index=index,
                         group_fill=grouped_fill.get(str(node.get("id") or "")),
+                        reference_pixels=reference_pixels,
                     )
                 )
         elif node_type == "image":
@@ -1216,6 +1237,58 @@ def compile_scene_plan_to_design(
             )
     containers.extend(control_groups)
     decorations.extend(control_group_decorations)
+    # Panels, bars and fills are rectangles in the screenshot but arrived as
+    # nothing: containers carried no paint and bars were never modelled.
+    # Measure them once and lay them under the leaves, largest panel first.
+    if reference_pixels is not None:
+        leaf_boxes = [
+            [
+                int(round(float(element.get(key) or 0)))
+                for key in ("x", "y", "width", "height")
+            ]
+            for element in leaves
+        ]
+        container_boxes = [
+            [
+                int(round(float(element.get(key) or 0)))
+                for key in ("x", "y", "width", "height")
+            ]
+            for element in containers
+        ]
+        base_boxes = [*leaf_boxes, *container_boxes]
+        # The page colour has to be settled before panels: a panel that simply
+        # repeats the page is not one, and "the page" is what is left uncovered
+        # -- the image's dominant colour is the card whenever a card is large.
+        page_hex = page_background(
+            reference_pixels,
+            content_boxes=base_boxes,
+            current=background,
+        )
+        decorations = [
+            *panel_decorations(
+                reference_pixels,
+                content_boxes=base_boxes,
+                background=page_hex,
+                covered_boxes=leaf_boxes,
+                painted_boxes=[
+                    (box, str((element.get("style") or {}).get("fillColor") or ""))
+                    for box, element in zip(container_boxes, containers)
+                    if str((element.get("style") or {}).get("fillColor") or "").startswith("#")
+                ],
+            ),
+            *solid_decorations(
+                reference_pixels,
+                # Only image nodes really paint over their box; a text node's
+                # box is layout, and the accent bar beside a headline sits
+                # inside it while still being visible.
+                covered=[
+                    box
+                    for box, element in zip(leaf_boxes, leaves)
+                    if str(element.get("type")) in {"image", "avatar"}
+                ],
+            ),
+            *decorations,
+        ]
     elements = [*containers, *decorations, *leaves]
     _apply_group_decoration_depths(elements, control_groups)
     form_background = _source_form_background(
@@ -1234,6 +1307,56 @@ def compile_scene_plan_to_design(
     )
     if right_rail is not None:
         elements.append(right_rail)
+    # Line boxes come from the OCR supplement and ride on the graph element;
+    # the plan nodes keep a whitelist of fields, so re-attach them by text.
+    # Without this a wrapped paragraph is emitted as one very wide line.
+    measured_by_text: dict[str, list[list[dict[str, Any]]]] = {}
+    for node in graph.get("elements") or []:
+        if not isinstance(node, Mapping):
+            continue
+        measured = node.get("measuredLines")
+        if isinstance(measured, list) and measured:
+            key = str(node.get("text") or "")
+            if key:
+                measured_by_text.setdefault(key, []).append(measured)
+    for element in elements:
+        if element.get("type") != "text" or element.get("measuredLines"):
+            continue
+        matches = measured_by_text.get(str(element.get("text") or ""))
+        if matches and len(matches) == 1:
+            element["measuredLines"] = [
+                dict(line) for line in matches[0] if isinstance(line, Mapping)
+            ]
+            # The style's font size was fitted to the whole block as if it were
+            # one line, so a two-line paragraph comes out twice too large.  With
+            # line boxes the size is the one whose line height fills a line box.
+            style = element.get("style")
+            boxes = [
+                line.get("box")
+                for line in element["measuredLines"]
+                if isinstance(line.get("box"), (list, tuple))
+                and len(line["box"]) == 4
+            ]
+            if isinstance(style, dict) and boxes and not style.get("lineHeight"):
+                from src.app.services.rendering.text_wrap import line_height_of
+
+                factor = line_height_of({}, 100.0) / 100.0
+                line_box = max(float(box[3]) for box in boxes)
+                if factor > 0 and line_box > 0:
+                    style["fontSize"] = round(line_box / factor, 2)
+    # The page colour is what is left once every element is placed; the old
+    # value was the image's dominant colour, i.e. the card colour.
+    background = page_background(
+        reference_pixels,
+        content_boxes=[
+            [
+                int(round(float(element.get(key) or 0)))
+                for key in ("x", "y", "width", "height")
+            ]
+            for element in elements
+        ],
+        current=background,
+    )
     text_count = sum(
         element.get("type") == "text" and bool(element.get("text"))
         for element in elements

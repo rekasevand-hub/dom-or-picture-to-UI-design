@@ -1363,3 +1363,65 @@ def test_form_text_position_calibration_uses_target_ink() -> None:
     assert calibrated["elements"][1]["x"] == 461
     assert calibrated["elements"][1]["y"] == 24
     assert report["adjusted_count"] == 1
+
+
+def test_form_position_calibration_does_not_clip_a_label_glyph(
+    tmp_path: Path,
+) -> None:
+    """A label whose ink starts on the box's first column must converge.
+
+    ``_render_ink_bbox`` insets by 3px for control borders.  Applied to a plain
+    text element, the crop started *at* the glyph, so ``current_ink[0]`` was
+    pinned to the crop origin and every pass moved the label one pixel left
+    (light-form labels drifted 4px left over two passes).
+    """
+    reference = tmp_path / "reference.png"
+    rendered = tmp_path / "rendered.png"
+    for path, box in (
+        (reference, (20, 20, 39, 27)),
+        (rendered, (21, 20, 40, 27)),
+    ):
+        image = Image.new("RGB", (100, 100), "white")
+        ImageDraw.Draw(image).rectangle(box, fill="black")
+        image.save(path)
+    design = {
+        "elements": [
+            {
+                "id": "form",
+                "type": "container",
+                "role": "form-section",
+                "x": 0,
+                "y": 0,
+                "width": 100,
+                "height": 100,
+            },
+            {
+                "contentRef": "text:label",
+                "type": "text",
+                "text": "名称",
+                "x": 20,
+                "y": 20,
+                "width": 40,
+                "height": 20,
+                "styleEvidence": {
+                    "evidence": {
+                        "source_bbox": [20, 20, 40, 20],
+                        "ink_bbox": [20, 20, 20, 8],
+                    }
+                },
+            },
+        ]
+    }
+
+    calibrated, report = calibrate_form_positions_from_render(
+        design,
+        {"children": []},
+        str(reference),
+        str(rendered),
+    )
+
+    label = calibrated["elements"][1]
+    # Ink sits at 21 in the render and 20 in the reference: move left by one,
+    # not by three (the inset used to hide columns 21-23 entirely).
+    assert label["x"] == 19
+    assert report["adjusted_count"] == 1

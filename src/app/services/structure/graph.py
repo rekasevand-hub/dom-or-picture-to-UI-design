@@ -189,11 +189,18 @@ def assign_ids(graph: dict) -> None:
     for e in graph["elements"]:
         cands = [c for c in graph["containers"]
                  if contains(c, e) and c["bbox"][2] * c["bbox"][3] > 0]
-        if cands:
-            e["container"] = min(cands, key=lambda c: c["bbox"][2] * c["bbox"][3])["id"]
+        # An element can sit outside every container (a headline above the card,
+        # a footer below it).  It still needs the key: the container listing
+        # below indexes it directly, and a missing key used to abort the whole
+        # run on an unseen layout.
+        e["container"] = (
+            min(cands, key=lambda c: c["bbox"][2] * c["bbox"][3])["id"]
+            if cands
+            else None
+        )
     # 容器只列“直接挂在它下面”的元素（元素挂最小包含容器；祖先可经 bbox 遍历）
     for c in graph["containers"]:
-        c["elements"] = [e["id"] for e in graph["elements"] if e["container"] == c["id"]]
+        c["elements"] = [e["id"] for e in graph["elements"] if e.get("container") == c["id"]]
 
 
 def assign_parent_depth(graph: dict) -> None:

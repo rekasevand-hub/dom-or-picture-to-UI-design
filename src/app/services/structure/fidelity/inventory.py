@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import copy
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from src.app.services.structure.fidelity.contracts import (
@@ -462,20 +462,27 @@ def build_content_inventory(bundle: Mapping[str, Any]) -> dict[str, Any]:
             )
             continue
         if str(element.get("text") or "").strip():
-            items.append(
-                {
-                    "id": stable_id("text", element.get("id"), source_ref),
-                    "kind": "text",
-                    "text": str(element.get("text")),
-                    "bbox": bbox,
-                    "role": str(element.get("role") or ""),
-                    "source_ref": source_ref,
-                    "authority": "ocr"
-                    if "ocr" in str(element.get("source") or "").lower()
-                    else "grounding",
-                    "evidence_refs": [],
-                }
-            )
+            text_item = {
+                "id": stable_id("text", element.get("id"), source_ref),
+                "kind": "text",
+                "text": str(element.get("text")),
+                "bbox": bbox,
+                "role": str(element.get("role") or ""),
+                "source_ref": source_ref,
+                "authority": "ocr"
+                if "ocr" in str(element.get("source") or "").lower()
+                else "grounding",
+                "evidence_refs": [],
+            }
+            measured_lines = element.get("measuredLines")
+            if isinstance(measured_lines, list) and measured_lines:
+                # Line boxes come from OCR; the text stays the grounder's.
+                # Dropping this here would send the paragraph back to the
+                # single-line estimator.
+                text_item["measuredLines"] = [
+                    dict(line) for line in measured_lines if isinstance(line, dict)
+                ]
+            items.append(text_item)
 
     for index, table in enumerate(_mapping_list(graph.get("tables"))):
         table_bbox = _source_box(table, width, height)

@@ -743,9 +743,48 @@ def test_compiler_samples_border_for_button_control(tmp_path: Path) -> None:
         if element.get("contentRef") == "control:toolbar"
     )
 
-    assert button["style"]["borderColor"].startswith("#")
-    assert button["style"]["borderWidth"] == 1
+    # This control sits on white with no edge of its own.  The old sampler
+    # invented ``#c8d1de`` and drew an outline around 21 of 36 controls; the
+    # contract now is "no measured border, no stroke".
+    assert button["style"]["borderWidth"] == 0
     assert button["style"]["borderRadius"] == 6
+
+
+def test_compiler_keeps_a_button_border_that_really_exists(
+    tmp_path: Path,
+) -> None:
+    path, graph, plan = _fixture(tmp_path)
+    image = Image.open(path).convert("RGB")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((20, 180, 139, 211), outline="#c0c8d8", width=1)
+    image.save(path)
+    plan["nodes"].append(
+        {
+            "id": "control:toolbar",
+            "parent_id": None,
+            "type": "control",
+            "role": "control",
+            "bbox": [20, 180, 120, 32],
+            "content_ref": "control:toolbar",
+            "geometry_ref": "geometry:toolbar",
+            "children": [],
+            "text": "Action",
+            "text_bbox": None,
+            "control_type": "button",
+            "state": "enabled",
+            "text_owner_ref": None,
+        }
+    )
+
+    design = _compile(path, graph, plan)
+    button = next(
+        element
+        for element in design["elements"]
+        if element.get("contentRef") == "control:toolbar"
+    )
+
+    assert button["style"]["borderWidth"] == 1
+    assert button["style"]["borderColor"].startswith("#")
 
 
 def test_compiler_groups_adjacent_same_fill_buttons(tmp_path: Path) -> None:

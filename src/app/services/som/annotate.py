@@ -124,6 +124,11 @@ def annotate_som(graph: dict, output_dir: str) -> dict:
                 "zIndex": int(e.get("zIndex") or 0),
                 **({"contentRef": e["contentRef"]} if e.get("contentRef") else {}),
                 **(
+                    {"measuredLines": e["measuredLines"]}
+                    if isinstance(e.get("measuredLines"), list) and e["measuredLines"]
+                    else {}
+                ),
+                **(
                     {"sceneOwnerId": e["sceneOwnerId"]} if e.get("sceneOwnerId") else {}
                 ),
                 **(

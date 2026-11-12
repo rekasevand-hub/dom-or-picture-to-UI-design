@@ -9,7 +9,7 @@ import hashlib
 import html
 import re
 import unicodedata
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -413,6 +413,209 @@ def _merge_short_unit_into_numeric_owner(
     }
 
 
+def _kept_candidate_char(value: str) -> bool:
+    return bool(re.fullmatch(r"[a-z0-9\u4e00-\u9fff]", value.casefold()))
+
+
+def _split_text_by_kept_counts(text: str, counts: list[int]) -> list[str]:
+    """Cut ``text`` so piece *i* holds ``counts[i]`` normalised characters.
+
+    Punctuation and spaces ride with the piece they sit in, so the pieces
+    concatenate back to the original string exactly -- the authoritative text
+    is never rewritten, only divided.
+    """
+    if not counts:
+        return []
+    if len(counts) == 1:
+        return [text]
+    pieces: list[str] = []
+    current: list[str] = []
+    kept = 0
+    boundary = 0
+    target = counts[0]
+    for char in text:
+        current.append(char)
+        if not _kept_candidate_char(char):
+            continue
+        kept += 1
+        if kept >= target and boundary < len(counts) - 1:
+            pieces.append("".join(current))
+            current = []
+            boundary += 1
+            target += counts[boundary]
+    pieces.append("".join(current))
+    return [piece for piece in pieces if piece.strip()]
+
+
+def _split_text_across_lines(
+    text: str,
+    line_texts: list[str],
+    line_boxes: list[list[int]],
+) -> list[str] | None:
+    """Divide the authoritative text over the OCR line boxes.
+
+    When the OCR lines concatenate to the same normalised string, their own
+    character counts are exact cut points.  Otherwise fall back to a
+    width-proportional split.  Returns ``None`` when no usable split exists.
+    """
+    if not line_texts or not text.strip():
+        return None
+    norm_text = _normalize_candidate_text(text)
+    norm_lines = [_normalize_candidate_text(line) for line in line_texts]
+    counts = [len(value) for value in norm_lines]
+    if norm_text and "".join(norm_lines) == norm_text:
+        pieces = _split_text_by_kept_counts(text, counts)
+    else:
+        total = sum(counts) or len(line_texts)
+        widths = [max(1.0, float(box[2])) for box in line_boxes]
+        width_total = sum(widths) or 1.0
+        counts = [
+            max(1, int(round(len(norm_text) * width / width_total)))
+            for width in widths
+        ]
+        counts[-1] = max(1, len(norm_text) - sum(counts[:-1]))
+        pieces = _split_text_by_kept_counts(text, counts)
+        del total
+    if len(pieces) != len(line_texts):
+        return None
+    return pieces
+
+
+def _line_arrangement(boxes: Sequence[Sequence[int]]) -> str:
+    """Whether covering boxes stack like lines, sit side by side like cells.
+
+    A merged table row is covered by its cells (same y, different x); a wrapped
+    paragraph is covered by its lines (same x, different y).  Only the second
+    case may reuse the grounder's text -- the first must be replaced by the
+    precise cells.
+    """
+    ordered = sorted((list(box) for box in boxes), key=lambda box: (box[1], box[0]))
+    if len(ordered) < 2:
+        return "single"
+    stacked = True
+    columns = True
+    for previous, current in zip(ordered, ordered[1:]):
+        overlap_x = min(previous[0] + previous[2], current[0] + current[2]) - max(
+            previous[0], current[0]
+        )
+        overlap_y = min(previous[1] + previous[3], current[1] + current[3]) - max(
+            previous[1], current[1]
+        )
+        if not (
+            overlap_x >= 0.5 * min(previous[2], current[2])
+            and current[1] >= previous[1] + previous[3] * 0.5
+        ):
+            stacked = False
+        if not (
+            overlap_y >= 0.5 * min(previous[3], current[3])
+            and current[0] >= previous[0] + previous[2] * 0.5
+        ):
+            columns = False
+    if stacked:
+        return "stacked"
+    if columns:
+        return "columns"
+    return "mixed"
+
+
+def _attach_measured_lines(
+    merged: dict[str, Any],
+    current: Mapping[str, Any],
+    covering: list[Mapping[str, Any]],
+) -> list[dict[str, Any]] | None:
+    """Keep the authoritative element and hang the OCR line geometry on it.
+
+    The old branch deleted the long element and trusted the OCR lines to
+    rebuild it; when the covering line had already been skipped as
+    "already-covered", the paragraph vanished and a four-character fragment
+    remained.  Text now stays with the element; OCR only supplies line boxes.
+    """
+    element = next(
+        (
+            item
+            for item in merged.get("elements") or []
+            if _ocr_candidate_key(item) == current["key"]
+        ),
+        None,
+    )
+    if element is None:
+        return None
+    ordered = sorted(covering, key=lambda item: (item["bbox"][1], item["bbox"][0]))
+    pieces = _split_text_across_lines(
+        str(current["text"]),
+        [str(item["text"]) for item in ordered],
+        [list(item["bbox"]) for item in ordered],
+    )
+    if pieces is None:
+        return None
+    measured = [
+        {"text": piece, "box": list(item["bbox"])} for piece, item in zip(pieces, ordered)
+    ]
+    element["measuredLines"] = measured
+    return measured
+
+
+def _attach_paragraph_line_groups(
+    merged: dict[str, Any],
+    existing: list[dict[str, Any]],
+    lines: list[dict[str, Any]],
+) -> tuple[set[int], list[dict[str, Any]]]:
+    """Hang line geometry on every element that OCR read as several lines.
+
+    The per-line loop can only see one line at a time, so a wrapped paragraph
+    was either replaced (when one line was long enough to look "overlong") or
+    silently skipped as "already covered" -- and in both cases the element kept
+    one flat box.  That flat box is what the renderer turned into a single
+    oversized line.  Here the element is matched as a whole: if two or more
+    stacked OCR lines lie inside it and their concatenation reproduces its
+    text, the element keeps the grounder's text and gains the line boxes.
+
+    Side-by-side boxes are table cells, not lines, and are left to the precise
+    replacement path.
+    """
+    consumed: set[int] = set()
+    groups: list[dict[str, Any]] = []
+    ordered = sorted(
+        (item for item in existing if len(item["normalized"]) >= 4),
+        key=lambda item: -len(item["normalized"]),
+    )
+    for current in ordered:
+        covering = [
+            (index, line)
+            for index, line in enumerate(lines)
+            if index not in consumed
+            and _box_coverage(line["bbox"], current["bbox"]) >= 0.5
+        ]
+        if len(covering) < 2:
+            continue
+        if _line_arrangement([line["bbox"] for _index, line in covering]) != "stacked":
+            continue
+        joined = "".join(
+            _normalize_candidate_text(line["text"]) for _index, line in covering
+        )
+        if (
+            difflib.SequenceMatcher(None, joined, current["normalized"]).ratio()
+            < 0.8
+        ):
+            # The boxes hold other content too (a card whose title we are
+            # looking at, a paragraph that runs into the next one).
+            continue
+        measured = _attach_measured_lines(
+            merged, current, [line for _index, line in covering]
+        )
+        if measured is None:
+            continue
+        consumed.update(index for index, _line in covering)
+        groups.append(
+            {
+                "text": str(current["text"])[:48],
+                "bbox": list(current["bbox"]),
+                "lineCount": len(measured),
+            }
+        )
+    return consumed, groups
+
+
 def merge_ocr_candidates(
     graph: Mapping[str, Any],
     observations: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
@@ -450,7 +653,12 @@ def merge_ocr_candidates(
     replaced_covered: list[dict[str, Any]] = []
     logical_merges: list[dict[str, Any]] = []
     replaced_keys: set[tuple[Any, ...]] = set()
-    for line in lines:
+    consumed_lines, attached_line_groups = _attach_paragraph_line_groups(
+        merged, existing, lines
+    )
+    for line_index, line in enumerate(lines):
+        if line_index in consumed_lines:
+            continue
         text = str(line.get("text") or "").strip()
         normalized = _normalize_candidate_text(text)
         if len(normalized) < 2:
@@ -491,16 +699,60 @@ def merge_ocr_candidates(
             and _box_coverage(line["bbox"], current["bbox"]) >= 0.5
         ]
         if overlong:
-            replaced_covered.extend(overlong)
-            replaced_keys.update(current["key"] for current in overlong)
-            merged["elements"] = [
-                item
-                for item in merged.get("elements") or []
-                if _ocr_candidate_key(item) not in replaced_keys
-            ]
-            existing = [
-                current for current in existing if current["key"] not in replaced_keys
-            ]
+            # A long element covered by its own OCR lines is a paragraph the
+            # grounder returned whole: keep it (it owns the authoritative text)
+            # and let the lines supply the boxes.  Covered by side-by-side
+            # cells is a false merge, and that still gets replaced.  A single
+            # fragment is neither -- deleting on it is what lost a paragraph
+            # while the line that could rebuild it had been skipped.
+            attached_any = False
+            replaced_here: list[Mapping[str, Any]] = []
+            for current in overlong:
+                covering = [
+                    (index, candidate)
+                    for index, candidate in enumerate(lines)
+                    if _box_coverage(candidate["bbox"], current["bbox"]) >= 0.5
+                ]
+                if len(covering) >= 2:
+                    arrangement = _line_arrangement(
+                        [candidate["bbox"] for _index, candidate in covering]
+                    )
+                    if arrangement == "stacked":
+                        measured = _attach_measured_lines(
+                            merged,
+                            current,
+                            [candidate for _index, candidate in covering],
+                        )
+                        if measured is not None:
+                            consumed_lines.update(
+                                index for index, _candidate in covering
+                            )
+                            attached_line_groups.append(
+                                {
+                                    "text": str(current["text"])[:48],
+                                    "bbox": list(current["bbox"]),
+                                    "lineCount": len(measured),
+                                }
+                            )
+                            attached_any = True
+                            continue
+                    replaced_here.append(current)
+                    continue
+            if replaced_here:
+                replaced_covered.extend(replaced_here)
+                replaced_keys.update(current["key"] for current in replaced_here)
+                merged["elements"] = [
+                    item
+                    for item in merged.get("elements") or []
+                    if _ocr_candidate_key(item) not in replaced_keys
+                ]
+                existing = [
+                    current
+                    for current in existing
+                    if current["key"] not in replaced_keys
+                ]
+            if attached_any:
+                continue
         if any(
             # Identical text is only "already covered" when it is the same
             # element seen twice: overlapping boxes, or the same type scale.
@@ -563,13 +815,15 @@ def merge_ocr_candidates(
         "skipped_count": len(skipped),
         "replaced_covered_count": len(replaced_covered),
         "logical_merge_count": len(logical_merges),
+        "attached_line_group_count": len(attached_line_groups),
         "added": added,
         "skipped": skipped,
         "replaced_covered": replaced_covered,
         "logical_merges": logical_merges,
+        "attached_line_groups": attached_line_groups,
         "limitations": [
             "OCR text is a candidate and does not verify original font or hidden content.",
-            "Grounding text is retained; OCR only fills missing candidate text.",
+            "Grounding text is retained; OCR only supplies line boxes for wrapped text.",
         ],
     }
     return merged, report
@@ -880,6 +1134,11 @@ def build_image_design(
         }
         if item.get("contentRef"):
             element["contentRef"] = str(item["contentRef"])
+        measured_lines = item.get("measuredLines")
+        if isinstance(measured_lines, list) and measured_lines:
+            element["measuredLines"] = [
+                dict(line) for line in measured_lines if isinstance(line, dict)
+            ]
         if item.get("sceneOwnerId"):
             element["sceneOwnerId"] = str(item["sceneOwnerId"])
         if enrichment_mode in {"analyze", "apply"} and is_control:
@@ -1343,6 +1602,26 @@ def build_image_design(
         )
     image_count = sum(element["type"] in {"image", "avatar"} for element in elements)
     text_count = sum(element["type"] == "text" for element in elements)
+    # Line boxes live on the graph element.  The scene-plan materialisation
+    # rebuilds a text element from a whitelist and drops unknown keys, so the
+    # boxes are re-attached here, keyed by text and only when the string is
+    # unique in the page (a duplicate would be ambiguous).
+    measured_by_text: dict[str, list[list[dict[str, Any]]]] = {}
+    for node in graph.get("elements") or []:
+        measured = node.get("measuredLines")
+        if not isinstance(measured, list) or not measured:
+            continue
+        key = str(node.get("text") or "")
+        if key:
+            measured_by_text.setdefault(key, []).append(measured)
+    for element in elements:
+        if element.get("type") != "text" or element.get("measuredLines"):
+            continue
+        matches = measured_by_text.get(str(element.get("text") or ""))
+        if matches and len(matches) == 1:
+            element["measuredLines"] = [
+                dict(line) for line in matches[0] if isinstance(line, dict)
+            ]
     design = {
         "name": f"Image MVP {sample_id}",
         "canvas": {

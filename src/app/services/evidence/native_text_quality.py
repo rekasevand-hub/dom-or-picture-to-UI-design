@@ -35,6 +35,90 @@ def _normalized_bbox(value: Any) -> list[int] | None:
     return [x, y, width, height] if width > 0 and height > 0 else None
 
 
+def _text_node_boxes(readback_tree: Any) -> list[dict[str, Any]]:
+    """Absolute boxes of the TEXT nodes, in the root frame's coordinate space.
+
+    The gate must measure each owner inside the box the emitter actually gave
+    it.  ``styleEvidence.source_bbox`` is a *grounding* box: on a price cell it
+    spans several tokens, and a single TEXT node can never match its width.
+    """
+    root = readback_tree if isinstance(readback_tree, Mapping) else {}
+    boxes: list[dict[str, Any]] = []
+
+    def walk(node: Any, origin_x: float, origin_y: float) -> None:
+        if isinstance(node, Mapping):
+            bounds = node.get("bounds")
+            local = bounds if isinstance(bounds, Mapping) else node
+            x = origin_x + _number(local.get("x"), 0.0)
+            y = origin_y + _number(local.get("y"), 0.0)
+            if node.get("type") == "TEXT" and str(node.get("characters") or ""):
+                box = _normalized_bbox(
+                    [
+                        x,
+                        y,
+                        _number(local.get("width"), 0.0),
+                        _number(local.get("height"), 0.0),
+                    ]
+                )
+                if box is not None:
+                    boxes.append(
+                        {
+                            "characters": str(node.get("characters") or ""),
+                            "normalized": _compact_gate_text(node.get("characters")),
+                            "box": box,
+                        }
+                    )
+            for child in node.get("children") or []:
+                walk(child, x, y)
+        elif isinstance(node, list):
+            for child in node:
+                walk(child, origin_x, origin_y)
+
+    for child in root.get("children") or []:
+        walk(child, 0.0, 0.0)
+    return boxes
+
+
+def _select_node_box(
+    text: str,
+    element: Mapping[str, Any],
+    node_boxes: Sequence[Mapping[str, Any]],
+) -> list[int] | None:
+    """The emitted node's own box for this owner, or ``None`` if it never landed.
+
+    Duplicate strings are disambiguated by centre distance to the element's own
+    box.  That is a matching decision only -- nothing is measured from it -- so
+    it cannot make a misplaced node look correct.
+    """
+    wanted = _compact_gate_text(text)
+    if not wanted:
+        return None
+    candidates = [item for item in node_boxes if item.get("normalized") == wanted]
+    if not candidates:
+        return None
+    element_box = _normalized_bbox(
+        [
+            _number(element.get("x"), 0.0),
+            _number(element.get("y"), 0.0),
+            _number(element.get("width"), 0.0),
+            _number(element.get("height"), 0.0),
+        ]
+    )
+    if element_box is None or len(candidates) == 1:
+        return list(candidates[0]["box"])
+    element_cx = element_box[0] + element_box[2] / 2.0
+    element_cy = element_box[1] + element_box[3] / 2.0
+    return list(
+        min(
+            candidates,
+            key=lambda item: (
+                (item["box"][0] + item["box"][2] / 2.0 - element_cx) ** 2
+                + (item["box"][1] + item["box"][3] / 2.0 - element_cy) ** 2
+            ),
+        )["box"]
+    )
+
+
 def _halo_bbox(
     bbox: list[int],
     halo_px: int,
@@ -72,6 +156,39 @@ def _ink_bbox(mask: Any, bbox: list[int]) -> list[int] | None:
         int(xs.max()) - int(xs.min()) + 1,
         int(ys.max()) - int(ys.min()) + 1,
     ]
+
+
+def _text_ink_mask(region: Any) -> Any:
+    """Contrast mask with thin divider lines removed.
+
+    ``ink_support`` (the upstream reference measurement) suppresses rows and
+    columns that span most of the crop.  Copied verbatim, that rule also eats
+    every row of a dense label once the crop is tight around the text, so the
+    suppression is limited here to bands no thicker than two pixels -- the
+    shape a table rule actually has.
+    """
+    mask = _contrast_mask(region)
+    height, width = mask.shape
+
+    def _drop_thin_bands(flags: Any, limit: int) -> list[int]:
+        dropped: list[int] = []
+        start = None
+        for index, flag in enumerate(list(flags) + [False]):
+            if flag and start is None:
+                start = index
+            elif not flag and start is not None:
+                if index - start <= limit:
+                    dropped.extend(range(start, index))
+                start = None
+        return dropped
+
+    full_rows = mask.sum(axis=1) >= max(4, int(round(width * 0.8)))
+    for row in _drop_thin_bands(full_rows, 2):
+        mask[row, :] = False
+    full_columns = mask.sum(axis=0) >= max(4, int(round(height * 0.8)))
+    for column in _drop_thin_bands(full_columns, 2):
+        mask[:, column] = False
+    return mask
 
 
 def _edge_mask(mask: Any) -> Any:
@@ -173,6 +290,16 @@ def _normalize_gate_text(value: Any) -> str:
     text = str(value or "").casefold()
     text = re.sub(r"[^\w\s\u4e00-\u9fff]+", " ", text, flags=re.UNICODE)
     return " ".join(text.split())
+
+
+def _compact_gate_text(value: Any) -> str:
+    """Identity form of a label: punctuation folded, all whitespace removed.
+
+    ``_normalize_gate_text`` turns punctuation into spaces, so ``5.8折`` and
+    ``5.8\n折`` normalise to ``5 8折`` and ``5 8 折`` -- different strings for
+    the same label.  Identity comparisons use this compact form.
+    """
+    return re.sub(r"\s+", "", _normalize_gate_text(value))
 
 
 def _critical_text_matches(expected: Any, actual: Any) -> bool:
@@ -298,20 +425,22 @@ def _logical_cluster_for_expected(
 def _unmeasurable_owner(
     element: Mapping[str, Any],
     text: str,
-    native_characters: set[str],
+    native_normalized: set[str],
     reason: str,
 ) -> dict[str, Any]:
     """Register native copy that exists but cannot be measured.
 
     Deliberately omits ``checks`` so the owner is never mistaken for a
     measured one, and uses a non-``pass`` status so it can never satisfy the
-    gate.  ``nativeText`` comes from the readback tree, not from a guess.
+    gate.  ``nativeText`` compares whitespace-normalised strings: a label the
+    emitter wrapped onto two lines (``"5.8\\n折"``) is still the same native
+    copy, and the exact-string comparison used to score it as "not native".
     """
     return {
         "contentRef": element.get("contentRef"),
         "text": text,
         "type": element.get("type"),
-        "nativeText": text in native_characters,
+        "nativeText": _compact_gate_text(text) in native_normalized,
         "ownerScope": "diagnostic-only",
         "status": "unmeasurable-missing-evidence",
         "registrationReason": reason,
@@ -378,11 +507,24 @@ def _evaluate_native_text_gate(
         )
 
     text_blockers: list[str] = []
+    unverified: list[dict[str, Any]] = []
     for expected in missing_critical:
         text_blockers.append(f"native-text:missing:{expected}")
     for index in scope_indexes:
         owner = owners[index]
         owner_ref = str(owner.get("contentRef") or f"owner-{index}")
+        if str(owner.get("status") or "").startswith("unmeasurable"):
+            # No ink evidence means the instrument cannot see this owner. That
+            # is an instrument limitation, not proof of a render defect: it is
+            # reported separately instead of blocking the gate forever.
+            unverified.append(
+                {
+                    "contentRef": owner.get("contentRef"),
+                    "text": owner.get("text"),
+                    "reason": owner.get("registrationReason"),
+                }
+            )
+            continue
         if not owner.get("nativeText"):
             text_blockers.append(f"native-text:not-native:{owner_ref}")
             continue
@@ -459,6 +601,8 @@ def _evaluate_native_text_gate(
             ),
             "ownerRefs": owner_refs,
             "unscopedOwnerCount": len(owners) - len(scope_indexes),
+            "unverified": unverified,
+            "unverifiedCount": len(unverified),
             "blockers": text_blockers,
         },
         "chrome": {
@@ -483,6 +627,7 @@ def build_native_text_quality(
     regions: list[Mapping[str, Any]],
     *,
     halo_px: int = 2,
+    box_pad_px: int = 4,
     bad_pixel_threshold: int = 30,
     gate_policy: Mapping[str, Any] | None = None,
     critical_texts: Sequence[str] | None = None,
@@ -490,11 +635,26 @@ def build_native_text_quality(
 ) -> dict[str, Any]:
     """Build diagnostic text/chrome metrics; never changes acceptance status.
 
+    Measurement contract (2026-11-11):
+
+    * an owner is measured inside **its own emitted node box** (plus
+      ``box_pad_px``), not inside ``styleEvidence.source_bbox``.  The grounding
+      box is a region: on a price cell it spans ``¥20.24 起 ¥23.0`` and no
+      single TEXT node can match its width, so the owner was unpassable by
+      construction;
+    * both sides are measured with the same mask.  The reference used to be
+      measured upstream with an Otsu threshold while the render used a fixed
+      50, so the comparison carried a method bias on top of the render;
+    * ``nativeText`` compares whitespace-normalised strings, so a wrapped
+      ``"5.8\\n折"`` still counts as native copy.
+
     ``register_unmeasured_owners`` is an opt-in emission-contract repair.  By
     default an element without measurable ink evidence is silently skipped, so
     critical-text matching treats existing native copy as absent.  When
     enabled, such elements are registered with an explicit ``unmeasurable-
-    missing-evidence`` status instead.  They are never counted as passing.
+    missing-evidence`` status instead.  They are never counted as passing, and
+    ``_evaluate_native_text_gate`` lists them separately instead of letting
+    them block the gate forever.
     """
     import numpy as np
     from PIL import Image
@@ -532,6 +692,8 @@ def build_native_text_quality(
     native_characters = {
         str(node.get("characters") or "") for node in _text_nodes(readback_tree)
     }
+    native_normalized = {_compact_gate_text(value) for value in native_characters}
+    node_boxes = _text_node_boxes(readback_tree)
     text_mask = np.zeros((height, width), dtype=bool)
     owners: list[dict[str, Any]] = []
     for element in design.get("elements") or []:
@@ -542,38 +704,66 @@ def build_native_text_quality(
             continue
         evidence = element.get("styleEvidence")
         values = evidence.get("evidence") if isinstance(evidence, Mapping) else None
-        if not isinstance(values, Mapping):
+        source_bbox = (
+            _normalized_bbox(values.get("source_bbox"))
+            if isinstance(values, Mapping)
+            else None
+        )
+        native_text = _compact_gate_text(text) in native_normalized
+        node_box = _select_node_box(text, element, node_boxes)
+        measurement_source = "emitted-node"
+        measure_box = (
+            _halo_bbox(node_box, box_pad_px, (height, width))
+            if node_box is not None
+            else None
+        )
+        if measure_box is None:
+            measurement_source = "grounding-box"
+            measure_box = source_bbox or _normalized_bbox(
+                [
+                    _number(element.get("x"), 0.0),
+                    _number(element.get("y"), 0.0),
+                    _number(element.get("width"), 0.0),
+                    _number(element.get("height"), 0.0),
+                ]
+            )
+        if measure_box is None:
             if register_unmeasured_owners:
                 owners.append(
                     _unmeasurable_owner(
-                        element, text, native_characters, "missing-style-evidence"
+                        element, text, native_normalized, "missing-box-evidence"
                     )
                 )
             continue
-        source_bbox = _normalized_bbox(values.get("source_bbox"))
-        reference_ink = _normalized_bbox(values.get("ink_bbox"))
-        if source_bbox is None or reference_ink is None:
-            if register_unmeasured_owners:
-                owners.append(
-                    _unmeasurable_owner(
-                        element, text, native_characters, "missing-ink-evidence"
-                    )
-                )
-            continue
-        x, y, box_width, box_height = source_bbox
+        x, y, box_width, box_height = measure_box
         source_region = rendered[y : y + box_height, x : x + box_width]
         reference_region = reference[y : y + box_height, x : x + box_width]
-        rendered_mask = _contrast_mask(source_region)
-        reference_mask = _contrast_mask(reference_region)
-        rendered_ink = _ink_bbox(rendered_mask, source_bbox)
+        # A divider only has to be suppressed when the crop is a region (the
+        # grounding box).  An emitted node box is tight around its own glyphs,
+        # and the 80% rule would eat every row of a dense label.
+        mask_fn = _contrast_mask if measurement_source == "emitted-node" else _text_ink_mask
+        rendered_mask = mask_fn(source_region)
+        reference_mask = mask_fn(reference_region)
+        reference_ink = _ink_bbox(reference_mask, measure_box)
+        if reference_ink is None:
+            if register_unmeasured_owners:
+                owners.append(
+                    _unmeasurable_owner(
+                        element, text, native_normalized, "no-reference-ink-in-box"
+                    )
+                )
+            continue
+        rendered_ink = _ink_bbox(rendered_mask, measure_box)
         if rendered_ink is None:
             owners.append(
                 {
                     "contentRef": element.get("contentRef"),
                     "text": text,
-                    "nativeText": text in native_characters,
+                    "nativeText": native_text,
                     "ownerScope": "diagnostic-only",
                     "status": "failed-missing-rendered-ink",
+                    "measureBBox": measure_box,
+                    "measurementSource": measurement_source,
                 }
             )
             continue
@@ -655,8 +845,10 @@ def build_native_text_quality(
                 "contentRef": element.get("contentRef"),
                 "text": text,
                 "type": element.get("type"),
-                "nativeText": text in native_characters,
+                "nativeText": native_text,
                 "ownerScope": "diagnostic-only",
+                "measureBBox": measure_box,
+                "measurementSource": measurement_source,
                 "referenceInkBBox": reference_ink,
                 "renderedInkBBox": rendered_ink,
                 "deltaX": delta_x,
@@ -758,6 +950,12 @@ def build_native_text_quality(
             "native-text-and-chrome-gate" if gate_enabled else "none"
         ),
         "haloPx": halo_px,
+        "boxPadPx": box_pad_px,
+        "measurement": {
+            "box": "emitted-node",
+            "mask": "fixed-contrast-50 (both sides)",
+            "nativeTextMatch": "whitespace-normalized",
+        },
         "badPixelThreshold": bad_pixel_threshold,
         "summary": summary,
         "owners": owners,
@@ -765,6 +963,10 @@ def build_native_text_quality(
         "proposedTextGate": proposed_text_gate,
         "limitations": [
             "Baseline evidence is unavailable for every owner in this diagnostic.",
+            (
+                "Owners without ink evidence are listed under nativeText.unverified; "
+                "they never count as passing and no longer block the gate."
+            ),
             (
                 "Native text and chrome use independent quality gates in policy 2.0."
                 if gate_enabled

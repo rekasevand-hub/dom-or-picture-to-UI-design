@@ -33,6 +33,7 @@ from src.app.services.structure.fidelity.text_calibration import (
     calibrate_form_text_shape_from_render,
     calibrate_form_text_weight_from_render,
     calibrate_ink_convergence_from_render,
+    calibrate_weight_from_render,
     calibrate_low_contrast_placeholder_from_render,
     calibrate_search_control_from_render,
     calibrate_table_fonts_from_render,
@@ -147,19 +148,18 @@ def _drop_duplicate_owners(
 def _adjudicated_conflicts(
     ctx: CalibrationContext,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Apply frozen conflict decisions that live inside this run's own tree.
+
+    Decisions are deliberately **not** looked up by benchmark family name.  The
+    previous branch parsed ``benchmark_families/<family>`` out of the image path
+    and loaded ``output/_conflict_decisions/<family>.json``, which meant a
+    benchmark run could consume an input no ordinary screenshot would ever
+    reach -- and that file carried positions taken from the gold tree.  A
+    generalisation claim measured on such a run is not a claim about the
+    pipeline.  Evidence has to travel with the run: if a decision file is
+    wanted, the adjudicator writes it under ``<run>/conflict_adjudication/``.
+    """
     candidates: list[Path] = []
-    parts = Path(str(ctx.image)).parts
-    if "benchmark_families" in parts:
-        index = parts.index("benchmark_families")
-        if index + 1 < len(parts):
-            family = parts[index + 1]
-            root = Path(__file__).resolve().parents[5]
-            candidates.append(
-                root / "output/_conflict_decisions" / f"{family}.json"
-            )
-            candidates.append(
-                Path.cwd() / "output/_conflict_decisions" / f"{family}.json"
-            )
     for base in (ctx.run_root, *list(ctx.run_root.parents)[:3]):
         candidates.append(base / "conflict_adjudication/decisions.json")
     path = next((item for item in candidates if item.is_file()), None)
@@ -268,6 +268,14 @@ def _search_control(ctx: CalibrationContext) -> tuple[dict[str, Any], dict[str, 
 
 def _ink_convergence(ctx: CalibrationContext) -> tuple[dict[str, Any], dict[str, Any]]:
     return calibrate_ink_convergence_from_render(
+        ctx.design, ctx.image, _export(ctx), ctx.readback
+    )
+
+
+def _weight_convergence(
+    ctx: CalibrationContext,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    return calibrate_weight_from_render(
         ctx.design, ctx.image, _export(ctx), ctx.readback
     )
 
@@ -572,6 +580,24 @@ CALIBRATION_GROUPS: tuple[CalibrationGroup, ...] = (
                 ("size", "coverage", "edgeF1", "position"),
                 ("table", "form", "toolbar", "page", "search"),
                 _ink_convergence,
+                always=True,
+            ),
+        ),
+    ),
+    # Weight runs in its own group because it needs the *converged* render:
+    # size and weight both move the ink, and measuring them off the same frame
+    # makes each correction double-count the other.  The group renders only
+    # when a stroke ratio actually differs, so a page with correct weights
+    # pays nothing.
+    CalibrationGroup(
+        name="font-tone",
+        render_suffix="figma_font_tone",
+        strategies=(
+            _strategy(
+                "weight-convergence",
+                ("coverage", "edgeF1"),
+                ("table", "form", "toolbar", "page", "search", "header", "sidebar"),
+                _weight_convergence,
                 always=True,
             ),
         ),

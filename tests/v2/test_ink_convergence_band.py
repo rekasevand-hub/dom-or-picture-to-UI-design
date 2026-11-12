@@ -40,6 +40,7 @@ def _design(size: float, ink_bbox: list[int], text: str = "样例") -> dict:
                 "contentRef": "text:demo",
                 "x": ink_bbox[0],
                 "y": ink_bbox[1],
+                "height": ink_bbox[3],
                 "style": {"fontSize": size},
                 "styleEvidence": {"evidence": {"ink_bbox": ink_bbox}},
             }
@@ -146,4 +147,66 @@ def test_unmatched_text_is_counted_not_applied(tmp_path) -> None:
 
     assert report["adjusted_count"] == 0
     assert report["unmatched_count"] == 1
+    assert calibrated["elements"][0]["style"]["fontSize"] == 20.0
+
+
+def test_a_run_that_is_too_long_moves_the_size_when_the_height_cannot_see_it(
+    tmp_path,
+) -> None:
+    """An 18 px ink height rounds to 1 px = 6 %; a 60 px run does not.
+
+    The label row on the content-review holdout sits at 20.75 pt where the
+    source is 19.5: the ink is one pixel too tall (inside the band, so the
+    height channel says nothing) but six pixels too wide.
+    """
+    reference = tmp_path / "ref.png"
+    rendered = tmp_path / "render.png"
+    bbox = _bar_image(reference, 20, width=60)
+    _bar_image(rendered, 20, width=65)
+
+    calibrated, report = calibrate_ink_convergence_from_render(
+        _design(20.0, bbox), str(reference), str(rendered), _readback([20, 20, 65, 20])
+    )
+
+    assert report["adjusted_count"] == 1
+    assert report["adjustments"][0]["basis"] == "width"
+    assert report["adjustments"][0]["reference_ink_width"] == 60
+    assert report["adjustments"][0]["rendered_ink_width"] == 65
+    assert calibrated["elements"][0]["style"]["fontSize"] == 18.5
+
+
+def test_opposite_width_and_height_directions_are_left_alone(tmp_path) -> None:
+    """Source glyphs wider *and* shorter is a typeface difference.
+
+    ``系统运行正常`` measures 128x17 in the source and 123x19 rendered.
+    Scaling on either meter makes the other worse, so neither is used.
+    """
+    reference = tmp_path / "ref.png"
+    rendered = tmp_path / "render.png"
+    bbox = _bar_image(reference, 20, width=65)
+    _bar_image(rendered, 24, width=60)
+
+    calibrated, report = calibrate_ink_convergence_from_render(
+        _design(20.0, bbox), str(reference), str(rendered), _readback([20, 20, 60, 24])
+    )
+
+    assert report["adjusted_count"] == 0
+    assert calibrated["elements"][0]["style"]["fontSize"] == 20.0
+
+
+def test_a_wrapped_block_keeps_the_height_channel(tmp_path) -> None:
+    """A block's run length is where the line breaks, not the type size."""
+    reference = tmp_path / "ref.png"
+    rendered = tmp_path / "render.png"
+    bbox = _bar_image(reference, 40, width=60, top=10)
+    _bar_image(rendered, 40, width=65, top=10)
+
+    calibrated, report = calibrate_ink_convergence_from_render(
+        _design(20.0, bbox),
+        str(reference),
+        str(rendered),
+        _readback([20, 10, 65, 40]),
+    )
+
+    assert report["adjusted_count"] == 0
     assert calibrated["elements"][0]["style"]["fontSize"] == 20.0

@@ -447,7 +447,11 @@ def test_native_text_quality_support_domain_excludes_nontext_ink(
     )
 
     owner = report["owners"][0]
-    assert owner["sourceCoverageRatio"] < 0.90
+    # 2026-11-11: the owner is measured inside the emitted node box when one
+    # exists, otherwise inside the grounding box with thin dividers removed.
+    # Either way the divider must not enter the ink box: the label is 8px tall,
+    # not 28px.
+    assert owner["referenceInkBBox"][3] == 8
     assert owner["inkCoverageRatio"] == 1.0
     assert owner["metricsBasis"] == "reference-ink-halo"
     assert owner["status"] == "pass"
@@ -502,3 +506,186 @@ def test_native_text_quality_support_domain_blocks_over_ink(
     assert owner["inkCoverageRatio"] > 1.10
     assert owner["checks"]["coverage"] is False
     assert owner["status"] == "fail"
+
+
+def test_native_text_quality_prefers_the_emitted_node_box(
+    tmp_path: Path,
+) -> None:
+    """A grounding box that spans several tokens must not set the yardstick.
+
+    The reference crop holds ``¥20.24`` **and** the neighbouring ``起 ¥23.0``;
+    the emitted node holds only the price.  Measuring the node against the
+    union made the owner unpassable (width delta ~130px).  The node box is the
+    honest yardstick.
+    """
+    reference = tmp_path / "reference.png"
+    rendered = tmp_path / "rendered.png"
+    for path in (reference, rendered):
+        image = Image.new("RGB", (300, 60), "white")
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((24, 20, 73, 31), fill="black")   # ¥20.24
+        draw.rectangle((120, 20, 219, 31), fill="black")  # 起 ¥23.0
+        image.save(path)
+    design = {
+        "elements": [
+            {
+                "type": "text",
+                "contentRef": "text:price",
+                "text": "¥20.24",
+                "x": 20,
+                "y": 18,
+                "width": 80,
+                "height": 16,
+                "styleEvidence": {
+                    "evidence": {
+                        "source_bbox": [15, 15, 210, 22],
+                        "ink_bbox": [20, 20, 200, 12],
+                    }
+                },
+            }
+        ]
+    }
+    readback = {
+        "type": "FRAME",
+        "children": [
+            {
+                "type": "TEXT",
+                "characters": "¥20.24",
+                "bounds": {"x": 20, "y": 18, "width": 80, "height": 16},
+            }
+        ],
+    }
+
+    report = build_native_text_quality(
+        design,
+        readback,
+        str(reference),
+        str(rendered),
+        [],
+        gate_policy={"policy_id": "image-figma-mvp-product/2.1"},
+        critical_texts=["¥20.24"],
+    )
+
+    owner = report["owners"][0]
+    assert owner["measurementSource"] == "emitted-node"
+    assert owner["measureBBox"] == [16, 14, 88, 24]
+    assert owner["referenceInkBBox"] == [24, 20, 50, 12]
+    assert owner["widthDelta"] == 0
+    assert owner["status"] == "pass"
+
+
+def test_native_text_quality_treats_a_wrapped_label_as_native(
+    tmp_path: Path,
+) -> None:
+    """``5.8\\n折`` is the same native copy as ``5.8折``.
+
+    The emitter wraps a two-line price; the design string stays ``5.8折``.  The
+    exact-string comparison scored the wrapped node as "not native", which put
+    two critical labels behind a blocker that no render could clear.
+    """
+    reference = tmp_path / "reference.png"
+    rendered = tmp_path / "rendered.png"
+    for path in (reference, rendered):
+        image = Image.new("RGB", (120, 80), "white")
+        ImageDraw.Draw(image).rectangle((24, 24, 56, 44), fill="black")
+        image.save(path)
+    design = {
+        "elements": [
+            {
+                "type": "text",
+                "contentRef": "text:discount",
+                "text": "5.8折",
+                "x": 20,
+                "y": 20,
+                "width": 60,
+                "height": 30,
+                "styleEvidence": {
+                    "evidence": {
+                        "source_bbox": [15, 15, 70, 40],
+                        "ink_bbox": [20, 20, 60, 30],
+                    }
+                },
+            }
+        ]
+    }
+    readback = {
+        "type": "FRAME",
+        "children": [
+            {
+                "type": "TEXT",
+                "characters": "5.8\n折",
+                "bounds": {"x": 20, "y": 20, "width": 60, "height": 30},
+            }
+        ],
+    }
+
+    report = build_native_text_quality(
+        design,
+        readback,
+        str(reference),
+        str(rendered),
+        [],
+        gate_policy={"policy_id": "image-figma-mvp-product/2.1"},
+        critical_texts=["5.8折"],
+    )
+
+    owner = report["owners"][0]
+    assert owner["nativeText"] is True
+    assert report["gate"]["criticalText"]["matchedCount"] == 1
+
+
+def test_native_text_quality_reports_unverifiable_owners_separately(
+    tmp_path: Path,
+) -> None:
+    """An owner the instrument cannot see is reported, not silently blocking."""
+    reference = tmp_path / "reference.png"
+    rendered = tmp_path / "rendered.png"
+    for path in (reference, rendered):
+        Image.new("RGB", (120, 60), "white").save(path)
+    design = {
+        "elements": [
+            {
+                "type": "text",
+                "contentRef": "text:tiny",
+                "text": "复制模型 ID",
+                "x": 10,
+                "y": 10,
+                "width": 83,
+                "height": 27,
+                "styleEvidence": {
+                    "evidence": {
+                        "source_bbox": [10, 10, 83, 27],
+                        "status": "low-confidence",
+                        "reason": "text-ink-not-found",
+                    }
+                },
+            }
+        ]
+    }
+    readback = {
+        "type": "FRAME",
+        "children": [
+            {
+                "type": "TEXT",
+                "characters": "复制模型 ID",
+                "bounds": {"x": 10, "y": 10, "width": 83, "height": 27},
+            }
+        ],
+    }
+
+    report = build_native_text_quality(
+        design,
+        readback,
+        str(reference),
+        str(rendered),
+        [{"id": "page", "role": "page", "bbox": [0, 0, 120, 60]}],
+        gate_policy={"policy_id": "image-figma-mvp-product/2.1"},
+        critical_texts=["复制模型 ID"],
+        register_unmeasured_owners=True,
+    )
+
+    gate = report["gate"]
+    assert gate["nativeText"]["unverifiedCount"] == 1
+    assert gate["nativeText"]["unverified"][0]["text"] == "复制模型 ID"
+    assert gate["nativeText"]["blockers"] == []
+    assert gate["status"] == "pass"

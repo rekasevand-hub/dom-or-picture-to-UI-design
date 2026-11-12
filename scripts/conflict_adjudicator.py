@@ -12,8 +12,14 @@ This script asks the VLM, but keeps it on a leash:
 * the model answers which text belongs there and what to do with the other;
 * a deterministic vote (which box can actually hold its own text) is computed
   independently;
-* a decision is only marked ``apply`` when the model and the geometry agree,
-  otherwise it is ``needs-human``.
+* only a **drop of a string that repeats elsewhere** is marked ``apply``;
+  everything else is ``needs-human``.
+
+There is no relocation path.  An earlier version moved a label to the bbox
+recorded in the family's ``gold_tree.json``; that copied gold coordinates into
+the pipeline through a benchmark-keyed file, so a benchmark run was not the
+pipeline a user would get.  If a label really belongs somewhere else, the move
+target has to come from reference-side OCR -- until then it is a human call.
 
 Nothing is written back to the design here: the output is a frozen decision file
 (``<run>/conflict_adjudication/decisions.json``) that a later calibration pass
@@ -130,42 +136,6 @@ def _geometry_vote(conflict: dict[str, Any], design: dict[str, Any]) -> str | No
     return fitting[0] if len(fitting) == 1 else None
 
 
-def _gold_positions(family_dir: Path, scale: float) -> dict[str, list[float]]:
-    """Reference-space bbox per string, from the family's gold tree.
-
-    Benchmark-only shortcut: the production equivalent is to look the string up
-    in reference-side OCR, which is not wired yet.
-    """
-    path = family_dir / "gold_tree.json"
-    if not path.is_file():
-        return {}
-    tree = _read_json(path)
-    tree["x"], tree["y"] = 0, 0
-    found: dict[str, list[float]] = {}
-
-    def walk(node: dict[str, Any], ox: float = 0.0, oy: float = 0.0) -> None:
-        x = ox + float(node.get("x") or 0)
-        y = oy + float(node.get("y") or 0)
-        if node.get("type") == "TEXT":
-            text = str(node.get("characters") or "").strip()
-            if text:
-                found.setdefault(
-                    text,
-                    [
-                        round(x * scale, 1),
-                        round(y * scale, 1),
-                        round(float(node.get("width") or 0) * scale, 1),
-                        round(float(node.get("height") or 0) * scale, 1),
-                    ],
-                )
-        for child in node.get("children") or []:
-            if isinstance(child, dict):
-                walk(child, x, y)
-
-    walk(tree)
-    return found
-
-
 def _crop(image: Image.Image, box: list[float], pad: int = 60) -> Image.Image:
     x0 = max(0, int(box[0]) - pad)
     y0 = max(0, int(box[1]) - pad)
@@ -215,9 +185,6 @@ def main() -> None:
     if rendered.size != reference.size:
         rendered = rendered.resize(reference.size)
     design = _read_json(design_path)
-    gold = _gold_positions(
-        family_dir, float((meta.get("gold") or {}).get("scale_to_reference") or 1.0)
-    )
     occurrences: dict[str, int] = {}
     for element in design.get("elements") or []:
         text = str(element.get("text") or "").strip()
@@ -290,9 +257,6 @@ def main() -> None:
         # Dropping a unique label deletes content.  Only a repeated string can
         # be removed at this slot without losing it from the page.
         safe = bool(drop_text) and other == "drop" and repeats > 1
-        move_to = None
-        if drop_text and other == "drop" and not safe and drop_text in gold:
-            move_to = gold[drop_text]
         apply = safe
         decisions.append(
             {
@@ -303,14 +267,8 @@ def main() -> None:
                 "geometry_vote": vote,
                 "agreement": bool(keep) and vote is not None and keep == vote,
                 "drop_occurrences": repeats,
-                "status": (
-                    "apply"
-                    if apply
-                    else ("move" if move_to else ("needs-move" if drop_text else "needs-human"))
-                ),
+                "status": "apply" if apply else "needs-human",
                 "drop": drop_text if apply else None,
-                "move_to": move_to,
-                "move_text": drop_text if move_to else None,
                 "source": source,
                 "index": index,
             }

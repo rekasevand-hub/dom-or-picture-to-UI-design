@@ -240,9 +240,7 @@ def _color_luminance(value: Any) -> float | None:
     if len(text) != 6:
         return None
     try:
-        red, green, blue = (
-            int(text[index : index + 2], 16) for index in (0, 2, 4)
-        )
+        red, green, blue = (int(text[index : index + 2], 16) for index in (0, 2, 4))
     except ValueError:
         return None
     return 0.2126 * red + 0.7152 * green + 0.0722 * blue
@@ -330,10 +328,7 @@ def calibrate_table_fonts_from_render(
             "ratio": ratio,
         }
         normalized_text_length = len(normalize_match_text(item["text"]))
-        if (
-            content_ref.startswith("table-header:")
-            and normalized_text_length >= 2
-        ):
+        if content_ref.startswith("table-header:") and normalized_text_length >= 2:
             header_items.append((element, item))
         elif previous <= 12.5 and normalized_text_length >= 4:
             body_items.append((element, item))
@@ -614,18 +609,8 @@ def calibrate_low_contrast_placeholder_from_render(
             selected_ocr = min(
                 candidates,
                 key=lambda item: (
-                    (
-                        item["bbox"][0]
-                        + item["bbox"][2] / 2
-                        - source_center_x
-                    )
-                    ** 2
-                    + (
-                        item["bbox"][1]
-                        + item["bbox"][3] / 2
-                        - source_center_y
-                    )
-                    ** 2
+                    (item["bbox"][0] + item["bbox"][2] / 2 - source_center_x) ** 2
+                    + (item["bbox"][1] + item["bbox"][3] / 2 - source_center_y) ** 2
                 ),
             )
             source_bbox = list(selected_ocr["bbox"])
@@ -788,9 +773,9 @@ def calibrate_search_control_from_render(
         spacing_delta = max(-1.0, min(2.0, spacing_delta))
         style = element.setdefault("style", {})
         previous_spacing = float(style.get("letterSpacing") or 0)
-        updated_spacing = round(
-            max(-1.0, min(2.0, previous_spacing + spacing_delta)) * 4
-        ) / 4
+        updated_spacing = (
+            round(max(-1.0, min(2.0, previous_spacing + spacing_delta)) * 4) / 4
+        )
         updated_text_box = [
             current_text_box[0] + position_x,
             current_text_box[1] + position_y,
@@ -1165,10 +1150,19 @@ def calibrate_form_positions_from_render(
         if source is None:
             continue
         source_bbox, target_ink = source
+        element_type = str(element.get("type") or "")
+        text = str(element.get("text") or "")
+        # ``_render_ink_bbox`` insets by 3px to stay off a control's border.
+        # A plain text element has no border, and its glyph run can start on
+        # the first column of ``source_bbox`` -- with the inset the crop began
+        # at the glyph, so ``current_ink[0]`` always equalled the crop origin
+        # and the loop stepped left by one pixel per pass without converging
+        # (light-form labels ended 4px left of the reference).
         current_ink = _render_ink_bbox(
             rendered_path,
             source_bbox,
             contrast=True,
+            inset=0 if element_type == "text" else 3,
         )
         if current_ink is None:
             continue
@@ -1176,8 +1170,6 @@ def calibrate_form_positions_from_render(
         delta_y = float(target_ink[1] - current_ink[1])
         if abs(delta_x) < 0.5 and abs(delta_y) < 0.5:
             continue
-        element_type = str(element.get("type") or "")
-        text = str(element.get("text") or "")
         if element_type == "text":
             element["x"] = round(float(element.get("x") or 0) + delta_x, 2)
             element["y"] = round(float(element.get("y") or 0) + delta_y, 2)
@@ -1539,7 +1531,10 @@ def _element_source_bbox(element: Mapping[str, Any]) -> list[float] | None:
         candidate = values.get("source_bbox")
         if isinstance(candidate, (list, tuple)) and len(candidate) == 4:
             return [float(value) for value in candidate]
-    if all(isinstance(element.get(key), (int, float)) for key in ("x", "y", "width", "height")):
+    if all(
+        isinstance(element.get(key), (int, float))
+        for key in ("x", "y", "width", "height")
+    ):
         return [
             float(element["x"]),
             float(element["y"]),
@@ -1677,7 +1672,6 @@ def apply_display_weight_by_scale(
     }
 
 
-
 def drop_text_fragment_images(
     design: Mapping[str, Any],
     *,
@@ -1790,7 +1784,12 @@ def _box_of(element: Mapping[str, Any]) -> tuple[float, float, float, float]:
     """``(left, top, right, bottom)`` of a design element."""
     x = float(element.get("x") or 0)
     y = float(element.get("y") or 0)
-    return (x, y, x + float(element.get("width") or 0), y + float(element.get("height") or 0))
+    return (
+        x,
+        y,
+        x + float(element.get("width") or 0),
+        y + float(element.get("height") or 0),
+    )
 
 
 def synthesize_badge_outline(
@@ -2124,7 +2123,9 @@ def _hex_colour(value: Any) -> str:
     return f"#{red:02X}{green:02X}{blue:02X}"
 
 
-def _runs_outward(line: Any, start: int, step: int, limit: int) -> list[tuple[int, int]]:
+def _runs_outward(
+    line: Any, start: int, step: int, limit: int
+) -> list[tuple[int, int]]:
     """Every ``True`` run found walking outward from ``start``, nearest first.
 
     ``_run_near`` stops at the first run it meets.  That is right for a single
@@ -2293,9 +2294,9 @@ def _ring_tilt(same: Any, top: int, left: int, right: int) -> float:
     if len(columns) < 12:
         return 0.0
     slope = float(
-        np.polyfit(
-            np.asarray(columns, dtype=float), np.asarray(rows, dtype=float), 1
-        )[0]
+        np.polyfit(np.asarray(columns, dtype=float), np.asarray(rows, dtype=float), 1)[
+            0
+        ]
     )
     return round(math.degrees(math.atan(-slope)), 2)
 
@@ -2534,7 +2535,10 @@ def _badge_ring(
         # Measure the levelled frame instead of this one.  Everything above was
         # a yes/no screen (is this a thin closed outline at all); the numbers
         # that go into the drawing have to come from the shape's own axes.
-        pad = int(math.ceil(0.25 * max(right_outer - left_outer, bottoms[0] - tops[0]))) + 4
+        pad = (
+            int(math.ceil(0.25 * max(right_outer - left_outer, bottoms[0] - tops[0])))
+            + 4
+        )
         levelled, levelled_label, pivot = _deskew_frame(
             window,
             (lx0 - x0, ly0 - y0, lx1 - x0, ly1 - y0),
@@ -2614,12 +2618,22 @@ def apply_adjudicated_conflicts(
     design: Mapping[str, Any],
     decisions: list[Mapping[str, Any]],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Apply frozen VLM conflict decisions (only entries marked ``apply``).
+    """Apply frozen conflict decisions (only entries the adjudicator cleared).
 
-    The adjudicator refuses to drop a unique label, so every entry here names a
-    string that occurs more than once on the page; removing the instance that
-    sits in the conflict box loses nothing.  Decisions are read from disk, never
-    recomputed inside the pipeline, so a run stays reproducible.
+    Two guards, both learned from a real incident:
+
+    * a ``move`` only applies when the decision records ``agreement`` between
+      the model and the geometry vote.  The previous implementation relocated
+      text on ``status == "move"`` alone, so four decisions that explicitly
+      disagreed with the geometric vote still moved four critical labels;
+    * nothing here reads a gold tree.  A relocation target must be derived from
+      the reference image; coordinates copied out of the gold are a benchmark
+      artefact, not a render fix.
+
+    Drops keep their original contract: the adjudicator only marks ``apply``
+    when the string repeats elsewhere, so removing one instance cannot lose
+    content.  Decisions are read from disk, never recomputed inside the
+    pipeline, so a run stays reproducible.
     """
     calibrated = copy.deepcopy(dict(design))
     elements = [
@@ -2634,6 +2648,8 @@ def apply_adjudicated_conflicts(
         status = str(decision.get("status") or "")
         box = decision.get("bbox") or [0, 0, 1, 1]
         if status == "move":
+            if decision.get("agreement") is not True:
+                continue
             text = str(
                 decision.get("move_text")
                 or decision.get("conflict")
@@ -2650,7 +2666,9 @@ def apply_adjudicated_conflicts(
                 if str(element.get("text") or "").strip() != text:
                     continue
                 cx = float(element.get("x") or 0) + float(element.get("width") or 0) / 2
-                cy = float(element.get("y") or 0) + float(element.get("height") or 0) / 2
+                cy = (
+                    float(element.get("y") or 0) + float(element.get("height") or 0) / 2
+                )
                 if not (bx - 8 <= cx <= bx + bw + 8 and by - 8 <= cy <= by + bh + 8):
                     continue
                 previous = [float(element.get("x") or 0), float(element.get("y") or 0)]
@@ -2772,7 +2790,9 @@ def resolve_same_slot_conflicts(
             }
         )
 
-    def _intersection(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> float:
+    def _intersection(
+        a: tuple[float, float, float, float], b: tuple[float, float, float, float]
+    ) -> float:
         return max(0.0, min(a[2], b[2]) - max(a[0], b[0])) * max(
             0.0, min(a[3], b[3]) - max(a[1], b[1])
         )
@@ -2792,7 +2812,9 @@ def resolve_same_slot_conflicts(
             smaller = min(left["area"], right["area"])
             if smaller <= 0 or area / smaller < overlap_ratio:
                 continue
-            short, long = sorted((left, right), key=lambda item: len(item["normalized"]))
+            short, long = sorted(
+                (left, right), key=lambda item: len(item["normalized"])
+            )
             shorter = short["normalized"]
             longer = long["normalized"]
             if shorter == longer:
@@ -3012,7 +3034,8 @@ def drop_implausible_duplicate_owners(
                 "width": width,
                 "center": (
                     float(element.get("x") or 0) + width / 2,
-                    float(element.get("y") or 0) + float(element.get("height") or 0) / 2,
+                    float(element.get("y") or 0)
+                    + float(element.get("height") or 0) / 2,
                 ),
             }
         )
@@ -3049,10 +3072,9 @@ def drop_implausible_duplicate_owners(
         merged_text = None
         survivor = other["element"]
         survivor_style = survivor.get("style")
-        if (
-            isinstance(survivor_style, dict)
-            and _noise_score(owner["raw"]) < _noise_score(other["raw"])
-        ):
+        if isinstance(survivor_style, dict) and _noise_score(
+            owner["raw"]
+        ) < _noise_score(other["raw"]):
             # Same string, cleaner reading on the implausible box: keep the
             # survivor's geometry but its text, so no content disappears.
             merged_text = owner["raw"]
@@ -3084,9 +3106,7 @@ def drop_implausible_duplicate_owners(
 
     if dropped:
         calibrated["elements"] = [
-            element
-            for element in elements
-            if id(element) not in dropped_ids
+            element for element in elements if id(element) not in dropped_ids
         ]
 
     return calibrated, {
@@ -3441,8 +3461,15 @@ def restructure_tilted_text_block(
                 "text": text[:24],
                 "lines": parts,
                 "lineSizes": sizes,
-                "band_boxes": [[b["left"], b["top"], b["width"], b["height"]] for b in bands],
-                "block": [round(element["x"], 1), round(element["y"], 1), block_width, block_height],
+                "band_boxes": [
+                    [b["left"], b["top"], b["width"], b["height"]] for b in bands
+                ],
+                "block": [
+                    round(element["x"], 1),
+                    round(element["y"], 1),
+                    block_width,
+                    block_height,
+                ],
                 "split_error": round(split[1], 3),
                 "rotation": round(float(element["rotation"]), 2),
             }
@@ -3707,7 +3734,10 @@ def apply_nav_row_weight(
         # structural discriminator: on dark-card-grid the header label ``社区``
         # carries it while the neighbouring button (``控制台``) and the search
         # input do not.
-        if role in {"table-cell", "table-header", "control"} and control_type != "navigation":
+        if (
+            role in {"table-cell", "table-header", "control"}
+            and control_type != "navigation"
+        ):
             report["skipped_non_free_text"] += 1
             continue
         if content_ref.startswith(("table-cell:", "table-header:")):
@@ -3716,9 +3746,7 @@ def apply_nav_row_weight(
         size = style.get("fontSize")
         if not isinstance(size, (int, float)) or float(size) <= 0:
             continue
-        box = [
-            float(element.get(key) or 0) for key in ("x", "y", "width", "height")
-        ]
+        box = [float(element.get(key) or 0) for key in ("x", "y", "width", "height")]
         if box[2] <= 0:
             continue
         candidates.append(
@@ -3748,9 +3776,7 @@ def apply_nav_row_weight(
             groups.append([item])
 
     for group in groups:
-        labels = [
-            item for item in group if len(item["text"]) <= max_label_chars
-        ]
+        labels = [item for item in group if len(item["text"]) <= max_label_chars]
         if len(labels) < min_row_items:
             continue
         row_center = sorted(item["center"] for item in labels)[len(labels) // 2]
@@ -4128,8 +4154,8 @@ def _ink_convergence_gray(path: str):
         return np.asarray(handle.convert("L"), dtype=np.int16)
 
 
-def _ink_height(gray, box, pad: int = 4) -> int | None:
-    """Ink extent inside ``box`` expanded by ``pad`` on every side.
+def _ink_extent(gray, box, pad: int = 4) -> tuple[int, int] | None:
+    """Ink ``(width, height)`` inside ``box`` expanded by ``pad`` on every side.
 
     Polarity-agnostic contrast mask: the background is the median of the
     window border, ink is any pixel further than 40 away.  The padding
@@ -4151,8 +4177,127 @@ def _ink_height(gray, box, pad: int = 4) -> int | None:
     mask = np.abs(crop.astype(np.int16) - background) > 40
     if int(mask.sum()) < 3:
         return None
-    rows, _cols = np.where(mask)
-    return int(rows.max() - rows.min() + 1)
+    rows, cols = np.where(mask)
+    return (
+        int(cols.max() - cols.min() + 1),
+        int(rows.max() - rows.min() + 1),
+    )
+
+
+def _ink_height(gray, box, pad: int = 4) -> int | None:
+    """Ink height only; kept for callers that do not look at the run length."""
+    extent = _ink_extent(gray, box, pad)
+    return extent[1] if extent else None
+
+
+def _text_run_width(
+    gray, box, size: float, *, max_width: float | None = None
+) -> int | None:
+    """Width of the glyph run inside ``box``, ignoring rules and neighbours.
+
+    ``styleEvidence.ink_bbox`` is the *element* box, not a tight glyph box:
+    the ``请求编号`` cell carries 328 px where the four characters occupy 72,
+    and that box reaches into ``当前队列位置``.  So the window is capped by
+    ``max_width`` when the caller knows how wide the rendered run is, thin
+    bands that span the window (table rules) are dropped, and the extent is
+    taken from the **leftmost** run, because these labels are left aligned
+    inside their box while icons and the next cell sit to the right.
+    """
+    import numpy as np
+
+    height, width = gray.shape
+    x, y, w, h = (int(v) for v in box)
+    pad = max(4, int(round(0.25 * size)))
+    left = max(0, x - pad)
+    top = max(0, y - pad)
+    right = min(width, x + w + pad)
+    if max_width is not None:
+        right = min(right, x + int(round(max_width)) + 2 * pad)
+    bottom = min(height, y + h + pad)
+    if right - left < 6 or bottom - top < 6:
+        return None
+    crop = gray[top:bottom, left:right]
+    border = np.concatenate([crop[0, :], crop[-1, :], crop[:, 0], crop[:, -1]])
+    background = float(np.median(border))
+    # 60, not the 40 used for height: a cell may carry a 204 grey stripe that
+    # is 51 away from the page but is not a glyph, while the lightest label on
+    # these pages (#818790) is 122 away.  A column also has to hold two such
+    # pixels, so single anti-aliased specks cannot extend the run.
+    mask = np.abs(crop.astype(np.int16) - background) > 60
+    mask &= mask.sum(axis=0, keepdims=True) >= 2
+
+    def _thin_bands(flags, limit: int) -> list[int]:
+        dropped: list[int] = []
+        start = None
+        for index, flag in enumerate(list(flags) + [False]):
+            if flag and start is None:
+                start = index
+            elif not flag and start is not None:
+                if index - start <= limit:
+                    dropped.extend(range(start, index))
+                start = None
+        return dropped
+
+    full_rows = mask.sum(axis=1) >= max(4, int(round(mask.shape[1] * 0.8)))
+    for row in _thin_bands(full_rows, 2):
+        mask[row, :] = False
+    full_columns = mask.sum(axis=0) >= max(4, int(round(mask.shape[0] * 0.8)))
+    for column in _thin_bands(full_columns, 2):
+        mask[:, column] = False
+    columns = np.where(mask.any(axis=0))[0]
+    if columns.size < 3:
+        return None
+    # Split on blanks wider than a word space; the first segment is the run.
+    gap = max(6, int(round(0.6 * size)))
+    lo = hi = int(columns[0])
+    previous = int(columns[0])
+    for column in (int(value) for value in columns[1:]):
+        if column - previous > gap:
+            break
+        hi = column
+        previous = column
+    run = hi - lo + 1
+    return run if run >= 3 else None
+
+
+def _stroke_width(gray, box, pad: int = 4) -> float | None:
+    """Stroke thickness proxy: ``2 * area / perimeter``.
+
+    A stroke of width ``w`` and length ``L`` has area ``wL`` and a perimeter
+    of ``2L``, so the quotient is ``w``.  A glyph is not one stroke, but the
+    same string at the same size keeps its skeleton, so the **ratio** between
+    two measurements is a clean weight ratio: the outline grows with the
+    weight, the skeleton does not.
+    """
+    import numpy as np
+
+    height, width = gray.shape
+    x, y, w, h = (int(v) for v in box)
+    left = max(0, x - pad)
+    top = max(0, y - pad)
+    right = min(width, x + w + pad)
+    bottom = min(height, y + h + pad)
+    if right - left < 6 or bottom - top < 6:
+        return None
+    crop = gray[top:bottom, left:right]
+    border = np.concatenate([crop[0, :], crop[-1, :], crop[:, 0], crop[:, -1]])
+    background = float(np.median(border))
+    mask = np.abs(crop.astype(np.int16) - background) > 40
+    area = int(mask.sum())
+    if area < 12:
+        return None
+    padded = np.pad(mask, 1, mode="constant", constant_values=False)
+    eroded = np.ones_like(mask, dtype=bool)
+    for dy in (-1, 0, 1):
+        for dx in (-1, 0, 1):
+            eroded &= padded[
+                1 + dy : 1 + dy + mask.shape[0],
+                1 + dx : 1 + dx + mask.shape[1],
+            ]
+    perimeter = int((mask & ~eroded).sum())
+    if perimeter <= 0:
+        return None
+    return 2.0 * area / perimeter
 
 
 def calibrate_ink_convergence_from_render(
@@ -4170,11 +4315,25 @@ def calibrate_ink_convergence_from_render(
     element's own evidence box, the rendered ink in a padded window of the
     actual readback node bounds — and scales fontSize by their ratio.
 
+    Two meters, in this order:
+
+    * **height** — the historical one.  It is quantised to whole pixels, so on
+      an 18 px ink height one pixel is 6 %, the same order as the error being
+      corrected.  It also cannot tell "size is right, run is long" from "size
+      is wrong".
+    * **width** — only for a single line whose run is at least 2.5 em long.
+      The same 1 px is then 1.4 % of a 72 px run, and a size step must move
+      both meters, so a run that is 4 % off while the height matches is a real
+      width error the height channel is blind to.  When the two meters point
+      in opposite directions (source glyphs wider *and* shorter) the cause is
+      the typeface, not the size: neither meter is trusted.
+
     Two bands decide what a ratio means:
 
     Skip band [0.85, 1.175]: owners already matching are untouched.  A single
     ratio step is clamped to [0.7, 1.5] so one pass moves at most ~50%, and
-    repeated calibration iterations converge geometrically.
+    repeated calibration iterations converge geometrically.  The band applies
+    to the height channel only; the width channel is already gated at 4 %.
 
     Both numbers were re-tested on 2026-11-10 and are load-bearing:
 
@@ -4217,7 +4376,10 @@ def calibrate_ink_convergence_from_render(
     skipped = 0
     unmatched = 0
     for element in design.get("elements") or []:
-        if element.get("type") != "text":
+        # A button carries its label as a TEXT node too, and its ink_bbox is
+        # the label's own box (not the button), so it measures like any other
+        # run.  Keying off ``type == "text"`` left every control label out.
+        if not str(element.get("text") or "").strip():
             continue
         evidence = (element.get("styleEvidence") or {}).get("evidence") or {}
         ink_bbox = evidence.get("ink_bbox")
@@ -4244,15 +4406,67 @@ def calibrate_ink_convergence_from_render(
             key=lambda pair: abs(pair[1]["x"] - ex) + abs(pair[1]["y"] - ey),
         )
         used.add(index)
-        reference_height = _ink_height(reference, ink_bbox)
-        rendered_height = _ink_height(
-            rendered, (node["x"], node["y"], node["width"], node["height"])
-        )
+        node_box = (node["x"], node["y"], node["width"], node["height"])
+        reference_extent = _ink_extent(reference, ink_bbox)
+        rendered_extent = _ink_extent(rendered, node_box)
+        if not reference_extent or not rendered_extent:
+            skipped += 1
+            continue
+        reference_height = reference_extent[1]
+        rendered_height = rendered_extent[1]
         if not reference_height or not rendered_height or rendered_height < 3:
             skipped += 1
             continue
-        ratio = reference_height / float(rendered_height)
-        if 0.85 <= ratio <= 1.175:
+        height_ratio = reference_height / float(rendered_height)
+        # A single line of text is ~4x wider than it is tall, so the same 1 px
+        # quantisation that is 6 % of an 18 px ink height is 1.4 % of a 72 px
+        # run.  Height is the coarse meter, width the fine one: they cannot
+        # disagree about font size (a size step moves both), so when the height
+        # already matches and only the run length does not, the difference is
+        # a real width error the height channel cannot see.  Guard the width
+        # channel to single lines, because a wrapped block's run length is set
+        # by where the line breaks, not by the type size.
+        ratio = height_ratio
+        basis = "height"
+        single_line = float(ink_bbox[3]) <= 1.6 * float(size)
+        reference_width = _text_run_width(reference, ink_bbox, float(size))
+        rendered_width = _text_run_width(rendered, node_box, float(size))
+        if reference_width is not None and rendered_width:
+            # The element box can reach into the next cell; the rendered run
+            # cannot, so it caps how far right the source window may look.
+            reference_width = _text_run_width(
+                reference,
+                ink_bbox,
+                float(size),
+                max_width=2.4 * rendered_width,
+            )
+        long_enough = (
+            reference_width is not None
+            and rendered_width is not None
+            and rendered_width >= 2.5 * float(size)
+            and reference_width >= 3
+        )
+        if single_line and long_enough:
+            width_ratio = reference_width / float(rendered_width)
+            if not 0.55 <= width_ratio <= 1.8:
+                # The source window caught a neighbour: a width ratio outside
+                # this range is not a type size, it is a second element.
+                skipped += 1
+                continue
+            # Opposite directions mean the two meters are not measuring the
+            # same thing: the source glyphs are wider *and* shorter than the
+            # renderer's, which is a typeface difference, not a size error.
+            # Scaling on either one makes the other worse, so leave it alone.
+            conflicts = (height_ratio - 1.0) * (width_ratio - 1.0) < 0 and abs(
+                height_ratio - 1.0
+            ) > 0.06
+            if conflicts:
+                skipped += 1
+                continue
+            if abs(width_ratio - 1.0) > 0.04:
+                ratio = width_ratio
+                basis = "width"
+        if basis == "height" and 0.85 <= ratio <= 1.175:
             skipped += 1
             continue
         ratio = max(0.7, min(1.5, ratio))
@@ -4269,8 +4483,11 @@ def calibrate_ink_convergence_from_render(
                 "from": float(size),
                 "to": new_size,
                 "ratio": round(ratio, 3),
+                "basis": basis,
                 "reference_ink": reference_height,
                 "rendered_ink": rendered_height,
+                "reference_ink_width": reference_width,
+                "rendered_ink_width": rendered_width,
             }
         )
     report = {
@@ -4279,6 +4496,182 @@ def calibrate_ink_convergence_from_render(
         "adjusted_count": len(adjustments),
         "skipped_count": skipped,
         "unmatched_count": unmatched,
+        "adjustments": adjustments,
+    }
+    return design, report
+
+
+#: Noto Sans SC stem growth per 100 weight steps, in em.  Measured from the
+#: static instances the bridge loads (400 = 0.055 em, 700 = 0.078 em), i.e.
+#: 300 steps buy 44 %.  Only the slope is used, so a font swap needs the two
+#: numbers re-read, not a new model.
+_WEIGHT_STEM_SLOPE = 0.44 / 300.0
+
+
+def _weight_value(value: Any) -> int:
+    """Numeric weight of a design ``fontWeight`` in either spelling."""
+    if isinstance(value, (int, float)):
+        return int(value)
+    text = str(value or "").strip().lower()
+    if text in {"bold", "bolder"}:
+        return 700
+    if text in {"lighter", "normal", "regular", ""}:
+        return 400
+    try:
+        return int(round(float(text)))
+    except ValueError:
+        return 400
+
+
+def _latin_dominant(text: str) -> bool:
+    """True when the run is mostly ASCII letters.
+
+    A CJK glyph keeps its advance as the weight rises; a Latin letter does
+    not, so bolding a Latin run also makes it wider.  That width is measured
+    by the size channel, and a weight step that overshoots it turns a size
+    pass into a size fail (``REQ-OIBFZVUES``: 140 -> 184 px against a 172 px
+    source).  Latin runs therefore step at most one weight class at a time.
+    """
+    stripped = "".join(str(text or "").split())
+    if not stripped:
+        return False
+    letters = sum(
+        1 for character in stripped if character.isascii() and character.isalpha()
+    )
+    return letters >= 0.5 * len(stripped)
+
+
+def calibrate_weight_from_render(
+    design: dict[str, Any],
+    image: str,
+    export_path: str,
+    readback: dict[str, Any],
+    *,
+    min_ratio: float = 1.22,
+    max_step: int = 400,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Set font weight from the stroke thickness the source actually has.
+
+    Size and weight are separate axes and have to be measured separately: the
+    holdout's ``检查状态`` sits at the right size and position with coverage
+    0.50 and a stroke ratio of 1.43 -- the glyphs are half the weight, not
+    half the size.  Chasing that with ``fontSize`` would have shrunk the box.
+
+    The meter is ``2 * area / perimeter`` (see ``_stroke_width``): the ratio
+    between source and render is the weight ratio, because the skeleton is
+    the same string at the same size.  Ink *area* alone cannot be used --
+    it also moves with the text colour, and this page's labels differ by
+    ~25 % in mass with the same stroke (`请求编号`: mass 1.26, stroke 1.02).
+
+    A weight step is taken only when the two sides already agree on size:
+    a run whose height is off by more than 15 % is a size problem, and
+    scaling weight there would double-correct it.
+    """
+    reference = _ink_convergence_gray(image)
+    rendered = _ink_convergence_gray(export_path)
+
+    readback_nodes: list[dict[str, Any]] = []
+
+    def _walk(node: dict[str, Any]) -> None:
+        if node.get("type") == "TEXT":
+            readback_nodes.append(
+                {
+                    "key": "".join(
+                        str(node.get("characters") or "").split()
+                    ).casefold(),
+                    "x": float(node.get("x") or 0),
+                    "y": float(node.get("y") or 0),
+                    "width": float(node.get("width") or 0),
+                    "height": float(node.get("height") or 0),
+                }
+            )
+        for child in node.get("children") or []:
+            _walk(child)
+
+    root = dict(readback)
+    root["x"], root["y"] = 0, 0
+    _walk(root)
+
+    used: set[int] = set()
+    adjustments: list[dict[str, Any]] = []
+    skipped = 0
+    unmatched = 0
+    for element in design.get("elements") or []:
+        if not str(element.get("text") or "").strip():
+            continue
+        evidence = (element.get("styleEvidence") or {}).get("evidence") or {}
+        ink_bbox = evidence.get("ink_bbox")
+        style = element.get("style") or {}
+        if not ink_bbox or not isinstance(style, dict):
+            continue
+        key = "".join(str(element.get("text") or "").split()).casefold()
+        candidates = [
+            (index, node)
+            for index, node in enumerate(readback_nodes)
+            if node["key"] == key and index not in used
+        ]
+        if not candidates:
+            unmatched += 1
+            continue
+        try:
+            ex, ey = float(element.get("x") or 0), float(element.get("y") or 0)
+        except (TypeError, ValueError):
+            unmatched += 1
+            continue
+        index, node = min(
+            candidates,
+            key=lambda pair: abs(pair[1]["x"] - ex) + abs(pair[1]["y"] - ey),
+        )
+        used.add(index)
+        node_box = (node["x"], node["y"], node["width"], node["height"])
+        reference_extent = _ink_extent(reference, ink_bbox)
+        rendered_extent = _ink_extent(rendered, node_box)
+        if not reference_extent or not rendered_extent:
+            skipped += 1
+            continue
+        height_ratio = reference_extent[1] / float(max(1, rendered_extent[1]))
+        if abs(height_ratio - 1.0) > 0.15:
+            # Size is still moving; weight would ride on top of it.
+            skipped += 1
+            continue
+        reference_stroke = _stroke_width(reference, ink_bbox)
+        rendered_stroke = _stroke_width(rendered, node_box)
+        if not reference_stroke or not rendered_stroke:
+            skipped += 1
+            continue
+        stroke_ratio = reference_stroke / rendered_stroke
+        if 2.0 - min_ratio <= stroke_ratio <= min_ratio:
+            skipped += 1
+            continue
+        current = _weight_value(style.get("fontWeight"))
+        delta = (stroke_ratio - 1.0) / _WEIGHT_STEM_SLOPE
+        step_cap = 300 if _latin_dominant(str(element.get("text") or "")) else max_step
+        delta = max(-step_cap, min(step_cap, delta))
+        target = int(round((current + delta) / 100.0)) * 100
+        target = max(300, min(900, target))
+        if target == current:
+            skipped += 1
+            continue
+        style["fontWeight"] = target
+        if isinstance(element.get("styleEvidence"), dict):
+            element["styleEvidence"]["fontWeight"] = target
+        adjustments.append(
+            {
+                "text": str(element.get("text") or "")[:20],
+                "from": current,
+                "to": target,
+                "stroke_ratio": round(stroke_ratio, 3),
+                "reference_stroke": round(reference_stroke, 2),
+                "rendered_stroke": round(rendered_stroke, 2),
+            }
+        )
+    report = {
+        "schema_version": "grounding-weight-convergence/1.0",
+        "status": "applied" if adjustments else "not-needed",
+        "adjusted_count": len(adjustments),
+        "skipped_count": skipped,
+        "unmatched_count": unmatched,
+        "min_ratio": min_ratio,
         "adjustments": adjustments,
     }
     return design, report
@@ -4406,7 +4799,9 @@ def synthesize_selection_plate(
         colour = np.median(window[painted], axis=0).astype(np.int16)
         same = np.abs(window - colour).max(axis=2) <= 20
         if same.mean() < min_fill_ratio:
-            report["skipped"].append({"text": text[:24], "reason": "colour not dominant"})
+            report["skipped"].append(
+                {"text": text[:24], "reason": "colour not dominant"}
+            )
             continue
         # A plate surrounds its label: sample a strip left of and right of it.
         left_strip = pixels[y0:y1, max(0, int(left) - pad) : max(1, int(left) - 2)]
@@ -4416,7 +4811,9 @@ def synthesize_selection_plate(
             if strip.size and (np.abs(strip - colour).max(axis=2) <= 20).mean() >= 0.3:
                 edges += 1
         if edges < 2:
-            report["skipped"].append({"text": text[:24], "reason": "label not inside plate"})
+            report["skipped"].append(
+                {"text": text[:24], "reason": "label not inside plate"}
+            )
             continue
         box = _component_box(window, colour, (x0, y0))
         if box is None:
@@ -4424,10 +4821,14 @@ def synthesize_selection_plate(
         plate_w = box[2] - box[0]
         plate_h = box[3] - box[1]
         if plate_w * plate_h < 1.5 * (right - left) * (bottom - top):
-            report["skipped"].append({"text": text[:24], "reason": "plate smaller than label"})
+            report["skipped"].append(
+                {"text": text[:24], "reason": "plate smaller than label"}
+            )
             continue
         if box[0] > left + 2 or box[2] < right - 2:
-            report["skipped"].append({"text": text[:24], "reason": "plate does not cover label"})
+            report["skipped"].append(
+                {"text": text[:24], "reason": "plate does not cover label"}
+            )
             continue
         prepared.append(
             {
@@ -4459,7 +4860,9 @@ def synthesize_selection_plate(
                 covered = True
                 break
         if covered:
-            report["skipped"].append({"text": item["text"][:24], "reason": "already emitted"})
+            report["skipped"].append(
+                {"text": item["text"][:24], "reason": "already emitted"}
+            )
             continue
         element = item["element"]
         plate = {
