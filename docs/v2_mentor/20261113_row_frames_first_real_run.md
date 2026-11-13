@@ -1,10 +1,22 @@
-# 行级 Frame 首次上真机：绑定错设计 → 修好后仍有 3.8pp 回退 — 2026-11-13
+# 行级 Frame 首次上真机：三个 bug，一层一层剥 — 2026-11-13
 
-> 一句话：P2（light-table 单页）**像素过关、结构没过**。95.60 → 95.59（Δ −0.0045）是因为
-> 最后修掉了两个真 bug；但 10 个行组只有 **1 个** 能建成 Frame，其余 9 个被
-> `covers-other-element` 拒掉——卡点在绘制序交错，不在 Frame 机制。
+> 一句话：P2（light-table 单页）的像素一直没问题，结构一直没通。三个 bug 全部修完后，
+> **离线判定 light-table 10/10、light-form 12/12 全部建成**，且共同元素的绘制序与基线
+> 逐位一致。真机复验卡在插件的回调表上（`invalid id`），需在 Figma 里重载插件。
 
-## 1. 第一个坑：分区绑在了另一版设计上
+## 0. 五次读数，一次比一次接近真相
+
+| 版本 | 改了什么 | 建成 | within30 |
+|---|---|---|---|
+| 绑定错设计 | 分区对着终版几何算 | 10 / 10（**假**） | 59.37 |
+| 绑定设计指纹 | 分区对上校准前几何 | 10 个**矩形** | 91.81 |
+| 透明容器不计深度 | `paint_order` 剔除 `transparent` | 1 / 10（Frame） | 74.01 |
+| 容器 `fillColor: transparent` | 被拒的容器不上色 | 1 / 10 | **95.5949** |
+| **深度不再固定成 0** | 透明容器按「被多少不透明元素覆盖」算深度 | **10 / 10**（离线） | 待真机 |
+
+前四次都是真机读数，最后一行是离线，等插件重载后补真机。
+
+## 1. 坑一：分区绑在了另一版设计上
 
 探针原本读 `figma_design.json`，那是**校准四轮之后**的终版；mvp 把分区应用在**校准之前**。
 
@@ -20,80 +32,73 @@
 
 ## 2. 修法：分区绑定设计指纹
 
-- `semantic_partition.design_fingerprint()`：id + 类型 + 几何，按列表顺序 sha256。
-- `image_figma_mvp --dump-partition-design`：把**它真正要用的那份元素列表**写出来
-  （`figma_design_pre_partition.json`），然后退出，不写 Figma。
-- 探针优先读这份 dump；冻结分区时写入 `designSha256`。
-- mvp 应用前比对：不等则 `blocked-environment`，报
-  `partition-design-mismatch: <分区绑定> vs <当前设计>`，**不静默错位**。
+| 件 | 内容 |
+|---|---|
+| `semantic_partition.design_fingerprint()` | 对 id、类型、几何按顺序取 sha256 |
+| `image_figma_mvp --dump-partition-design` | 写出 mvp **真正要用**的那份元素列表后退出，不写 Figma |
+| 探针 | 优先读这份 dump；冻结分区时写 `designSha256` |
+| mvp 应用前 | 比对指纹，不一致 → `blocked-environment`，不静默错位 |
 
-修好后重出分区：正确几何下 **10/10 组全部通过**（错几何上是 8/10）——这条本身说明
-「在错的几何上，守门是失效的」。
+## 3. 坑二：被拒的容器会被画成灰矩形
 
-## 3. 修好绑定后：一路踩到「灰底」和「帧根本建不出来」
+`resolve_frames` 拒绝一个组后，容器退回普通矩形绘制；矩形没有 `fillColor` 时插件填
+Figma 默认灰 `#d9d9d9`。一页 10 行就是 10 条灰带。
 
-| 版本 | 做了什么 | within30 | 建成帧 |
+- 像素差异 **26.34%**，且**均匀分布在每一行**（每 40px 带约 79.5k 像素）；
+- 修法：容器的 `fillColor` / `borderColor` 都设成 `transparent`；
+- 修完后差异降到 **0.075%**（2,547 px）。
+
+## 4. 坑三：透明容器的深度
+
+`_depth` 统计「被多少个矩形覆盖」，容器算一层，成员深度整体 +1；深度是主序，
+成员与非成员的相对笔序就翻。所以第一版修法是「透明容器不参与覆盖计数」。
+
+**但那一步同时把它自己的深度也固定成了 0**——这是错的：
+
+```
+祖先区块 depth=1，行 Frame depth=0 → Frame 排在祖先之前
+→ 祖先落进 `resolve_frames` 的「Frame 之后」窗口
+→ 判定 `covers-other-element`，整组被拒
+```
+
+light-form 12 个组全灭、light-table 掉到 1/10，都是这条。正确的算法是：**透明容器
+不参与别人的覆盖计数，但它自己的深度仍按「被多少不透明元素覆盖」算**——算出来正好
+等于成员所在的那一层，靠下标（容器插在最早成员之前）决定它先于成员落笔。
+
+| 族 | 修前建成 | 修后建成 | 共同元素笔序 |
 |---|---|---|---|
-| 绑定设计后 | 只是分区对了 | 91.8138 | 10 个**矩形**（不是 Frame） |
-| 再让透明容器不计深度 | `paint_order` 忽略 `transparent` | 74.0126 | 10 个矩形，每行多一条灰底 |
-| 再给容器 `fillColor: transparent` | 被拒的容器不上色 | **95.5949** | **1 个 FRAME + 9 个无填充矩形** |
+| light-table（10 组） | 1 / 10 | **10 / 10** | 与基线逐位一致 |
+| light-form（12 组） | 0 / 12 | **12 / 12** | 与基线逐位一致 |
 
-`--partition` 关闭时导出 `d88b97ec`，与台账逐字节相同——这条从头到尾都成立。
+## 5. light-form 的负结论与正结论
 
-### 3.1 两个真 bug
+原计划「换 light-form，它的行天然带整条底色，闭包更容易闭合」——**前半句被证伪**：
+在修深度之前，light-form 是 0/12，比 light-table 还差。原因不是底色，是它的行夹在
+`form-section` 这类**祖先容器**与整幅底图之间，Frame 一旦排到祖先之前就全灭。
 
-**① 被拒的容器会被画成灰矩形。** `resolve_frames` 拒绝一个组之后，容器退回普通矩形
-绘制；矩形没有 `fillColor` 时插件填 Figma 默认灰 `#d9d9d9`。一页 10 行就是 10 条灰带：
-像素差异 26.34%，且**均匀分布在每一行**（每 40px 带 ~79.5k 像素）。修法是把容器的
-`fillColor` / `borderColor` 都设成 `transparent`。
+修完深度后，同为 12/12。所以「哪个族更容易」不取决于底色，取决于 Frame 与祖先的相对笔序。
 
-**② 透明容器会抬高成员的绘制深度。** `_depth` 统计「被多少个矩形覆盖」，容器算一层，
-成员的深度整体 +1；深度是主序，成员与非成员的相对笔序就翻了。修法：`transparent`
-的元素既不参与覆盖计数，自身深度也记 0。修完后 152 个共同元素的相对笔序与基线
-**逐位一致**，且五个现有族没有元素级 `transparent`，基线导出不变（实测 sha 相同）。
+## 6. 现在的位置
 
-## 4. 真正没过的那一关：只有 1/10 能建成
+| 项 | 状态 |
+|---|---|
+| 像素（不带开关） | 真机 **95.5994**、导出 `d88b97ec`，与台账逐字节相同 |
+| 像素（带开关） | 真机 95.5949（Δ −0.0045，门槛 −0.3）——这是在**只有 1 个 Frame** 时测的 |
+| 结构（带开关） | 离线 10/10，真机待复验 |
+| 回归 | `1601 passed / 8 failed`（8 个既有环境项），17 例分区单测 |
+| 真机 | **被插件回调表挡住**：`Attempted to invoke callback with invalid id -32701` |
 
-修完之后 `resolve_frames` 的判定是：
+插件那条按 `20261110image to Figma-handoff.md` §295 的记载：长会话后回调表失效，
+**重启 bridge 无效，必须在 Figma 里重载插件**。
 
-```
-建成 1 / 10       拒绝 9，全部 covers-other-element
-```
-
-第 3 节表格里那两次「10 个建房」都不是真建成——那是被拒的容器退回矩形，看起来像
-节点，实际没有层级。
-
-**这条才是 P2 的结论**：行与行之间夹着非成员（表格的竖分隔线、行底色、相邻行边缘），
-`resolve_frames` 的成员闭包要求「夹在成员中间、与 Frame 相交的图元都必须是成员」，
-于是整行建不成。
-
-之前「正确几何下 10/10 通过」的读数，是在**错的绘制序**上得到的——顺序一修，真相就变。
-所以那条数字不能再引用。
-
-## 5. 现在的位置
-
-- 像素：**95.5949 vs 95.5994，Δ −0.0045**，远在 −0.3 门槛内。差异只剩 2,547 px
-  （0.075%），集中在唯一建成的那一条页脚（x 1928–2137、y 1183–1208）。
-- 结构：**1 个 Frame**。离「行级可编辑」还差 9 行。
-- 所以 P2 的结论是：**发射链路是安全的（不回归），但结构收益接近于零**，
-  卡点不在 Frame 机制，在绘制序交错。
-
-## 6. 下一步的两条路
-
-1. **让成员的绘制区间可嵌套**：表头/表格行的竖分隔线与行底色如果算进组内，闭包就能闭合。
-   代价是组的定义要包含「视觉上属于这一行的线」，而 VLM 现在的分组不含它们。
-2. **换族**：light-form 的行组天然带底色（表格行整条），闭包更容易闭合。
-   先用 `--dump-partition-design` + 探针在 light-form 上量一遍，成本 0.002 元。
-
-## 7. 新增禁改项
+## 7. 禁改项（新增四条）
 
 | 禁改项 | 原因 |
 |---|---|
 | **分区文件必须带 `designSha256`** | 不带就等于允许跨版本静默错位（95.60 → 59.37 就是它） |
 | **不要拿校准后的 `figma_design.json` 当分区输入** | 那是终版，发射用的是校准前；89/152 个坐标不同 |
-| **在错的几何/错的绘制序上，不要相信 `resolve_frames` 的通过数** | 同一批分组：错几何 8/10、错序 10/10、真实 1/10 |
-| **分区容器必须有 `fillColor: transparent`** | 被拒时退回矩形，没 fill 就填默认灰，一页掉 26 个点 |
-| **不要让透明容器参与 `_depth`** | 成员深度 +1 → 笔序翻转；修好后共同元素序逐位回到基线 |
+| **在错的几何 / 错的绘制序上，不要相信 `resolve_frames` 的通过数** | 同一批分组：错几何 8/10、错序 10/10、真实 1/10、修好后 12/12 |
+| **透明容器的深度不能固定成 0** | Frame 会排到祖先之前，祖先被当成外人，整族全灭 |
 
 ## 8. 复现
 
@@ -101,7 +106,10 @@
 PY="C:/Users/lzq/.conda/envs/omni/python.exe"
 $PY scripts/image_figma_mvp.py --image <ref> --truth <truth> --out output/_dump \
     --acceptance-policy 2.1 --reuse-prepared --dump-partition-design
-$PY scripts/vlm_partition_probe.py --family light-table --run-dir output/_dump --refresh
+$PY scripts/vlm_partition_probe.py --family <name> --run-dir output/_dump --refresh
 $PY scripts/image_figma_mvp.py --image <ref> --truth <truth> --out output/_run \
-    --acceptance-policy 2.1 --reuse-prepared --partition output/_structure_partition/light-table/partitions.json
+    --acceptance-policy 2.1 --reuse-prepared --partition output/_structure_partition/<name>/partitions.json
 ```
+
+离线判定（不写 Figma，0 成本）：`build_partition_containers` → `paint_order` →
+`resolve_frames`，`reasons` 为空即全部可建。
