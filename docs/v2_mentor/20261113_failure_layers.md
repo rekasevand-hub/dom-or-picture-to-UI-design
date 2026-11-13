@@ -52,29 +52,42 @@ owner 级新增 `failureClass`，summary 新增 `failureClassCounts`，报告新
 对照 11-13 上午的人工归因：content-review 的 4 条被分类器复现为 1 机械 + 2 字形 +
 1 宽度轴，与 `20261113_owner_attribution.md` 逐条一致。
 
-## 4. 意外发现：复跑会取到别人的节点框
+## 4. 踩到的坑：在脏工作区复跑，把别人的口径当成自己的回归
 
 单族复跑（content-review）出现了一次不可用的测量：
 
-| | 导出 sha | bad_pixel | native | 测量框 |
-|---|---|---|---|---|
-| 同批次 | `40149c8c…` | 100687 | 14/18 | 128–313 px |
-| 单族复跑 | `40149c8c…`（**相同**） | 100687（**相同**） | **12/18** | 307–907 px |
+| | gitSha | gitDirty | 导出 sha | native | 测量框 |
+|---|---|---|---|---|---|
+| 同批次（15:0x） | `b90bedee` | **false** | `40149c8c…` | 14/18 | 128–313 px |
+| 单族复跑（15:38） | `e1cbd4e7` | **true** | `40149c8c…`（相同） | **12/18** | 307–907 px |
 
 导出逐字节相同、设计 IR 逐位相同（`ebd77d5bd1ec`），但 owner 的 `measureBBox` 全部变宽
-2–3 倍，`measurementSource` 仍是 `emitted-node`。也就是说：**渲染没变，回读取到了别的节点**。
-最可能是画布上存在同坐标的残留帧（同一 origin 连跑两次），回读按名字/文本匹配时命中了另一棵。
+2–3 倍，`measurementSource` 仍是 `emitted-node`。**渲染没变，尺子变了。**
 
-处置：该产物归档为 `output/_benchmark_families/rerun_content_review_polluted_20261113_1540`，
+原因不是画布残留，是**另一个会话在同一棵工作树上未提交的「墨迹归属」改动**
+（15:41 提交为 `d84667d`）：参考窗口从「节点框 + pad」改成
+`union(source_bbox, 节点框) + pad`，再按归属取 run。该提交自己的记录也写着
+「离线重算：critical 116→111、content-review 14→12」——正是我看到的 14→12。
+
+**这条禁改项早就在 11-13 交接里（`gitDirty = true` 的运行不能当基线），这次是我自己踩的。**
+复跑前先看 `git status`，或者只看产物里的 `runtime.gitDirty`；两秒钟的事。
+
+处置：该产物归档为 `output/_benchmark_families/rerun_content_review_dirty_ink_ownership_20261113_1540`，
 字段落盘证据留在 `_layer_field_evidence_20261113.json`，`rerun/content-review` 已恢复成同批次产物。
-**本节的分布表用离线重算，不用那次复跑。**
+
+## 4.1 这批分布数对应的是 legacy 口径
+
+§3 的分布基于 **15:0x 那批 legacy 产物**（`windowMode` 未落盘）。`d84667d` 之后尺子换了，
+全过 194→177、critical 116→111，所以**分布要重述必须再跑一次五族真机 `--rerun`**。
+在那之前，§3 的数是「旧尺子下的分层结构」，不是当前代码的运行结果——**能用来判断分层逻辑，
+不能用来当发布基线**。
 
 ## 5. 新增禁改项
 
 | 禁改项 | 原因 |
 |---|---|
 | **不要用「高宽不自洽」单独判字族** | `系统运行正常` 同样宽超高平，但它是机械缺陷；必须先看位移是否干净 |
-| **不要在画布有同坐标残留帧时复跑并采信 owner 数** | 导出可以逐字节相同，回读仍可能取到另一棵树的节点框（14→12 就是这么来的） |
+| **不要在 `gitDirty = true` 时复跑并采信数字** | 15:38 那次就是：导出 sha 逐字节相同，owner 14→12，差的是别人未提交的尺子。复跑前看 `runtime.gitDirty` |
 | **不要用 `failureLayers` 去改 `status`** | 它现在是 report；要改先改 policy 的 `enforcement`，并重跑五族拿分布 |
 | **不要把 `unmeasured` 归进任何一层** | 它没有 checks，归进去等于把「没测」当成「测过且合格」 |
 
