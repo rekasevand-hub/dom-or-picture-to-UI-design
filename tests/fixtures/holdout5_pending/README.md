@@ -12,7 +12,7 @@
 | 1 | `reference.png` | ✅ 由 jpg 无损转 PNG，sha256 `7b2ecb0a…edb5e`，1920×1008 |
 | 2 | `truth.json` | ✅ 28 条 critical_texts（对冻结感知命中 26/28，两条已知 OCR 缺陷见文件内说明）；`expected_asset_count=39` |
 | 3 | 冻结感知 | ✅ `output/_holdout5_atomgit_prepare/pipeline`（120 元素 / 67 文本 / 39 图标；perception contract 全过） |
-| 4 | `gold_tree.json` | ❌ **卡在这里**：需要在 Figma Make 里重建一版 1920×1008 金稿 |
+| 4 | `gold_tree.json` | ❌ **卡在这里**：需要在 Figma Make 里重建一版 1920×1008 金稿，施工单见 `GOLD_SPEC.md` |
 | 5 | `family.json` | ❌ 依赖第 4 步的 `frame_id` |
 
 ## 为什么第 4 步是硬阻塞
@@ -23,6 +23,8 @@
 两条路：
 
 - **A. 建真金稿**：与三个已登记族同标准，五类指标全开（within30 / ink_ratio / dy / critical / structure）。
+  施工单 + 验收命令见 [`GOLD_SPEC.md`](GOLD_SPEC.md)；候选金稿先在 `output/_holdout5_atomgit_gold/`
+  里用 `audit_gold_tree.py --dir` 预审，通过了才搬进来。
 - **B. 降级登记**：`gold_tree.json` 写 `{}`，`family.json` 声明 `size_metrics.evaluable: false`。
   结果只有 within30 / critical / structure 三门生效，ink 与 dy **永久静默**（基线首次运行即固化为 null）。
 
