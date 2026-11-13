@@ -23,6 +23,9 @@ from src.app.services.structure.image_contract import (
 from src.app.services.structure.fidelity.icon_recovery import (
     recover_small_icon_regions,
 )
+from src.app.services.structure.fidelity.border_containers import (
+    recover_border_containers,
+)
 from src.app.services.structure.fidelity import (
     apply_scene_plan,
     build_content_inventory,
@@ -615,6 +618,13 @@ class PreciseAgent:
                 width=graph["image_w"],
                 height=graph["image_h"],
             )
+            graph, border_container_report = recover_border_containers(
+                graph,
+                str(image_reference["input"]["path"]),
+                width=graph["image_w"],
+                height=graph["image_h"],
+            )
+            _write_json(out / "10_border_containers.json", border_container_report)
             graph = attach_chrome_icon_evidence(
                 graph,
                 str(image_reference["input"]["path"]),

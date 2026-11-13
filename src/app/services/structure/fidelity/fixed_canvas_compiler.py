@@ -1133,8 +1133,7 @@ _LAYOUT_MEMBER_TYPES = {
     "rectangle",
     "container",
 }
-_LAYOUT_ALIGN_TOLERANCE = 3
-_LAYOUT_SPACING_TOLERANCE = 3
+
 
 
 def _layout_rect(element: Mapping[str, Any]) -> tuple[int, int, int, int] | None:
@@ -1190,17 +1189,26 @@ def _stack_layout(
     parent: tuple[int, int, int, int],
     children: list[tuple[int, int, int, int]],
 ) -> dict[str, Any] | None:
-    """Auto Layout spec when the children form one strict row or column.
+    """Auto Layout spec when the children form one readable row or column.
 
-    Only unambiguous stacks qualify.  A 2x3 card grid or a mixed layout bails
-    out: Figma's `layoutMode` would re-flow the children and destroy the fixed
-    canvas, and `resolve_frames` would then be the only thing standing between
-    the file and a shifted result.
+    A real card is not a strict grid: a leading icon sits left of its label, a
+    badge hangs at the right edge.  Requiring pixel-equal origins rejected
+    every card.  The tolerance therefore scales with the container, and since
+    ``resolve_frames`` pins each member to its snapshot coordinates, a loose
+    spec never moves anything on the canvas — it only records structure.
     """
     if len(children) < 2:
         return None
+    parent_width = max(1, parent[2])
+    parent_height = max(1, parent[3])
+    align_tolerance = max(6, int(round(parent_width * 0.25)))
+    align_tolerance_y = max(6, int(round(parent_height * 0.25)))
 
-    def _spec(mode: str, ordered: list[tuple[int, int, int, int]]) -> dict[str, Any] | None:
+    def _spec(
+        mode: str,
+        ordered: list[tuple[int, int, int, int]],
+        tolerance: int,
+    ) -> dict[str, Any] | None:
         if mode == "VERTICAL":
             positions = [box[1] for box in ordered]
             spans = [box[3] for box in ordered]
@@ -1209,43 +1217,30 @@ def _stack_layout(
             positions = [box[0] for box in ordered]
             spans = [box[2] for box in ordered]
             starts = [box[1] for box in ordered]
-        if max(starts) - min(starts) > _LAYOUT_ALIGN_TOLERANCE:
+        if max(starts) - min(starts) > tolerance:
             return None
         gaps = [
             positions[index + 1] - (positions[index] + spans[index])
             for index in range(len(ordered) - 1)
         ]
-        if any(gap < -1 for gap in gaps):
-            return None  # children overlap: not a stack
-        if gaps and max(gaps) - min(gaps) > _LAYOUT_SPACING_TOLERANCE:
-            return None
+        if any(gap < -min(spans) for gap in gaps):
+            return None  # children overlap heavily: not a stack
+        if gaps:
+            median_gap = sorted(gaps)[len(gaps) // 2]
+            spacing_tolerance = max(4, int(round(abs(median_gap) * 0.6)))
+            if max(gaps) - min(gaps) > spacing_tolerance:
+                return None
         spacing = int(round(sum(gaps) / len(gaps))) if gaps else 0
-        if mode == "VERTICAL":
-            left = min(box[0] for box in ordered) - parent[0]
-            right = (parent[0] + parent[2]) - max(
-                box[0] + box[2] for box in ordered
-            )
-            top = min(box[1] for box in ordered) - parent[1]
-            bottom = (parent[1] + parent[3]) - max(
-                box[1] + box[3] for box in ordered
-            )
-            padding = {"paddingTop": top, "paddingBottom": bottom}
-        else:
-            top = min(box[1] for box in ordered) - parent[1]
-            bottom = (parent[1] + parent[3]) - max(
-                box[1] + box[3] for box in ordered
-            )
-            left = min(box[0] for box in ordered) - parent[0]
-            right = (parent[0] + parent[2]) - max(
-                box[0] + box[2] for box in ordered
-            )
-            padding = {"paddingLeft": left, "paddingRight": right}
-        if mode == "VERTICAL":
-            padding["paddingLeft"] = left
-            padding["paddingRight"] = right
-        else:
-            padding["paddingTop"] = top
-            padding["paddingBottom"] = bottom
+        left = min(box[0] for box in ordered) - parent[0]
+        right = (parent[0] + parent[2]) - max(box[0] + box[2] for box in ordered)
+        top = min(box[1] for box in ordered) - parent[1]
+        bottom = (parent[1] + parent[3]) - max(box[1] + box[3] for box in ordered)
+        padding = {
+            "paddingTop": top,
+            "paddingBottom": bottom,
+            "paddingLeft": left,
+            "paddingRight": right,
+        }
         if any(value < 0 for value in padding.values()):
             return None
         return {
@@ -1257,10 +1252,18 @@ def _stack_layout(
             "source": "geometry",
         }
 
-    vertical = _spec("VERTICAL", sorted(children, key=lambda box: (box[1], box[0])))
+    vertical = _spec(
+        "VERTICAL",
+        sorted(children, key=lambda box: (box[1], box[0])),
+        align_tolerance,
+    )
     if vertical is not None:
         return vertical
-    return _spec("HORIZONTAL", sorted(children, key=lambda box: (box[0], box[1])))
+    return _spec(
+        "HORIZONTAL",
+        sorted(children, key=lambda box: (box[0], box[1])),
+        align_tolerance_y,
+    )
 
 
 def attach_layout_frames(elements: list[dict[str, Any]]) -> int:
