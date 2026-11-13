@@ -13,7 +13,7 @@
 | 分支 | `workbuddy/feature-precise-agent-router-42955d7d` |
 | HEAD | `8dd260a`（上午这份文档落笔时是 `2cb6ffd`） |
 | 领先 `origin/main` | 179 笔（远端已同步，未推送 0） |
-| bridge | 交付时**在跑**（8765，插件 `2026-11-11-multiline-rotation`）；跑完可由下一位关掉 |
+| bridge | 交付时**已关闭**（8765 无监听，19:53 收口）；下一位要写 Figma 时先起 bridge 并在 Figma 里重载插件 |
 | 插件构建 | `2026-11-11-multiline-rotation`，与 `figma_bridge/code.js` 一致 |
 | 插件加载目录 | `D:/LLM-Data/Figma_auto_agent`，**已在 18:40 同步到 `8dd260a`**（tree 哈希逐位相同） |
 
