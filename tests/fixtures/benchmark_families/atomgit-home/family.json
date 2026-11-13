@@ -1,0 +1,32 @@
+{
+  "family": "atomgit-home",
+  "sample": "IMG-ATOMGIT-HOME-20261113 (7b2ecb0a, 1920x1008, 1x, AtomGit 首页)",
+  "gold": {
+    "frame_id": "158:12327",
+    "producer": "Figma Make",
+    "scale_to_reference": 0.754717,
+    "note": "2544x1336 重建稿「AtomGit · 截图 1:1 复刻」；82/93 框落墨（11 条落空全是 6-13px 的 · 分隔符），字符串按包含关系 89.7% / 严格 60.3%（20 处只是分词粒度不同）"
+  },
+  "pipeline_run": "output/_holdout5_atomgit_run",
+  "note": "2026-11-13 登记。首轮 within30 89.30，低于产品线 90 —— 新考卷的第一份成绩单，不是回归。",
+  "baselines": {
+    "within30_pct": 89.3003,
+    "ink_ratio_median": 1.0,
+    "ink_ratio_pairs": 43,
+    "font_ratio_median": 0.99,
+    "dy_median": 2.5,
+    "critical": {
+      "matched": 25,
+      "required": 28
+    },
+    "structure": {
+      "total_nodes": 136,
+      "max_depth": 1,
+      "frame_count": 1,
+      "vector_count": 0,
+      "text_count": 67,
+      "image_fill_count": 34
+    },
+    "registered_from": "output/_holdout5_atomgit_run"
+  }
+}
