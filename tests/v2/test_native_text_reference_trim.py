@@ -136,3 +136,34 @@ def test_reverse_direction_is_flagged_but_not_trimmed(tmp_path: Path) -> None:
     assert owner["renderedInkBBox"][2] == 100
     assert owner["referenceWidthSuspect"] is True
     assert report["summary"]["referenceWidthSuspectCount"] == 1
+
+
+def test_width_tolerance_still_uses_the_policy_ratio(tmp_path: Path) -> None:
+    """容差必须仍然是 `max(3, 3% × 参考宽)`。
+
+    回归用：曾经为了记 `referenceWidthSuspect` 在这里引入了一个同名局部变量
+    `width_ratio`，把策略里的 0.03 遮蔽成「参考/渲染比」（≈1.0），容差从 3 变成上百，
+    size 判据等于被悄悄废掉——五族会凭空多出 23 条通过。这条测试就是钉住它。
+    """
+    reference = tmp_path / "reference.png"
+    rendered = tmp_path / "rendered.png"
+    image = Image.new("RGB", (200, 100), "white")
+    ImageDraw.Draw(image).rectangle((40, 20, 79, 27), fill="black")  # 宽 40
+    image.save(reference)
+    wider = Image.new("RGB", (200, 100), "white")
+    ImageDraw.Draw(wider).rectangle((40, 20, 83, 27), fill="black")  # 宽 44
+    wider.save(rendered)
+
+    design = _design()
+    design["elements"][0]["styleEvidence"]["evidence"]["source_bbox"] = [40, 20, 44, 8]
+    readback = _readback()
+    readback["children"][0]["bounds"] = {"x": 40, "y": 20, "width": 44, "height": 8}
+    owner = build_native_text_quality(
+        design, readback, str(reference), str(rendered), REGIONS
+    )["owners"][0]
+
+    assert owner["widthDelta"] == 4
+    # 3% × 40 = 1.2，取 floor（默认 2 / 策略 3），量级必须是「个位数」。
+    # 被遮蔽时这里是 round(40 × 40/44) = 36 —— 差一个数量级，一眼就能抓住。
+    assert owner["widthTolerance"] <= 3
+    assert owner["checks"]["size"] is False

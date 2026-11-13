@@ -1039,13 +1039,15 @@ def build_native_text_quality(
                 }
             )
             continue
-        width_ratio = (
+        # 注意：这里**不能**叫 width_ratio —— 那是外层策略里的容差比例（0.03），
+        # 同名会把它遮蔽掉，容差会变成「参考宽 × 参考/渲染」，等于把 size 判据废掉。
+        ink_width_ratio = (
             float(reference_ink[2]) / float(rendered_ink[2])
             if rendered_ink[2]
             else None
         )
-        reference_width_suspect = width_ratio is not None and not (
-            REFERENCE_WIDTH_RATIO_MIN <= width_ratio <= REFERENCE_WIDTH_RATIO_MAX
+        reference_width_suspect = ink_width_ratio is not None and not (
+            REFERENCE_WIDTH_RATIO_MIN <= ink_width_ratio <= REFERENCE_WIDTH_RATIO_MAX
         )
         delta_x = rendered_ink[0] - reference_ink[0]
         # 只记账，不参与判据：参考墨迹贴到窗口边时，宽度比较已经退化成
