@@ -254,3 +254,40 @@ def test_design_fingerprint_is_stable_and_geometry_sensitive() -> None:
 
     reordered = [base[1], base[0], base[2]]
     assert design_fingerprint(reordered) != design_fingerprint(base)
+
+
+def test_paint_order_is_unchanged_by_transparent_containers() -> None:
+    """透明容器不参与覆盖计数：成员与其它元素的相对笔序必须原样不变。
+
+    2026-11-13：不修这条时，light-table 建 10 个行容器后 109/152 个元素名次变化、
+    最多挪 97 位；修好后共同元素的绘制序与基线逐位一致。
+    """
+    from src.app.services.rendering.adapter_base import paint_order
+
+    elements = [
+        _element(0, 0, 0, 300, 200, "container"),
+        _element(1, 10, 10, 120, 20, "text", "a"),
+        _element(2, 140, 10, 120, 20, "text", "b"),
+        _element(3, 10, 60, 250, 20, "text", "c"),
+        _element(4, 10, 100, 250, 20, "text", "d"),
+    ]
+    merged, _ = build_partition_containers(
+        elements, [{"label": "row", "members": [1, 2]}]
+    )
+    base = [item.get("id") for _i, item in paint_order(elements)]
+    after = [
+        item.get("id")
+        for _i, item in paint_order(merged)
+        if not str(item.get("id") or "").startswith(CONTAINER_ID_PREFIX)
+    ]
+    assert base == after
+
+
+def test_container_has_no_fill_so_a_rejected_group_is_invisible() -> None:
+    """帧被拒时容器退回普通矩形绘制；没有 fill 时插件会填默认灰 `#d9d9d9`。"""
+    merged, _ = build_partition_containers(
+        _row(), [{"label": "row", "members": [1, 2]}]
+    )
+    style = merged[1]["style"]
+    assert style["fillColor"] == "transparent"
+    assert style["borderColor"] == "transparent"

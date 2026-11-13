@@ -321,6 +321,10 @@ def build_partition_containers(
             "height": rect[3],
             "text": "",
             "transparent": True,
+            # 必须同时把 fill 设成 transparent：`resolve_frames` 拒掉这个组时，
+            # 容器会退回普通矩形绘制，而矩形没有 fill 时插件会填 Figma 默认灰
+            # `#d9d9d9`——每一行多一条灰底，2026-11-13 一页就掉了 26 个点。
+            "style": {"fillColor": "transparent", "borderColor": "transparent"},
             "layout": {"mode": "NONE"},
             "layoutChildren": [{"id": by_index[index]["id"]} for index in members],
             "imageMVP": {

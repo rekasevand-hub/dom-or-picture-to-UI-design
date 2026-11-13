@@ -863,14 +863,22 @@ def paint_order(elements: list[dict]) -> list[tuple[int, dict]]:
     # 彩色按钮之后。按唯一几何矩形统计「被谁覆盖」，消除该膨胀。
     seen: set[tuple[int, int, int, int]] = set()
     unique_geoms = []
-    for rect in rects:
-        if rect is not None and rect not in seen:
-            seen.add(rect)
-            unique_geoms.append(rect)
+    for rect, element in zip(rects, elements):
+        if rect is None or rect in seen:
+            continue
+        # 画不出墨的容器不改变覆盖关系：它既不遮挡别人，也不该让被它圈住的元素
+        # 多算一层深度。分区容器（`transparent=True`）就是这种——加进去会让成员的
+        # 深度整体 +1，而深度是主序，成员与非成员的相对笔序会跟着翻。
+        # 2026-11-13：light-table 建 10 个行 Frame 后 109/152 个元素名次变化，
+        # 最多挪 97 位，within30 95.60 → 91.81。
+        if element.get("transparent"):
+            continue
+        seen.add(rect)
+        unique_geoms.append(rect)
 
     def _depth(idx: int) -> int:
         rect = rects[idx]
-        if rect is None:
+        if rect is None or elements[idx].get("transparent"):
             return 0
         return sum(
             1
