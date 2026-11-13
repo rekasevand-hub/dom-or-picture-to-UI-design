@@ -38,7 +38,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
+import time
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -51,6 +53,7 @@ from src.app.services.evidence.image_figma_acceptance import (  # noqa: E402
 )
 
 BENCH = ROOT / "tests" / "fixtures" / "benchmark_families"
+JOURNAL = ROOT / "output" / "_bridge_state" / "bridge-journal.jsonl"
 
 # Gate tolerances: how much a metric may drift before it counts as regression.
 WITHIN30_SLACK_PCT = 0.3
@@ -542,6 +545,54 @@ def _rerun_family(family_dir: Path, policy: str) -> Path | None:
     return out
 
 
+def _dirty_entries() -> list[str]:
+    """未提交的工作区改动（不含被 ignore 的 output/）。"""
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if result.returncode != 0:
+        return []
+    return [line for line in result.stdout.splitlines() if line.strip()]
+
+
+def _preflight(rerun: bool, allow_dirty: bool) -> int | None:
+    """`--rerun` 前的两道闸：工作区必须干净，且不能有别人刚在写 bridge。
+
+    脏工作区跑出来的数字对应「某个提交 + 当时的工作区」，不是任何一个可复现的状态。
+    2026-11-13 15:38 是实例：另一个会话的未提交改动换掉了参考口径，content-review
+    的 owner 从 14 掉到 12，而导出 sha 逐字节相同——`gitDirty` 在产物里写着 true，
+    只是没人看它。
+
+    bridge 那道只警告不拦：两个会话同时写同一份文档时，帧会叠在同一个 origin 上
+    （`_rerun_family` 的 origin 是 family 名的哈希，天然确定），后跑的会把两边混在一起。
+    """
+    if not rerun:
+        return None
+    if not allow_dirty:
+        dirty = _dirty_entries()
+        if dirty:
+            print(f"[refuse] 工作区有 {len(dirty)} 处未提交改动，--rerun 拒绝执行。")
+            print("         脏工作区的结果不可复现；先提交，或确认后用 --allow-dirty。")
+            for line in dirty[:5]:
+                print(f"         {line}")
+            return 2
+    if JOURNAL.is_file():
+        age = time.time() - JOURNAL.stat().st_mtime
+        if age < 180:
+            print(
+                f"[warn ] bridge journal {age:.0f}s 前还在写——确认没有另一个会话"
+                "在同一条 bridge 上跑，否则两边的帧会叠在同一坐标。"
+            )
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--family", action="append", help="restrict to family name(s)")
@@ -572,11 +623,20 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--allow-dirty",
+        action="store_true",
+        help="run --rerun on a dirty worktree (results are not reproducible)",
+    )
+    parser.add_argument(
         "--policy",
         default="2.1",
         help="acceptance policy for --rerun (default 2.1, the calibrated gate)",
     )
     args = parser.parse_args(argv)
+
+    refusal = _preflight(args.rerun, args.allow_dirty)
+    if refusal is not None:
+        return refusal
 
     family_dirs = sorted(
         (d for d in BENCH.iterdir() if d.is_dir() and (d / "family.json").is_file()),
