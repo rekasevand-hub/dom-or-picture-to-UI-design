@@ -7,7 +7,7 @@ const PLUGIN_CONFIG_KEY = "figmaBridgePluginConfig";
 // 插件代码是从磁盘上另一个 checkout 加载的，改完不进 Figma 也不会报错——只会
 // 静默跑旧版。这个版本戳随每次改动递增，并出现在回读摘要里，于是"跑的是哪一版"
 // 可以一眼查证，不用再靠猜。改 code.js 时务必同步改这里。
-const BRIDGE_BUILD = "2026-11-11-multiline-rotation";
+const BRIDGE_BUILD = "2026-11-13-parent-relative-geometry";
 // 插件里所有"尽力而为"的 setter 都是 try/catch 吞异常的，于是一个不存在或参数
 // 非法的 API 会表现成"什么也没发生"，而不是报错。这些告警进回读摘要，让静默失败
 // 有据可查。
@@ -438,6 +438,18 @@ function appendToParent(node, params) {
       throw new Error(`PARENT_NOT_FOUND: ${parentId}`);
     }
     parent.appendChild(node);
+    // Every spec carries *page* coordinates, and `applyGeometry` wrote them
+    // while the node still sat on the page.  `appendChild` does not keep the
+    // absolute position: it reinterprets the same numbers as parent-local, so a
+    // child asked for at x=100 inside a frame at x=30000 lands 30000 px to the
+    // right.  Nothing noticed while every node hung off the root (origin 0);
+    // with child frames this is the first thing that breaks.  Converting here
+    // keeps one coordinate space in the specs and none in the plugin.
+    const box = parent.absoluteBoundingBox;
+    if (box) {
+      node.x = (params.x || 0) - box.x;
+      node.y = (params.y || 0) - box.y;
+    }
   } else {
     figma.currentPage.appendChild(node);
   }
