@@ -174,6 +174,7 @@ $PY scripts/report_state.py --write docs/STATE.md
 ## 环境陷阱
 
 - **Figma 插件加载的是另一个 checkout**（`D:/LLM-Data/Figma_auto_agent`），不是当前 worktree。改了 `figma_bridge/` 必须同步过去并**在 Figma 里重载插件**，否则跑的是旧代码。
+- **`code.js` 不要改坐标语义**：spec 里的 x/y 是**父级局部**，不是画布绝对。2026-11-13 我按"绝对坐标"加过一次换算，实测把 `banner` 从 `x=129` 推到 `-21871`（根帧在 22000），native 掉 2 个 owner，已 revert。机理见 `docs/v2_mentor/20261113_phase5_coordinate_probe.md`。
 - 现在验收报告会写 `runtime.bridgeBuild / expectedBridgeBuild / gitSha / strategies`，插件版本不一致**直接拒绝运行**——不再靠人去翻 JSON。
 - 跑 Figma 前需要 `python -m src.app.services.bridge_server`（ws://localhost:8765）。
 - **本页数字跑在 `gitDirty = false` 上**（`201961c14`），四组同一次干净工作区跑的；脏基线 `ba6e752 + 未提交改动` 只作留档，不再引用。
