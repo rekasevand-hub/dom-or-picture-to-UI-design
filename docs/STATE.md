@@ -123,3 +123,4 @@ $PY scripts/report_state.py --write docs/STATE.md
 - 跑 Figma 前需要 `python -m src.app.services.bridge_server`（ws://localhost:8765）。
 - **本页数字跑在 `gitDirty = false` 上**（`201961c14`），四组同一次干净工作区跑的；脏基线 `ba6e752 + 未提交改动` 只作留档，不再引用。
 - `output/` 不随仓库走；换 worktree 后没有历史产物，数字要么重跑要么从本页读。
+- **`--rerun` 会 `rmtree` 掉 `output/_benchmark_families/rerun/<family>`**（每个约 82 个文件）。在带批量删除防护的环境里这一步会被拦（`SAFE_DELETE_BULK_CONFIRM_REQUIRED`，阈值 50），表现为「第一个 family 直接失败」。先把 `rerun/` 整个改名留档，再让脚本重建；不要逐个删。
