@@ -217,17 +217,26 @@ def _column_runs(mask: Any, gap_px: int) -> list[list[int]]:
     return runs
 
 
-def _select_span(
+# 用来重切的最细阈值：只保证同一个字形不被拆开，词与词、文本与邻居的空隙全部留成边界。
+FINE_GAP_EM = 0.22
+# 参考侧宽度超过「我们自己的渲染宽 × 该系数」时，认定窗口里混进了邻居。
+# 五族实测：320 个 owner 里 288 个的参考/渲染宽度比落在 0.8–1.2，>=1.6 的只有 11 个，
+# 且全部是失败项 —— 所以这是「读数不可信」的判据，不是「差得多」的判据。
+REFERENCE_WIDTH_RATIO_MAX = 1.6
+# 反向也要防：我们的渲染宽到是参考的两倍时，多半是渲染侧吞了东西（或该元素被合并过），
+# 那个宽度同样不能当「参考错了」的证据。
+REFERENCE_WIDTH_RATIO_MIN = 0.6
+
+
+def _select_runs(
     runs: list[list[int]], window: list[int], node: list[int], min_inside: float = 0.5
-) -> list[int] | None:
-    """保留「至少一半宽度落在节点框里」的 run 并合并。
+) -> list[list[int]]:
+    """保留「至少一半宽度落在节点框里」的 run。
 
     节点框是我们自己发射的位置，是这条链上最可靠的先验：框内的墨多半属于这条文本，
     框外一整段（图标、箭头、邻居标签）不属于。多词串会拆成多个 run，但它们都在框内，
     合并后就是整串 —— 同一条规则同时解决「切错」和「吞邻居」。
     """
-    if not runs:
-        return None
     nx0, nx1 = node[0], node[0] + node[2]
     kept: list[list[int]] = []
     for x0, x1 in runs:
@@ -236,14 +245,22 @@ def _select_span(
         width = rx1 - rx0 + 1
         if width > 0 and inside / width >= min_inside:
             kept.append([x0, x1])
+    if kept or not runs:
+        return kept
+    # 一个都没过线（文本整体比框宽很多）时退回重叠最大的那一段，不制造空值
+    best = max(
+        runs,
+        key=lambda run: min(window[0] + run[1] + 1, nx1) - max(window[0] + run[0], nx0),
+    )
+    return [best]
+
+
+def _select_span(
+    runs: list[list[int]], window: list[int], node: list[int]
+) -> list[int] | None:
+    kept = _select_runs(runs, window, node)
     if not kept:
-        # 一个都没过线（文本整体比框宽很多）时退回重叠最大的那一段，不制造空值
-        best = max(
-            runs,
-            key=lambda run: min(window[0] + run[1] + 1, nx1)
-            - max(window[0] + run[0], nx0),
-        )
-        kept = [best]
+        return None
     return [min(run[0] for run in kept), max(run[1] for run in kept)]
 
 
@@ -263,6 +280,50 @@ def _ink_from_span(mask: Any, window: list[int], span: list[int]) -> list[int] |
     ]
 
 
+def _trim_span(
+    mask: Any,
+    window: list[int],
+    node: list[int],
+    em: float,
+    span: list[int],
+    target: float,
+    limit: float,
+) -> list[int]:
+    """从合并段的两端裁掉不属于这条文本的部分。
+
+    只在「参考宽度已明显超过我们自己的渲染宽」时调用。两条约束：
+
+    - **只能成段地从左端或右端裁**（邻居总在一边），不许从中间抠一段；
+    - 裁剪结果不窄于目标宽的 0.6 倍，避免切出单个字形。
+
+    `¥20.24` 是触发这条规则的样本：字号 47px 时它与右边 `起 ¥23.0` 的间隔只有 21px
+    （0.45em），比正常词间距（0.72em）还小 —— 任何 em 阈值都分不开邻居和词。
+    """
+    ink = _ink_from_span(mask, window, span)
+    if ink is None:
+        return span
+    y0 = max(0, ink[1] - window[1])
+    y1 = min(mask.shape[0], y0 + ink[3])
+    runs = _column_runs(mask[y0:y1], max(2, int(round(FINE_GAP_EM * em))))
+    # 这里**不能**再用「≥50% 落在节点框内」筛 run：走到这一步，恰恰是因为节点框
+    # 比这条文本宽（`AtomCode` 窗口 213、节点框 89），真正的文本段会被那条规则筛掉，
+    # 于是永远裁不出来。切点只需要落在合并段内部即可。
+    kept = [run for run in runs if run[0] >= span[0] and run[1] <= span[1]]
+    if len(kept) < 2:
+        return span
+    m0 = min(run[0] for run in kept)
+    m1 = max(run[1] for run in kept)
+    best: list[int] | None = None
+    for run in kept:
+        for cand in ((run[0], m1), (m0, run[1])):
+            width = cand[1] - cand[0] + 1
+            if width < 0.6 * target or width > limit:
+                continue
+            if best is None or abs(width - target) < abs(best[1] - best[0] + 1 - target):
+                best = [cand[0], cand[1]]
+    return best if best is not None else span
+
+
 def _selected_ink(
     mask: Any,
     window: list[int],
@@ -270,14 +331,20 @@ def _selected_ink(
     em: float,
     gap_em: float,
     enabled: bool,
+    target_width: float = 0.0,
 ) -> list[int] | None:
     # 没有节点框（grounding-box 兜底）时没有先验可选，退回整窗取墨
     if not enabled or node is None:
         return _ink_bbox(mask, window)
-    runs = _column_runs(mask, max(2, int(round(gap_em * em))))
-    span = _select_span(runs, window, node)
+    span = _select_span(
+        _column_runs(mask, max(2, int(round(gap_em * em)))), window, node
+    )
     if span is None:
         return _ink_bbox(mask, window)
+    if target_width > 0:
+        limit = REFERENCE_WIDTH_RATIO_MAX * target_width
+        if span[1] - span[0] + 1 > limit:
+            span = _trim_span(mask, window, node, em, span, target_width, limit)
     return _ink_from_span(mask, window, span)
 
 
@@ -937,8 +1004,19 @@ def build_native_text_quality(
         reference_mask = mask_fn(reference_region)
         script = str((values or {}).get("script") or "").lower() if isinstance(values, Mapping) else ""
         gap_em = gap_em_latin if script == "latin" else gap_em_cjk
+        # 渲染侧先量：它是我们自己画出来的同一串字，宽度就是「这条文本该有多宽」的
+        # 最好估计。参考侧再用它做上限，判出「窗口里混进了邻居」并两端裁掉。
+        rendered_ink = _selected_ink(
+            rendered_mask, measure_box, node_box, font_size, gap_em, ownership
+        )
         reference_ink = _selected_ink(
-            reference_mask, measure_box, node_box, font_size, gap_em, ownership
+            reference_mask,
+            measure_box,
+            node_box,
+            font_size,
+            gap_em,
+            ownership,
+            rendered_ink[2] if rendered_ink else 0.0,
         )
         if reference_ink is None:
             if register_unmeasured_owners:
@@ -948,9 +1026,6 @@ def build_native_text_quality(
                     )
                 )
             continue
-        rendered_ink = _selected_ink(
-            rendered_mask, measure_box, node_box, font_size, gap_em, ownership
-        )
         if rendered_ink is None:
             owners.append(
                 {
@@ -964,6 +1039,14 @@ def build_native_text_quality(
                 }
             )
             continue
+        width_ratio = (
+            float(reference_ink[2]) / float(rendered_ink[2])
+            if rendered_ink[2]
+            else None
+        )
+        reference_width_suspect = width_ratio is not None and not (
+            REFERENCE_WIDTH_RATIO_MIN <= width_ratio <= REFERENCE_WIDTH_RATIO_MAX
+        )
         delta_x = rendered_ink[0] - reference_ink[0]
         # 只记账，不参与判据：参考墨迹贴到窗口边时，宽度比较已经退化成
         # 「我们的墨迹有没有填满自己的框」。见 `_clip_sides` 的说明。
@@ -1053,6 +1136,8 @@ def build_native_text_quality(
                 "renderedInkBBox": rendered_ink,
                 "referenceClipped": bool(reference_clip_sides),
                 "referenceClippedSides": reference_clip_sides,
+                # 只记账：参考宽 / 渲染宽 落在可信带外时，宽度维度不可当判据用
+                "referenceWidthSuspect": reference_width_suspect,
                 "windowMode": window_mode,
                 "deltaX": delta_x,
                 "deltaY": delta_y,
@@ -1135,6 +1220,9 @@ def build_native_text_quality(
         "windowMode": window_mode,
         # 只读诊断：参考墨迹贴到测量窗口边的 owner 数。0 说明这条页面的宽度
         # 读数没有退化成「填满自己的框」；不代表判据要改。
+        "referenceWidthSuspectCount": sum(
+            1 for owner in owners if owner.get("referenceWidthSuspect")
+        ),
         "referenceClippedCount": sum(
             bool(owner.get("referenceClipped")) for owner in owners
         ),
