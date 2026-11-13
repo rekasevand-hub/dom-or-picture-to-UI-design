@@ -20,7 +20,7 @@
       "note": "measured, not registered; baselines below still hold the pre-reexport values"
     }
   },
-  "pipeline_run": "output/_image_figma_flexweaver_20261110_split",
+  "pipeline_run": "output/_image_figma_flexweaver_20261113",
   "baselines": {
     "within30_pct": 92.1893,
     "font_ratio_median": 1.0,

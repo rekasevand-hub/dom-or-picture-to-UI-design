@@ -29,7 +29,6 @@ bash scripts/run_image_pipeline.sh --image tests/fixtures/benchmark_families/lig
 
 # 更新 family.json 的 pipeline_run 指向新 run 目录后，跑门禁：
 C:/Users/lzq/.conda/envs/omni/python.exe scripts/check_benchmark_families.py
-
 # 首次/重置基线：
 C:/Users/lzq/.conda/envs/omni/python.exe scripts/check_benchmark_families.py --register
 
@@ -37,6 +36,15 @@ C:/Users/lzq/.conda/envs/omni/python.exe scripts/check_benchmark_families.py --r
 C:/Users/lzq/.conda/envs/omni/python.exe scripts/check_benchmark_families.py \
   --rerun --register-ink --policy 2.1
 ```
+
+## pipeline_run 指哪儿
+
+`pipeline_run` 必须指向一次**完整运行**：目录里同时有 `pipeline/`（冻结感知，`--rerun` 从这里复制）和
+`figma*/readback.json`（普通模式从这里取渲染结果）。
+
+只有 `pipeline/` 的目录会让普通模式把整族**跳过**：报告里少一行、退出码 1，但屏幕上只是句
+`[skip] … no readback/export`，很容易被当成"跑完了"。`light-form` 在 2026-11-13 之前正是这种情况
+（指向 `_20261110_split`，一个只剩 `pipeline/` 的目录），现已改指 `output/_image_figma_flexweaver_20261113`。
 
 ## 字号指标口径（2026-11-10 变更）
 
