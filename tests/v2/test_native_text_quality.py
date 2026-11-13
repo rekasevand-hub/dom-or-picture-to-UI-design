@@ -514,9 +514,11 @@ def test_native_text_quality_prefers_the_emitted_node_box(
     """A grounding box that spans several tokens must not set the yardstick.
 
     The reference crop holds ``¥20.24`` **and** the neighbouring ``起 ¥23.0``;
-    the emitted node holds only the price.  Measuring the node against the
-    union made the owner unpassable (width delta ~130px).  The node box is the
-    honest yardstick.
+    the emitted node holds only the price.
+
+    2026-11-13：窗口改成 ``union(source_bbox, 节点框)`` 之后，**尺子不再是窗口**，
+    而是窗口里「至少一半落在节点框内」的那一段墨。邻居整段落在框外，会被丢掉，
+    所以这条仍然只比价格本身（见 ``20261113_ink_ownership_probe.md``）。
     """
     reference = tmp_path / "reference.png"
     rendered = tmp_path / "rendered.png"
@@ -568,7 +570,7 @@ def test_native_text_quality_prefers_the_emitted_node_box(
 
     owner = report["owners"][0]
     assert owner["measurementSource"] == "emitted-node"
-    assert owner["measureBBox"] == [16, 14, 88, 24]
+    assert owner["measureBBox"] == [11, 11, 218, 30]
     assert owner["referenceInkBBox"] == [24, 20, 50, 12]
     assert owner["widthDelta"] == 0
     assert owner["status"] == "pass"

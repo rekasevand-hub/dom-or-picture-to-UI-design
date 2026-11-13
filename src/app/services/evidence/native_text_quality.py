@@ -187,6 +187,152 @@ def _clip_sides(ink: list[int], window: list[int], tolerance: int = 1) -> list[s
     return sides
 
 
+def _union_bbox(a: list[int], b: list[int]) -> list[int]:
+    x1 = min(a[0], b[0])
+    y1 = min(a[1], b[1])
+    x2 = max(a[0] + a[2], b[0] + b[2])
+    y2 = max(a[1] + a[3], b[1] + b[3])
+    return [x1, y1, x2 - x1, y2 - y1]
+
+
+def _column_runs(mask: Any, gap_px: int) -> list[list[int]]:
+    """列投影后按间隔切 run，返回 [[x0, x1], ...]（窗口内相对坐标，含端点）。"""
+    columns = mask.any(axis=0)
+    runs: list[list[int]] = []
+    start: int | None = None
+    blanks = 0
+    for index, ink in enumerate(columns):
+        if ink:
+            if start is None:
+                start = index
+            blanks = 0
+        elif start is not None:
+            blanks += 1
+            if blanks > gap_px:
+                runs.append([start, index - blanks])
+                start = None
+                blanks = 0
+    if start is not None:
+        runs.append([start, len(columns) - 1 - blanks])
+    return runs
+
+
+def _select_span(
+    runs: list[list[int]], window: list[int], node: list[int], min_inside: float = 0.5
+) -> list[int] | None:
+    """保留「至少一半宽度落在节点框里」的 run 并合并。
+
+    节点框是我们自己发射的位置，是这条链上最可靠的先验：框内的墨多半属于这条文本，
+    框外一整段（图标、箭头、邻居标签）不属于。多词串会拆成多个 run，但它们都在框内，
+    合并后就是整串 —— 同一条规则同时解决「切错」和「吞邻居」。
+    """
+    if not runs:
+        return None
+    nx0, nx1 = node[0], node[0] + node[2]
+    kept: list[list[int]] = []
+    for x0, x1 in runs:
+        rx0, rx1 = window[0] + x0, window[0] + x1
+        inside = min(rx1 + 1, nx1) - max(rx0, nx0)
+        width = rx1 - rx0 + 1
+        if width > 0 and inside / width >= min_inside:
+            kept.append([x0, x1])
+    if not kept:
+        # 一个都没过线（文本整体比框宽很多）时退回重叠最大的那一段，不制造空值
+        best = max(
+            runs,
+            key=lambda run: min(window[0] + run[1] + 1, nx1)
+            - max(window[0] + run[0], nx0),
+        )
+        kept = [best]
+    return [min(run[0] for run in kept), max(run[1] for run in kept)]
+
+
+def _ink_from_span(mask: Any, window: list[int], span: list[int]) -> list[int] | None:
+    import numpy as np
+
+    x0, x1 = span
+    sub = mask[:, x0 : x1 + 1]
+    rows = np.where(sub.any(axis=1))[0]
+    if len(rows) == 0:
+        return None
+    return [
+        window[0] + x0,
+        window[1] + int(rows.min()),
+        x1 - x0 + 1,
+        int(rows.max() - rows.min()) + 1,
+    ]
+
+
+def _selected_ink(
+    mask: Any,
+    window: list[int],
+    node: list[int],
+    em: float,
+    gap_em: float,
+    enabled: bool,
+) -> list[int] | None:
+    # 没有节点框（grounding-box 兜底）时没有先验可选，退回整窗取墨
+    if not enabled or node is None:
+        return _ink_bbox(mask, window)
+    runs = _column_runs(mask, max(2, int(round(gap_em * em))))
+    span = _select_span(runs, window, node)
+    if span is None:
+        return _ink_bbox(mask, window)
+    return _ink_from_span(mask, window, span)
+
+
+def _failure_class(
+    checks: Mapping[str, bool],
+    clip_sides: list[str],
+    delta_x: int,
+    delta_y: int,
+    width_delta: int,
+    height_delta: int,
+    width_tolerance: int,
+    height_tolerance: int,
+    position_max: int,
+) -> str:
+    """把一条失败归到某一类，只记账，不改 `status`。
+
+    分类顺序就是判据的因果顺序，每一步都能用现有读数复核：
+
+    1. 四维全过 → ``pass``。
+    2. **未贴边的轴上有位移** → ``mechanical``。位移是真的，跟字形无关：
+       `系统运行正常` dy −6 就是这一类（真因是图标与文本间的间距没发射）。
+    3. **只有贴边轴上的位移** → ``instrument-capped``。参考墨迹贴着窗口边时，
+       那个方向的位置/宽度读数被封顶（见 `_clip_sides`），不能当硬失败。
+    4. **宽超、高在容差内、且横向未贴边** → ``typeface-advance``。拉丁字的
+       advance 与字族绑定，一个字号无法同时满足高与宽（`REQ-OIBFZVUES`：
+       高 +10.5%、宽 +3.5%）。CJK 的 advance 恒为 1em，不走这一支。
+    5. 尺寸失败但至少一个未贴边轴 → ``mechanical``（缩放/字号能修）。
+    6. 几何全过、只有 coverage/edgeF1 差 → ``typeface-glyph``。面积对、边缘对不上
+       只能是字形不同（`内容正在审核中`、`检查状态`）。
+
+    注意第 4 条不是「高宽不自洽」的几何判断，而是**位移干净**这个前提下的宽度轴判断：
+    `系统运行正常` 同样「宽超、高在容差内」，但它还有位移，第 2 条先把它拦走了。
+    这是 2026-11-13 归因实测的结果，不是先验。
+    """
+    if all(checks.values()):
+        return "pass"
+    x_clipped = "left" in clip_sides or "right" in clip_sides
+    y_clipped = "top" in clip_sides or "bottom" in clip_sides
+    pos_x_bad = abs(delta_x) > position_max
+    pos_y_bad = abs(delta_y) > position_max
+    if (pos_x_bad and not x_clipped) or (pos_y_bad and not y_clipped):
+        return "mechanical"
+    if (pos_x_bad and x_clipped) or (pos_y_bad and y_clipped):
+        return "instrument-capped"
+    size_w_bad = abs(width_delta) > width_tolerance
+    size_h_bad = abs(height_delta) > height_tolerance
+    if size_w_bad or size_h_bad:
+        if size_w_bad and not size_h_bad and not x_clipped:
+            return "typeface-advance"
+        if (size_w_bad and not x_clipped) or (size_h_bad and not y_clipped):
+            return "mechanical"
+        return "instrument-capped"
+    return "typeface-glyph"
+
+
 def _text_ink_mask(region: Any) -> Any:
     """Contrast mask with thin divider lines removed.
 
@@ -472,6 +618,7 @@ def _unmeasurable_owner(
         "nativeText": _compact_gate_text(text) in native_normalized,
         "ownerScope": "diagnostic-only",
         "status": "unmeasurable-missing-evidence",
+        "failureClass": "unmeasured",
         "registrationReason": reason,
         "registrationSource": "inventory-emission-contract/1.0",
         "baseline": "unknown",
@@ -718,6 +865,12 @@ def build_native_text_quality(
         policy.get("chrome_bad_pixel_ratio_max"),
         0.05,
     )
+    # 窗口口径：ownership = 先放大到 union(source_bbox, 节点框)，再按归属选墨；
+    # legacy = 旧的「节点框 + pad，整窗取墨」。见 20261113_ink_ownership_probe.md。
+    window_mode = str(policy.get("native_text_window_mode") or "ownership")
+    ownership = window_mode == "ownership"
+    gap_em_latin = _number(policy.get("native_text_gap_em_latin"), 1.0)
+    gap_em_cjk = _number(policy.get("native_text_gap_em_cjk"), 0.35)
     native_characters = {
         str(node.get("characters") or "") for node in _text_nodes(readback_tree)
     }
@@ -738,12 +891,21 @@ def build_native_text_quality(
             if isinstance(values, Mapping)
             else None
         )
+        element_style = element.get("style")
+        font_size = (
+            _number(element_style.get("fontSize"), 0.0)
+            if isinstance(element_style, Mapping)
+            else 0.0
+        ) or 16.0
         native_text = _compact_gate_text(text) in native_normalized
         node_box = _select_node_box(text, element, node_boxes)
         measurement_source = "emitted-node"
+        window_base = node_box
+        if ownership and node_box is not None and source_bbox is not None:
+            window_base = _union_bbox(node_box, source_bbox)
         measure_box = (
-            _halo_bbox(node_box, box_pad_px, (height, width))
-            if node_box is not None
+            _halo_bbox(window_base, box_pad_px, (height, width))
+            if window_base is not None
             else None
         )
         if measure_box is None:
@@ -773,7 +935,11 @@ def build_native_text_quality(
         mask_fn = _contrast_mask if measurement_source == "emitted-node" else _text_ink_mask
         rendered_mask = mask_fn(source_region)
         reference_mask = mask_fn(reference_region)
-        reference_ink = _ink_bbox(reference_mask, measure_box)
+        script = str((values or {}).get("script") or "").lower() if isinstance(values, Mapping) else ""
+        gap_em = gap_em_latin if script == "latin" else gap_em_cjk
+        reference_ink = _selected_ink(
+            reference_mask, measure_box, node_box, font_size, gap_em, ownership
+        )
         if reference_ink is None:
             if register_unmeasured_owners:
                 owners.append(
@@ -782,7 +948,9 @@ def build_native_text_quality(
                     )
                 )
             continue
-        rendered_ink = _ink_bbox(rendered_mask, measure_box)
+        rendered_ink = _selected_ink(
+            rendered_mask, measure_box, node_box, font_size, gap_em, ownership
+        )
         if rendered_ink is None:
             owners.append(
                 {
@@ -885,6 +1053,7 @@ def build_native_text_quality(
                 "renderedInkBBox": rendered_ink,
                 "referenceClipped": bool(reference_clip_sides),
                 "referenceClippedSides": reference_clip_sides,
+                "windowMode": window_mode,
                 "deltaX": delta_x,
                 "deltaY": delta_y,
                 "widthDelta": width_delta,
@@ -901,6 +1070,20 @@ def build_native_text_quality(
                 "edgeF1": support_edge_f1,
                 "baseline": "unknown",
                 "checks": geometry_checks,
+                # 只读分类：把失败归到机械/字族/量具三条轨之一，供发布判定分层。
+                # 它不动 `checks`、不动 `status`、不进门禁——层到类的映射在
+                # `image_figma_acceptance.native_text_failure_layers` 里。
+                "failureClass": _failure_class(
+                    geometry_checks,
+                    reference_clip_sides,
+                    delta_x,
+                    delta_y,
+                    width_delta,
+                    height_delta,
+                    width_tolerance,
+                    height_tolerance,
+                    position_max,
+                ),
                 "geometryStatus": ("pass" if all(geometry_checks.values()) else "fail"),
                 # `native_text` is the compact (whitespace-normalised) test the
                 # gate itself uses; the raw membership test below it would fail
@@ -947,11 +1130,26 @@ def build_native_text_quality(
     measured = [owner for owner in owners if "checks" in owner]
     summary = {
         "ownerCount": len(owners),
+        # 这份产物是哪把尺子量的：ownership = 归属选择；legacy = 节点框+pad 整窗取墨
+        # 这份产物是哪把尺子量的：ownership = 归属选择；legacy = 节点框+pad 整窗取墨
+        "windowMode": window_mode,
         # 只读诊断：参考墨迹贴到测量窗口边的 owner 数。0 说明这条页面的宽度
         # 读数没有退化成「填满自己的框」；不代表判据要改。
         "referenceClippedCount": sum(
             bool(owner.get("referenceClipped")) for owner in owners
         ),
+        # 只读诊断：按失败类别计数，含 pass。分层判据要读的是这里，不是 status。
+        "failureClassCounts": {
+            name: sum(1 for owner in owners if owner.get("failureClass") == name)
+            for name in (
+                "pass",
+                "mechanical",
+                "typeface-glyph",
+                "typeface-advance",
+                "instrument-capped",
+                "unmeasured",
+            )
+        },
         "nativeTextCount": sum(bool(owner.get("nativeText")) for owner in owners),
         "positionPassCount": sum(
             bool(owner.get("checks", {}).get("position")) for owner in owners

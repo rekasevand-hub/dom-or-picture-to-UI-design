@@ -26,8 +26,9 @@ def _report(tmp_path: Path, ink_box: tuple[int, int, int, int]):
                 "contentRef": "text:label",
                 "text": "Label",
                 "styleEvidence": {
+                    # 与节点框一致：让 union 不放大窗口，本测试只关心"贴边标志"
                     "evidence": {
-                        "source_bbox": [0, 0, 100, 50],
+                        "source_bbox": [20, 20, 40, 8],
                         "ink_bbox": [20, 20, 40, 8],
                     }
                 },
