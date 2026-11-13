@@ -64,13 +64,28 @@
    顺带落地 `referenceClipped`（只读）：**34% 的 owner 横向贴边，85% 的 size 失败坐在贴边上**。
    见 `v2_mentor/20261113_window_ab.md`。
 
+### 11-13 傍晚（三件）
+
+1. **行级 Frame 真机跑通。** 口径定案：**校准在扁平几何上跑完，最后才插行帧渲染一次**；
+   分区文件必须绑在**校准后**的几何上（`designSha256` 比对，不一致直接 `blocked-environment`）。
+   结果：light-form **7/7**、light-table **8/10** 行组建 Frame，两族导出 sha 与基线
+   **逐字节相同**，within30 / native / critical 全部不动，顶层叶子 144→94、164→94。
+   过程中三个坑是本次自己引入的（透明容器深度固定 0、容器矩形不随校准刷新、帧内 TEXT
+   相对坐标被当页面坐标）。全表见 `v2_mentor/20261113_row_frames_first_real_run.md`。
+2. **门禁分层落地但没开**（`enforcement` 仍是 `report`）。新尺子下 63 条失败 = **28 机械 +
+   32 字族 + 3 量具**，**零族机械层清零**，所以现在打开它不会产生任何绿灯。它买的是
+   「这一位到底在说什么」，不是分数。见 `v2_mentor/20261113_failure_layers.md`。
+3. **插件加载目录已同步**：`D:/LLM-Data/Figma_auto_agent` 快进到 `8dd260a`，
+   `HEAD^{tree}` 与工作树逐位相同；`.env` / `figma_bridge.config.json` 未跟踪、未被碰。
+   **插件侧代码内容本来就没变**（那边只是 CRLF），所以不需要为这次同步重载插件。
+
 ## 判断一份交接可信不可信
 
 | 检查 | 在哪 |
 |---|---|
 | `runtime.buildMatches` | `acceptance.json` —— 这批像素是哪版插件渲染的 |
 | `gitSha` + `gitDirty` | 同上 —— 是不是脏工作区跑出来的 |
-| 测试基线 | 当前 `1554 passed / 8 failed`；那 8 个必须是 axure manifest + p5 探针这批既有环境项 |
+| 测试基线 | 当前 `1604 passed / 8 failed`；那 8 个必须是 axure manifest + p5 探针这批既有环境项 |
 | STATE 的块 vs 现算 | `pytest tests/v2/test_report_state_native_only.py` —— 块外有没有手抄的数字表，一测就知道 |
 | 数字来源 | 在生成块里（可信）/ 在 prose 里（会漂） |
 

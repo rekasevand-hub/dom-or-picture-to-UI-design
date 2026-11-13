@@ -1,8 +1,9 @@
 # Image → Figma · 交接文档（2026-11-13）
 
 承接 `20261112image to Figma-handoff.md` 的第 7 项，并把「证据可复现」补齐。
-**一句话**：holdout #4 的 native 从未过门禁的 4/18 推到 14/18，四组全部 `blocked-fail` 但无一回归；
-同时把数字从「手抄」变成「脚本生成 + 运行时戳」。
+**一句话**：holdout #4 的 native 从未过门禁的 4/18 推到 14/18（**上午尺子**；下午换尺子后是 12/18，
+见 §0.1），四组全部 `blocked-fail` 但无一回归；同时把数字从「手抄」变成「脚本生成 + 运行时戳」。
+傍晚追加了结构线：**行级 Frame 已在两族真机跑通，像素逐字节不变**（§0.1）。
 
 环境事实：
 
@@ -10,10 +11,11 @@
 |---|---|
 | 工作树 | `Worktrees/Figma_auto_agent/feature-precise-agent-router-42955d7d` |
 | 分支 | `workbuddy/feature-precise-agent-router-42955d7d` |
-| HEAD | `2cb6ffd` |
-| 领先 `origin/main` | 113 笔（远端已同步，未推送 0） |
-| bridge | 本次交付时**已关闭**（8765 无监听） |
+| HEAD | `8dd260a`（上午这份文档落笔时是 `2cb6ffd`） |
+| 领先 `origin/main` | 179 笔（远端已同步，未推送 0） |
+| bridge | 交付时**在跑**（8765，插件 `2026-11-11-multiline-rotation`）；跑完可由下一位关掉 |
 | 插件构建 | `2026-11-11-multiline-rotation`，与 `figma_bridge/code.js` 一致 |
+| 插件加载目录 | `D:/LLM-Data/Figma_auto_agent`，**已在 18:40 同步到 `8dd260a`**（tree 哈希逐位相同） |
 
 > **工作树漂移警告**：`-65c0bdac` 停在 11-12（`67f1fba`），它的 `output/` 不存在；`-ad32e7da`（当前会话默认目录）停在 11-10。**所有产物与代码以下面这份为准。**
 
@@ -30,6 +32,62 @@
 
 四组 `status` 均为 `blocked-fail`——门禁 2.1 是 fail-closed，要求 scope 内 100% 通过。
 **这不是回归，是这一天之前就有的状态；本日只做了「让它离可达更近一步」和「让数字可归因」。**
+
+---
+
+## 0.1 傍晚追加：可编辑结构（行级 Frame）接通
+
+**上面速览的 native 是旧尺子读数。** 下午尺子换成「墨迹归属选段 + 参考宽上限 ×1.6」后：
+holdout **14/18 → 12/18**、light-table **49/59 → 46/59**。换尺子做过严格 A/B（stash 前后各构建一次）：
+**0 个状态翻转**、10 条参考读数全部向 0 靠近（`¥20.24` 宽差 −133 → −9）。**当前口径以
+`docs/STATE.md` 的生成块为准，本节表格只用来说明结构这条线的增量。**
+
+结构从上午的 18/32 走到**真机可交付**：
+
+| 族 | 行组 | 建成 Frame | 导出 sha | within30 | native | critical | 顶层叶子 |
+|---|---|---|---|---|---|---|---|
+| light-form | 7 | **7 / 7** | `70c105b529c5`（与基线逐字节相同） | 92.2270（不变） | 30/33（不变） | 24/24（不变） | 144 → **94** |
+| light-table | 10 | **8 / 10** | `d88b97ecb8fe`（同上） | 95.5994（不变） | 46/59（不变） | 30/30（不变） | 164 → **94** |
+
+**定案口径（这条是必需，不是优化）**：校准在**扁平**几何上跑完 → 比对分区 `designSha256` →
+插行帧 → 再渲染一次。帧只影响层级，不参与任何排版数值求解。
+
+把帧插在校准**之前**会怎样：帧内 TEXT 的 `bounds` 变成父帧相对坐标，校准拿它当页面坐标写回
+`textBox`，下一轮再减一次帧原点——标签整体飞到按钮外，native 30 → 23，`ink-convergence`
+还会据此把字号从 17.75 压到 13.5。
+
+**成本**：本轮 VLM **0.002 元**（1 次调用）。两族的「校准后几何」都命中了已有分区缓存，
+探针各 0 次调用——因为分区本来就该冻在这份几何上。
+
+### 五个坑（三个是本次自己引入的）
+
+| # | 坑 | 症状 |
+|---|---|---|
+| 1 | 分区绑在**另一版**几何上 | 59.37 |
+| 2 | 被拒容器退回矩形，插件填默认灰 `#d9d9d9` | 每行一条灰带，像素差 26.34% |
+| 3 | **透明容器深度固定成 0** | Frame 排到祖先之前 → 祖先成了「外人」→ 整族全灭 |
+| 4 | **容器矩形不随校准刷新** | 成员被搬走 → `member-outside-frame`，12 组只剩 4 组 |
+| 5 | **帧内 TEXT 的相对坐标被当页面坐标** | `textBox` 写成 `(12.5,6.5)` 而非 `(318,507)` |
+
+### 傍晚动过哪些文件（上午 §3 已列的 14 新 + 7 改不重复）
+
+| 层 | 文件 | 改了什么 |
+|---|---|---|
+| 分区 | `structure/fidelity/semantic_partition.py` | `refresh_partition_containers()`：按当前几何重建容器；`design_fingerprint()` |
+| 发射顺序 | `scripts/image_figma_mvp.py` | `--partition` 改为**校准后**插帧；分区指纹改在校准后比对 |
+| 绘制序 | `rendering/adapter_base.py` | 透明容器不参与**别人**的覆盖计数，自身深度按被覆盖数算（不再固定 0） |
+| 校准 | `structure/fidelity/text_calibration.py` | `_text_nodes()` 沿父链累加成根帧坐标 |
+| 探针 | `scripts/vlm_partition_probe.py` | `--run-dir`、冻结时写 `designSha256` |
+| 批跑 | `scripts/check_benchmark_families.py` | `--rerun` 脏工作区 preflight；批次 `gitSha` 一致性检查（`[mixed]` + exit 3） |
+| 测试 | `tests/v2/test_semantic_partition.py`、`test_grounding_text_calibration.py` | 新增 6 例（深度、刷新、指纹、坐标换算） |
+| 文档 | `20261113_row_frames_first_real_run.md`、`20261113_failure_layers.md`、`20261113_left_edge_and_atomgit.md` | 论证与禁改项 |
+
+### 还没做
+
+- **五族 A/B**：另三族各跑一次基线取几何 → 探针 → 带分区，约 15 分钟。
+- **light-table 剩 2 组**（`行 01`/`行 09`）被 `covers-other-element` 拒：组里缺「跨行竖线 / 行底色」
+  的归属。这是分组模型的下一个功能点，不是 Frame 机制的问题。
+- **卡片级不做**：它的 `covers-other-element` 来自兄弟子树在绘制序里交错，属另一条线。
 
 ---
 
@@ -346,6 +404,11 @@ tests/v2/test_native_only_visual.py
 
 ## 6. 当前仍存在的问题
 
+> **本节写于上午，数字已过期。** 换成 ownership 尺子后：holdout 是 **6 条失败 / 12 通过**
+> （不是 4 条 / 14 通过），五族合计 **63 条 = 28 机械 + 32 字族 + 3 量具**；其中
+> `系统运行正常` 从「dx=0 是假象、改不了」改判为 **dx−19、可修**（图标与文本间 12px 间距没发射）。
+> 结论层面的更新见 §0.1 与 `docs/STATE.md` 的生成块；下面保留的是上午的原始归因过程。
+
 ### 6.1 门禁仍然全红（结构性）
 
 四组都是 `blocked-fail`。门禁 2.1 是 fail-closed：scope 内**任一** owner 不过即 blocked。
@@ -372,6 +435,10 @@ tests/v2/test_native_only_visual.py
 | light-form | 3/33 | size 1、edgeF1+position 1、position 1 |
 
 ### 6.4 结构为零（产品侧最大缺口）
+
+> **傍晚已部分解决。** `--partition` 接通后：light-form **7/7**、light-table **8/10** 行组建成真
+> Frame，顶层叶子 144→94、164→94，深度 2→3，**导出与基线逐字节相同**。仍未解决的是
+> 卡片级（兄弟子树在绘制序里交错）与「跨行线/行底色」的归属。见 §0.1。
 
 depth 1 / FRAME 1（只有根）/ Auto Layout 0 / 41–164 个孤立顶层叶子。
 **每加一条逐元素校准，元素就更散一分，结构发射更难**——这是本日新增的债。
