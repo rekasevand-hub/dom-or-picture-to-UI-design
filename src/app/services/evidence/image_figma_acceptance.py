@@ -72,6 +72,28 @@ IMAGE_MVP_POLICY_V21 = {
     "native_text_ink_coverage_min": 0.75,
     "native_text_ink_coverage_max": 1.35,
     "native_text_edge_f1_min": 0.55,
+    # 失败分层：哪一类失败挡发布。**类的定义在 `native_text_quality._failure_class`**
+    # （那是测量），层到类的映射与是否阻塞在这里（那是产品决策）。
+    # `enforcement: report` 只统计、不改 status；改成 `block` 才真的按层判定。
+    # 2026-11-13：用户认可补丁规则（位移干净 + 宽度轴 → 字族），先以 report 落地，
+    # 拿到五族分布再决定是否打开。
+    "native_text_failure_layers": {
+        "schema_version": "native-text-failure-layers/1.0",
+        "enforcement": "report",
+        "layers": {
+            "mechanical": {"blocks": True, "classes": ["mechanical"]},
+            "typeface": {
+                "blocks": False,
+                "classes": ["typeface-glyph", "typeface-advance"],
+            },
+            "instrument": {"blocks": False, "classes": ["instrument-capped"]},
+        },
+        "note": (
+            "mechanical = 位移/缩放/未发原生文字，工程侧可修；"
+            "typeface = 字形与拉丁 width 轴，换字族才能修；"
+            "instrument = 参考墨迹贴窗口边，读数幅度不可信。"
+        ),
+    },
     "calibration": {
         "source": "gold-native-bound/1.0",
         "measured_at": "2026-11-09",
@@ -447,7 +469,7 @@ def evaluate_image_mvp(
             dict(region_quality) if isinstance(region_quality, Mapping) else None
         ),
         "native_text_quality": (
-            dict(native_text_quality)
+            _with_failure_layers(native_text_quality, resolved_policy)
             if isinstance(native_text_quality, Mapping)
             else None
         ),
@@ -468,6 +490,75 @@ def evaluate_image_mvp(
             "readback_sha256": _json_sha256(readback_tree),
         },
     }
+
+
+def _with_failure_layers(
+    native_text_quality: Mapping[str, Any],
+    policy: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Attach per-layer failure counts to a native-text report (read-only).
+
+    The gate still reads ``status``; this only says *what kind* of failure the
+    page has, so a release decision can tell "our renderer is wrong" apart from
+    "the reference uses another typeface".  ``enforcement`` in the policy decides
+    whether the distinction ever blocks -- today it is ``report``.
+
+    The class -> layer mapping lives in the policy, not in code: that is where a
+    product decision belongs, and it keeps a single place to audit when the
+    gate is eventually switched to ``block``.
+    """
+    report = dict(native_text_quality)
+    declaration = policy.get("native_text_failure_layers")
+    if not isinstance(declaration, Mapping):
+        return report
+    layers = declaration.get("layers")
+    if not isinstance(layers, Mapping):
+        return report
+    class_to_layer: dict[str, str] = {}
+    for name, spec in layers.items():
+        if not isinstance(spec, Mapping):
+            continue
+        for class_name in spec.get("classes") or []:
+            class_to_layer[str(class_name)] = str(name)
+    owners = [item for item in report.get("owners") or [] if isinstance(item, Mapping)]
+    scoped = [item for item in owners if item.get("ownerScope") == "critical-gate"]
+    counts = {str(name): 0 for name in layers}
+    unclassified = 0
+    for owner in scoped:
+        if owner.get("status") == "pass":
+            continue
+        class_name = str(owner.get("failureClass") or "")
+        if class_name == "pass":
+            # 几何四维全过但 nativeText 不成立：那是我们没发原生文字，属机械层。
+            class_name = "mechanical"
+        layer = class_to_layer.get(class_name)
+        if layer is None:
+            unclassified += 1
+            continue
+        counts[layer] += 1
+    blocking = [
+        str(name)
+        for name, spec in layers.items()
+        if isinstance(spec, Mapping) and spec.get("blocks")
+    ]
+    blocking_failures = sum(counts.get(name, 0) for name in blocking)
+    report["failureLayers"] = {
+        "schemaVersion": declaration.get("schema_version"),
+        "enforcement": declaration.get("enforcement", "report"),
+        "scope": "critical-gate",
+        "ownerCount": len(scoped),
+        "failureCounts": counts,
+        "unclassifiedFailures": unclassified,
+        "hypothetical": {
+            "blockingFailures": blocking_failures,
+            "wouldPass": blocking_failures == 0 and unclassified == 0,
+            "note": (
+                "只读推演：把非阻塞层排除后，本页是否还有阻塞失败。"
+                "不改 status，也不参与 blockers。"
+            ),
+        },
+    }
+    return report
 
 
 def build_image_acceptance_report(
