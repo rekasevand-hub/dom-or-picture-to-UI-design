@@ -15,6 +15,7 @@ A  node + 4px            （现状）
 B  node + 0.75em         （交接 §7.3 提的固定 padding）
 C  union(source_bbox, node) + 0.75em   （外部评审提的并集）
 D  union(source_bbox, node) + 4px      （只换锚点、不换 padding，把两个变量拆开）
+E  node + 0px            （去掉 pad，最容易被人当成"一行改动"的那版）
 
 判据（按任务要求：不看单条 owner 的翻转）
 ----------------------------------------
@@ -58,7 +59,7 @@ FAMILIES: list[tuple[str, str]] = [
     ("light-table", "output/_baseline_families_rerun_20261113/light-table"),
 ]
 
-VARIANTS = ("A", "B", "C", "D")
+VARIANTS = ("A", "B", "C", "D", "E")
 
 
 def _union(a: list[int], b: list[int]) -> list[int]:
@@ -197,6 +198,8 @@ def _family_rows(name: str, run_dir: Path) -> tuple[list[dict], dict]:
                 pad,
                 reference.shape[:2],
             ),
+            # 去掉 pad：最容易被当成"一行改动"的那版。参考侧从此不可能比框宽。
+            "E": _halo_bbox(node_box, 0, reference.shape[:2]),
         }
         others = [value for other_key, value in node_boxes.items() if other_key != key]
         for variant in VARIANTS:
