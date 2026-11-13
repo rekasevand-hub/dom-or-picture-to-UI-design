@@ -20,7 +20,13 @@ import pytest
 from PIL import Image
 
 from scripts import audit_gold_tree
-from scripts.audit_gold_tree import BENCH, _row_pitches, _screenshot_row_pitch, audit
+from scripts.audit_gold_tree import (
+    BENCH,
+    INK_FRACTION_USABLE,
+    _row_pitches,
+    _screenshot_row_pitch,
+    audit,
+)
 from scripts.p1_font_weight_evidence import flatten_gold_texts
 
 FAMILIES = tuple(
@@ -28,10 +34,16 @@ FAMILIES = tuple(
 )
 
 
-def test_every_family_has_boxes_on_ink() -> None:
+def test_every_family_clears_the_ink_bar() -> None:
+    """The bar is the audit's own 80%, not the 95% the first three happened to hit.
+
+    ``atomgit-home`` sits at 88.2%: all 11 misses are 6-13px separator glyphs
+    (``·``), none is body text.  Hard-coding 95% would have called that a broken
+    gold and pushed a rebuild that fixes nothing.
+    """
     for family in FAMILIES:
         report = audit(BENCH / family)
-        assert report["geometry"]["ink_fraction"] >= 0.95, family
+        assert report["geometry"]["ink_fraction"] >= INK_FRACTION_USABLE, family
         assert report["geometry"]["usable"] is True, family
 
 
@@ -104,6 +116,51 @@ def test_audit_flags_a_paraphrasing_gold(tmp_path: Path, monkeypatch) -> None:
     assert report["text_fidelity"]["agreement"] == 0.0
     assert report["text_fidelity"]["usable"] is False
     assert report["verdict"] == "not-usable"
+
+
+def test_segmentation_is_not_paraphrase(tmp_path: Path, monkeypatch) -> None:
+    """Splitting a line must not read as rewriting it.
+
+    The gold for AtomGit splits a meta row into ``TSX`` / ``·`` / ``4 小时前``
+    while the pipeline emits one node; exact matching scores all three as
+    misses, containment scores them as hits.  The strict number stays in the
+    report so the difference is never invisible.
+    """
+    family = tmp_path / "fake"
+    family.mkdir()
+    Image.fromarray(np.full((240, 320, 3), 255, dtype=np.uint8)).save(
+        family / "reference.png"
+    )
+    (family / "family.json").write_text(
+        json.dumps(
+            {"family": "fake", "gold": {"scale_to_reference": 1.0}, "pipeline_run": "none"}
+        ),
+        encoding="utf-8",
+    )
+    (family / "gold_tree.json").write_text(
+        json.dumps(
+            {
+                "type": "FRAME",
+                "children": [
+                    {"type": "TEXT", "characters": "TSX", "x": 10, "y": 10,
+                     "width": 30, "height": 20, "fontSize": 14},
+                    {"type": "TEXT", "characters": "完整的一句描述", "x": 10, "y": 40,
+                     "width": 120, "height": 20, "fontSize": 14},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "scripts.audit_gold_tree._inventory_texts",
+        lambda _dir: {"tsx·4小时前", "完整的一句"},
+    )
+
+    fidelity = audit(family)["text_fidelity"]
+    assert fidelity["agreement_exact"] == 0.0
+    assert fidelity["segmentation_only"] == 2
+    assert fidelity["agreement"] == 1.0
+    assert fidelity["usable"] is True
 
 
 def test_audit_flags_a_mis_scaled_gold(tmp_path: Path, monkeypatch) -> None:

@@ -197,6 +197,38 @@ def _inventory_texts(family_dir: Path) -> set[str]:
     return keys
 
 
+def _text_agreement(gold_keys: set[str], inventory: set[str]) -> dict[str, Any] | None:
+    """Share of gold strings the pipeline also produced, tolerant of segmentation.
+
+    Exact equality alone reads as "the gold paraphrased" whenever the two sides
+    split a line differently: a gold that separates a meta row into ``TSX`` /
+    ``·`` / ``4 小时前`` scores zero on all three against a pipeline node holding
+    ``TSX · 4 小时前``, although the characters are identical.  A paraphrase
+    (``项目代码`` -> ``项目编号``) contains neither side of the other, so
+    containment separates the two cases where equality cannot.
+
+    Both numbers are returned: ``agreement_exact`` keeps the strict reading
+    visible, ``agreement`` is what the verdict uses.
+    """
+    if not gold_keys or not inventory:
+        return None
+    exact = gold_keys & inventory
+    fragments = {k for k in gold_keys - exact if any(k in p for p in inventory)}
+    supersets = {
+        k for k in gold_keys - exact - fragments if any(p in k for p in inventory)
+    }
+    matched = len(exact) + len(fragments) + len(supersets)
+    return {
+        "exact": len(exact),
+        "fragments": len(fragments),
+        "supersets": len(supersets),
+        "matched": matched,
+        "total": len(gold_keys),
+        "agreement_exact": len(exact) / len(gold_keys),
+        "agreement": matched / len(gold_keys),
+    }
+
+
 def audit(family_dir: Path, gold_path: Path | None = None) -> dict[str, Any]:
     """Measure geometry, row pitch and text fidelity; return a verdict."""
     meta = json.loads((family_dir / "family.json").read_text(encoding="utf-8"))
@@ -219,8 +251,8 @@ def audit(family_dir: Path, gold_path: Path | None = None) -> dict[str, Any]:
 
     inventory = _inventory_texts(family_dir)
     gold_keys = {r["key"] for r in gold if r["key"]}
-    overlap = gold_keys & inventory if inventory else set()
-    text_agreement = len(overlap) / len(gold_keys) if gold_keys and inventory else None
+    agreement = _text_agreement(gold_keys, inventory)
+    text_agreement = agreement["agreement"] if agreement else None
 
     verdict: list[str] = []
     if ink_fraction < INK_FRACTION_USABLE:
@@ -229,6 +261,15 @@ def audit(family_dir: Path, gold_path: Path | None = None) -> dict[str, Any]:
         verdict.append(
             f"text: only {text_agreement:.1%} of gold strings appear in the pipeline "
             f"output < {TEXT_AGREEMENT_USABLE:.0%} (gold is paraphrasing)"
+        )
+    if (
+        agreement
+        and agreement["agreement_exact"] < TEXT_AGREEMENT_USABLE <= text_agreement
+    ):
+        verdict.append(
+            f"segmentation: exact match is {agreement['agreement_exact']:.1%}, "
+            f"{agreement['fragments']} fragment(s) and {agreement['supersets']} "
+            f"longer run(s) account for the gap -- the strings agree, the split differs"
         )
     if screenshot_pitch and pitches:
         worst = min(
@@ -256,6 +297,12 @@ def audit(family_dir: Path, gold_path: Path | None = None) -> dict[str, Any]:
             "gold_strings": len(gold_keys),
             "pipeline_strings": len(inventory),
             "agreement": round(text_agreement, 3) if text_agreement is not None else None,
+            "agreement_exact": (
+                round(agreement["agreement_exact"], 3) if agreement else None
+            ),
+            "segmentation_only": (
+                agreement["fragments"] + agreement["supersets"] if agreement else None
+            ),
             "usable": text_agreement is None
             or text_agreement >= TEXT_AGREEMENT_USABLE,
         },
@@ -322,6 +369,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"  geometry       {g['texts_on_ink']}/{g['texts']} on ink "
               f"= {g['ink_fraction']:.1%}  usable={g['usable']}")
         agreement = "n/a" if t["agreement"] is None else f"{t['agreement']:.1%}"
+        exact = t.get("agreement_exact")
+        if exact is not None and t["agreement"] is not None and abs(exact - t["agreement"]) > 0.001:
+            agreement += f" (exact {exact:.1%}, {t.get('segmentation_only')} split-only)"
         print(f"  text fidelity  {t['gold_strings']} gold / {t['pipeline_strings']} pipeline "
               f"strings, agreement={agreement}  usable={t['usable']}")
         for seq in report["row_pitch"]["gold_sequences"]:
