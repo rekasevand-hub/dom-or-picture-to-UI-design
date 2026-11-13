@@ -18,6 +18,8 @@ VLM 只回答一件事：哪些元素属于同一块。本模块把这个答案�
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
@@ -66,6 +68,31 @@ class PartitionStats:
                 for item in self.groups_rejected
             ],
         }
+
+
+def design_fingerprint(elements: Sequence[Mapping[str, Any]]) -> str:
+    """这份元素列表的指纹：id + 类型 + 几何，按列表顺序。
+
+    分区用的下标只在**同一份列表**里有意义。2026-11-13 的单页验证就是这样翻车的：
+    探针拿校准后的终版算了分区，mvp 却把它套在校准前的设计上——151 个元素顺序一致，
+    但 **89 个坐标不同**，组的 bbox 和成员闭包条件全变了，`resolve_frames` 在错的几何
+    上放行了 10 个组，`within30` 从 95.60 掉到 59.37。
+
+    指纹进 `partitions.json`，mvp 应用前比对；不一致就拒跑，而不是静默错位。
+    """
+    rows = [
+        [
+            str(element.get("id") or ""),
+            str(element.get("type") or ""),
+            round(float(element.get("x") or 0), 1),
+            round(float(element.get("y") or 0), 1),
+            round(float(element.get("width") or 0), 1),
+            round(float(element.get("height") or 0), 1),
+        ]
+        for element in elements
+    ]
+    payload = json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _element_rect(element: Mapping[str, Any]) -> tuple[int, int, int, int] | None:

@@ -16,6 +16,7 @@ from src.app.services.rendering.adapter_base import paint_order, resolve_frames
 from src.app.services.structure.fidelity.semantic_partition import (
     CONTAINER_ID_PREFIX,
     build_partition_containers,
+    design_fingerprint,
     strip_partition_containers,
     validate_partition,
 )
@@ -97,7 +98,12 @@ def test_container_is_transparent_and_declares_children() -> None:
     assert container["transparent"] is True
     assert container["layout"] == {"mode": "NONE"}
     assert container["layoutChildren"] == [{"id": "e1"}, {"id": "e2"}]
-    assert (container["x"], container["y"], container["width"], container["height"]) == (
+    assert (
+        container["x"],
+        container["y"],
+        container["width"],
+        container["height"],
+    ) == (
         10,
         10,
         170,
@@ -235,3 +241,16 @@ def test_strip_removes_only_partition_containers() -> None:
     )
     flat = strip_partition_containers(merged)
     assert [item["id"] for item in flat] == ["e0", "e1", "e2"]
+
+
+def test_design_fingerprint_is_stable_and_geometry_sensitive() -> None:
+    """分区只对同一份元素列表成立：坐标挪 1px 或换个顺序，指纹就必须变。"""
+    base = _row()
+    assert design_fingerprint(base) == design_fingerprint([dict(item) for item in base])
+
+    moved = [dict(item) for item in base]
+    moved[1]["x"] = moved[1]["x"] + 1
+    assert design_fingerprint(moved) != design_fingerprint(base)
+
+    reordered = [base[1], base[0], base[2]]
+    assert design_fingerprint(reordered) != design_fingerprint(base)

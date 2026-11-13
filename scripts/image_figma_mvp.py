@@ -105,6 +105,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="node name prefix for emitted rows ('行 01', '行 02', ...)",
     )
     parser.add_argument(
+        "--dump-partition-design",
+        action="store_true",
+        help=(
+            "write figma_design_pre_partition.json and stop — that dump is the only "
+            "legal input for freezing a partition"
+        ),
+    )
+    parser.add_argument(
         "--acceptance-policy",
         choices=("1.0", "2.0", "2.1"),
         default="1.0",
@@ -387,18 +395,54 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps(aborted, ensure_ascii=True))
         return 2
 
-    if args.partition:
-        # 只做行级结构发射：分区先行过滤（宽高比），`resolve_frames` 再兜底。
-        # 不传这个开关时，下面一行代码都不执行，输出与原来逐字节相同。
+    if args.partition or args.dump_partition_design:
+        # 分区用的下标只对**同一份元素列表**有意义。这里把 mvp 真正要用的那份写出来，
+        # 探针读它、分区文件记它的指纹——否则就会出现「对着校准后的终版算分区、
+        # 套到校准前的设计上」这种静默错位（2026-11-13 within30 95.60 → 59.37）。
         from src.app.services.structure.fidelity.semantic_partition import (
             build_partition_containers,
+            design_fingerprint,
             validate_partition,
         )
 
-        partition_payload = _read_json(args.partition)
         source_elements = [
             item for item in design.get("elements") or [] if isinstance(item, dict)
         ]
+        fingerprint = design_fingerprint(source_elements)
+        _write_json(
+            output / "figma_design_pre_partition.json",
+            {
+                "schema_version": "image-figma-partition-design/1.0",
+                "designSha256": fingerprint,
+                "canvas": design.get("canvas") or {},
+                "elements": source_elements,
+            },
+        )
+        if args.dump_partition_design:
+            print(
+                f"[partition] dumped {len(source_elements)} elements sha={fingerprint[:12]}"
+            )
+            return 0
+
+        partition_payload = _read_json(args.partition)
+        declared = str(partition_payload.get("designSha256") or "")
+        if declared and declared != fingerprint:
+            blocked = {
+                "schema_version": "image-figma-real-run/1.0",
+                "status": "blocked-environment",
+                "sample_id": str(truth.get("sample_id") or ""),
+                "error": (
+                    "partition-design-mismatch: 分区绑定 "
+                    f"{declared[:12]}，当前设计 {fingerprint[:12]}"
+                ),
+                "partition": str(args.partition),
+            }
+            _write_json(output / "acceptance.json", blocked)
+            print(json.dumps(blocked, ensure_ascii=True))
+            return 2
+        if not declared:
+            print("[partition] 警告：分区没有 designSha256，无法证明它绑的是这份设计")
+
         groups, schema_rejects = validate_partition(
             partition_payload, len(source_elements)
         )
@@ -422,9 +466,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 {"label": item.label, "reason": item.reason} for item in schema_rejects
             ],
             "rows": [
-                {"id": item["id"], "name": item["name"], "bbox": [
-                    item["x"], item["y"], item["width"], item["height"]
-                ], "members": len(item["layoutChildren"])}
+                {
+                    "id": item["id"],
+                    "name": item["name"],
+                    "bbox": [item["x"], item["y"], item["width"], item["height"]],
+                    "members": len(item["layoutChildren"]),
+                }
                 for item in partitioned
                 if str(item.get("id") or "").startswith("partition:")
             ],

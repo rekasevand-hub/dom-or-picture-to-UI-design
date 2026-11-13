@@ -31,6 +31,7 @@ from src.app.services.rendering.adapter_base import paint_order, resolve_frames 
 from src.app.services.structure.fidelity.semantic_partition import (  # noqa: E402
     CONTAINER_ID_PREFIX,
     build_partition_containers,
+    design_fingerprint,
     validate_partition,
 )
 
@@ -99,8 +100,19 @@ def _run_dir(family_dir: Path) -> Path | None:
     return registered if (registered / "figma_design.json").is_file() else None
 
 
+def _design_source(run_dir: Path) -> Path:
+    """分区必须绑在 mvp 真正会用的那份元素列表上。
+
+    `figma_design.json` 是**校准之后**的终版；mvp 应用分区时是校准**之前**。
+    2026-11-13 就是拿终版算分区、套到校准前，89 个元素坐标不同，单页 within30
+    从 95.60 掉到 59.37。`--dump-partition-design` 写出的那份才是唯一合法输入。
+    """
+    dump = run_dir / "figma_design_pre_partition.json"
+    return dump if dump.is_file() else run_dir / "figma_design.json"
+
+
 def _elements(run_dir: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    design = _read_json(run_dir / "figma_design.json")
+    design = _read_json(_design_source(run_dir))
     return design.get("canvas") or {}, [
         item for item in design.get("elements") or [] if isinstance(item, dict)
     ]
@@ -245,10 +257,17 @@ def _evaluate(
     }
 
 
+def _resolve_run_dir(args: argparse.Namespace, family_dir: Path) -> Path | None:
+    """`--run-dir` 优先：单页验证时读的是 `--dump-partition-design` 写出的那份。"""
+    if args.run_dir:
+        return Path(args.run_dir).resolve()
+    return _run_dir(family_dir)
+
+
 def _process(
     args: argparse.Namespace, family_dir: Path, client: Any, model: str
 ) -> dict[str, Any]:
-    run_dir = _run_dir(family_dir)
+    run_dir = _resolve_run_dir(args, family_dir)
     if run_dir is None:
         return {"family": family_dir.name, "status": "no-artifacts"}
     canvas, elements = _elements(run_dir)
@@ -306,6 +325,8 @@ def _process(
             source = "model"
         record["source"] = source
         record["elapsed_s"] = round(time.time() - started, 1)
+        # 分区只对**这份**元素列表成立；指纹写进去，mvp 应用前比对。
+        partition["designSha256"] = design_fingerprint(elements)
         _write_json(frozen, partition)
         record["partition_path"] = str(frozen.relative_to(ROOT))
 
@@ -328,6 +349,14 @@ def main(argv: list[str] | None = None) -> int:
         "--refresh",
         action="store_true",
         help="忽略已冻结分区，重新调模型（默认已有就复用）",
+    )
+    parser.add_argument(
+        "--run-dir",
+        default=None,
+        help=(
+            "read this directory instead of the family's run dir; use it with the "
+            "figma_design_pre_partition.json dump from --dump-partition-design"
+        ),
     )
     parser.add_argument("--max-calls", type=int, default=15)
     parser.add_argument(
@@ -353,7 +382,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.dry_run:
         for family_dir in families:
-            run_dir = _run_dir(family_dir)
+            run_dir = _resolve_run_dir(args, family_dir)
             if run_dir is None:
                 print(f"[skip ] {family_dir.name}: 无产物")
                 continue
