@@ -14,6 +14,7 @@ from src.app.services.structure.fidelity.contracts import (
     owner_text_similarity,
 )
 from src.app.services.structure.fidelity.emission_contract import (
+    OCR_DERIVED_AUTHORITIES,
     legacy_overlap_suppression_enabled,
     suppression_allowed,
 )
@@ -193,6 +194,64 @@ def _suppressed_leftover_text(
     return leftover if len(normalize_match_text(leftover)) >= 2 else ""
 
 
+def _snap_owner_to_ink(
+    survivor: dict[str, Any],
+    ink_owner: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Move a surviving owner onto the OCR line's ink origin.
+
+    The VLM returns normalised boxes; on a 2544px-wide screenshot that is a
+    10-40px drift.  When an OCR observation of the same string is suppressed
+    in favour of the grounded owner, the grounded text keeps its wording but
+    inherits the ink origin — otherwise the whole line renders off-position
+    and looks doubled next to the OCR node it replaced.
+
+    Width/height are deliberately kept: the OCR box hugs the glyphs, and using
+    it as the Figma text width would re-wrap the copy.
+    """
+    if str(ink_owner.get("authority") or "") not in OCR_DERIVED_AUTHORITIES:
+        return None
+    if str(survivor.get("authority") or "") in OCR_DERIVED_AUTHORITIES:
+        return None
+    # Table cells are positioned by the grid, not by their ink box; snapping
+    # them would overwrite the deliberate ``text_bbox = None`` contract.
+    if str(survivor.get("role") or "") in _TABLE_KINDS:
+        return None
+    ink = ink_owner.get("bbox")
+    current = survivor.get("bbox")
+    if not isinstance(ink, (list, tuple)) or len(ink) != 4:
+        return None
+    if not isinstance(current, (list, tuple)) or len(current) != 4:
+        return None
+    # Only same-size boxes may snap.  An OCR line that merged a whole label
+    # row is wider than the grounded fragment it overlaps, and pulling the
+    # fragment onto that merged origin would move the visible text off-target.
+    ink_width, ink_height = float(ink[2]), float(ink[3])
+    box_width, box_height = float(current[2]), float(current[3])
+    if min(ink_width, box_width) / max(1.0, max(ink_width, box_width)) < 0.6:
+        return None
+    if min(ink_height, box_height) / max(1.0, max(ink_height, box_height)) < 0.6:
+        return None
+    delta_x = int(round(float(ink[0]) - float(current[0])))
+    delta_y = int(round(float(ink[1]) - float(current[1])))
+    if abs(delta_x) < 2 and abs(delta_y) < 2:
+        return None  # already on the ink
+    if abs(delta_x) > 40 or abs(delta_y) > 40:
+        return None  # not the same visual line; leave both owners alone
+    survivor["bbox"] = [
+        int(round(float(ink[0]))),
+        int(round(float(ink[1]))),
+        int(round(float(current[2]))),
+        int(round(float(current[3]))),
+    ]
+    survivor["text_bbox"] = [int(round(float(value))) for value in ink[:4]]
+    return {
+        "delta_x": delta_x,
+        "delta_y": delta_y,
+        "ink_ref": str(ink_owner.get("content_ref") or ""),
+    }
+
+
 def _suppress_overlapping_text_owners(
     accepted: list[dict[str, Any]],
     suppressed: list[dict[str, Any]],
@@ -251,6 +310,7 @@ def _suppress_overlapping_text_owners(
             None,
         )
         if conflict is not None:
+            snap = _snap_owner_to_ink(conflict, node)
             # Emission-contract reinforcement: a suppressed owner may carry
             # visible text beyond its replacement (a merged title+subtitle
             # label replaced by the subtitle alone loses the title).  The
@@ -277,6 +337,7 @@ def _suppress_overlapping_text_owners(
                     "replacement_ref": conflict["content_ref"],
                     "split_ref": split["content_ref"],
                     "leftover_text": leftover,
+                    "ink_snap": snap,
                 }
                 continue
             removed[str(node["content_ref"])] = {
@@ -284,6 +345,7 @@ def _suppress_overlapping_text_owners(
                 "source_ref": str(node.get("source_ref") or ""),
                 "reason": "overlapping-text-owner",
                 "replacement_ref": conflict["content_ref"],
+                "ink_snap": snap,
             }
             continue
         kept.append(node)

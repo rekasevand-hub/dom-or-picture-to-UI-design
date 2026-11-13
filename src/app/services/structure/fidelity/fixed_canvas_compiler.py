@@ -172,6 +172,17 @@ def _text_element(
         )
         render_y = y + max(0, (box_height - 20) // 2)
         render_height = max(18, min(24, box_height))
+    style_payload = {
+        "textColor": style["textColor"],
+        "fontSize": style["fontSize"],
+        "fontWeight": style["fontWeight"],
+        "fontFamily": style["fontFamily"],
+        "textAlign": style["textAlign"],
+    }
+    # Only multi-line owners carry a measured line height; single-line text
+    # keeps the renderer's default rhythm (the adapter strips it anyway).
+    if style.get("lineHeight"):
+        style_payload["lineHeight"] = style["lineHeight"]
     return {
         "id": str(node.get("id") or ""),
         "type": "text",
@@ -180,13 +191,7 @@ def _text_element(
         "width": render_width,
         "height": render_height,
         "text": text,
-        "style": {
-            "textColor": style["textColor"],
-            "fontSize": style["fontSize"],
-            "fontWeight": style["fontWeight"],
-            "fontFamily": style["fontFamily"],
-            "textAlign": style["textAlign"],
-        },
+        "style": style_payload,
         "styleEvidence": style,
         "contentRef": str(node.get("content_ref") or ""),
         "sceneOwnerId": str(node.get("id") or ""),
@@ -986,11 +991,23 @@ def _container_element(
     height: int,
 ) -> dict[str, Any]:
     from src.app.services.structure.image_contract import _dominant_color
+    from src.app.services.structure.fidelity.pixel_probe import (
+        sample_container_decoration,
+    )
 
     bbox = _node_bbox(node, width, height)
     role = str(node.get("role") or "")
     render_bbox = _container_render_box(image_path, bbox, role)
     x, y, box_width, box_height = render_bbox
+    style: dict[str, Any] = {
+        "fillColor": _dominant_color(image_path, render_bbox, inset=2)
+    }
+    # Border and corner radius live in the pixels, not in the plan: the
+    # renderer accepts both, but nothing was feeding them, so every card came
+    # out as a flat rectangle with no edge and square corners.
+    style.update(
+        sample_container_decoration(image_path, render_bbox, style["fillColor"])
+    )
     return {
         "id": str(node.get("id") or ""),
         "type": "container",
@@ -999,7 +1016,7 @@ def _container_element(
         "width": box_width,
         "height": box_height,
         "text": "",
-        "style": {"fillColor": _dominant_color(image_path, render_bbox, inset=2)},
+        "style": style,
         "role": role,
         "name": str(role or node.get("id") or "Container"),
         "contentRef": node.get("content_ref"),
@@ -1105,6 +1122,188 @@ def _table_decorations(
             }
         )
     return decorations
+
+
+_LAYOUT_MEMBER_TYPES = {
+    "text",
+    "image",
+    "button",
+    "input",
+    "circle",
+    "rectangle",
+    "container",
+}
+_LAYOUT_ALIGN_TOLERANCE = 3
+_LAYOUT_SPACING_TOLERANCE = 3
+
+
+def _layout_rect(element: Mapping[str, Any]) -> tuple[int, int, int, int] | None:
+    try:
+        return (
+            int(round(float(element.get("x") or 0))),
+            int(round(float(element.get("y") or 0))),
+            int(round(float(element.get("width") or 0))),
+            int(round(float(element.get("height") or 0))),
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def _rect_contains(
+    outer: tuple[int, int, int, int],
+    inner: tuple[int, int, int, int],
+    tolerance: int = 1,
+) -> bool:
+    return (
+        outer[0] - tolerance <= inner[0]
+        and outer[1] - tolerance <= inner[1]
+        and inner[0] + inner[2] <= outer[0] + outer[2] + tolerance
+        and inner[1] + inner[3] <= outer[1] + outer[3] + tolerance
+    )
+
+
+def _owner_index(
+    rects: list[tuple[int, int, int, int] | None],
+    index: int,
+) -> int | None:
+    """Smallest container that fully contains ``index``."""
+    inner = rects[index]
+    if inner is None:
+        return None
+    inner_area = inner[2] * inner[3]
+    best: int | None = None
+    best_area: int | None = None
+    for other, outer in enumerate(rects):
+        if other == index or outer is None:
+            continue
+        if outer[2] * outer[3] <= inner_area:
+            continue
+        if not _rect_contains(outer, inner):
+            continue
+        area = outer[2] * outer[3]
+        if best_area is None or area < best_area:
+            best, best_area = other, area
+    return best
+
+
+def _stack_layout(
+    parent: tuple[int, int, int, int],
+    children: list[tuple[int, int, int, int]],
+) -> dict[str, Any] | None:
+    """Auto Layout spec when the children form one strict row or column.
+
+    Only unambiguous stacks qualify.  A 2x3 card grid or a mixed layout bails
+    out: Figma's `layoutMode` would re-flow the children and destroy the fixed
+    canvas, and `resolve_frames` would then be the only thing standing between
+    the file and a shifted result.
+    """
+    if len(children) < 2:
+        return None
+
+    def _spec(mode: str, ordered: list[tuple[int, int, int, int]]) -> dict[str, Any] | None:
+        if mode == "VERTICAL":
+            positions = [box[1] for box in ordered]
+            spans = [box[3] for box in ordered]
+            starts = [box[0] for box in ordered]
+        else:
+            positions = [box[0] for box in ordered]
+            spans = [box[2] for box in ordered]
+            starts = [box[1] for box in ordered]
+        if max(starts) - min(starts) > _LAYOUT_ALIGN_TOLERANCE:
+            return None
+        gaps = [
+            positions[index + 1] - (positions[index] + spans[index])
+            for index in range(len(ordered) - 1)
+        ]
+        if any(gap < -1 for gap in gaps):
+            return None  # children overlap: not a stack
+        if gaps and max(gaps) - min(gaps) > _LAYOUT_SPACING_TOLERANCE:
+            return None
+        spacing = int(round(sum(gaps) / len(gaps))) if gaps else 0
+        if mode == "VERTICAL":
+            left = min(box[0] for box in ordered) - parent[0]
+            right = (parent[0] + parent[2]) - max(
+                box[0] + box[2] for box in ordered
+            )
+            top = min(box[1] for box in ordered) - parent[1]
+            bottom = (parent[1] + parent[3]) - max(
+                box[1] + box[3] for box in ordered
+            )
+            padding = {"paddingTop": top, "paddingBottom": bottom}
+        else:
+            top = min(box[1] for box in ordered) - parent[1]
+            bottom = (parent[1] + parent[3]) - max(
+                box[1] + box[3] for box in ordered
+            )
+            left = min(box[0] for box in ordered) - parent[0]
+            right = (parent[0] + parent[2]) - max(
+                box[0] + box[2] for box in ordered
+            )
+            padding = {"paddingLeft": left, "paddingRight": right}
+        if mode == "VERTICAL":
+            padding["paddingLeft"] = left
+            padding["paddingRight"] = right
+        else:
+            padding["paddingTop"] = top
+            padding["paddingBottom"] = bottom
+        if any(value < 0 for value in padding.values()):
+            return None
+        return {
+            "mode": mode,
+            "itemSpacing": max(0, spacing),
+            "primaryAlign": "MIN",
+            "counterAlign": "MIN",
+            **padding,
+            "source": "geometry",
+        }
+
+    vertical = _spec("VERTICAL", sorted(children, key=lambda box: (box[1], box[0])))
+    if vertical is not None:
+        return vertical
+    return _spec("HORIZONTAL", sorted(children, key=lambda box: (box[0], box[1])))
+
+
+def attach_layout_frames(elements: list[dict[str, Any]]) -> int:
+    """Group elements into Auto Layout frames along the strict containment tree.
+
+    The renderer already builds real Figma frames when an element carries
+    ``layout`` + ``layoutChildren``; nothing was producing them for image
+    input, so every element landed flat on the canvas at depth 1.  This pass
+    writes the two fields and leaves the renderer's own safety gates to reject
+    anything ambiguous — a rejected frame renders exactly like the flat file.
+    """
+    rects = [
+        _layout_rect(element) if str(element.get("type")) in _LAYOUT_MEMBER_TYPES else None
+        for element in elements
+    ]
+    owners = [_owner_index(rects, index) if rects[index] else None for index in range(len(elements))]
+
+    members: dict[int, list[int]] = {}
+    for index, owner in enumerate(owners):
+        if owner is None:
+            continue
+        members.setdefault(owner, []).append(index)
+
+    built = 0
+    for owner, children in members.items():
+        container = elements[owner]
+        if str(container.get("type")) != "container":
+            continue
+        if container.get("imageBase64") or container.get("text"):
+            continue
+        boxes = [rects[child] for child in children if rects[child]]
+        parent_box = rects[owner]
+        if not boxes or parent_box is None:
+            continue
+        spec = _stack_layout(parent_box, boxes)  # type: ignore[arg-type]
+        if spec is None:
+            continue
+        container["layout"] = spec
+        container["layoutChildren"] = [
+            {"id": str(elements[child].get("id") or "")} for child in children
+        ]
+        built += 1
+    return built
 
 
 def compile_scene_plan_to_design(
@@ -1234,6 +1433,7 @@ def compile_scene_plan_to_design(
     )
     if right_rail is not None:
         elements.append(right_rail)
+    layout_frames = attach_layout_frames(elements)
     text_count = sum(
         element.get("type") == "text" and bool(element.get("text"))
         for element in elements
@@ -1268,6 +1468,7 @@ def compile_scene_plan_to_design(
                     "text": text_count,
                     "images": image_count,
                     "containers": len(containers),
+                    "layoutFrames": layout_frames,
                 },
                 "assetClaim": "display-replacement-only",
                 "originalAssetClaimed": False,

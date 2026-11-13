@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from src.app.services.structure.fidelity.contracts import normalize_bbox
+from src.app.services.structure.fidelity.pixel_probe import ink_line_bands, line_metrics
 
 SCHEMA_VERSION = "grounding-text-style-evidence/1.0"
 
@@ -132,6 +133,10 @@ def resolve_text_style(
             },
         }
 
+    bands = ink_line_bands(mask)
+    metrics = line_metrics(bands)
+    line_count = int(metrics.get("lineCount") or 0)
+
     ys, xs = np.where(mask)
     ink_left = int(xs.min())
     ink_top = int(ys.min())
@@ -157,11 +162,28 @@ def resolve_text_style(
         8.0,
         min(96.0, round((ink_box[3] * 0.95) * 4) / 4),
     )
+    line_height: float | None = None
+    line_height_policy = "auto"
+    if line_count >= 2:
+        # The bbox of a paragraph spans every visual line, so scaling the whole
+        # ink height inflates the type by the line count (24px reported for a
+        # real 14px body).  Use the median single-line ink height instead, and
+        # keep the measured pitch so the text cannot grow past its box.
+        median_height = float(metrics.get("medianLineHeight") or 0)
+        if median_height >= 2:
+            estimated_size = max(
+                8.0,
+                min(96.0, round(median_height * 0.95 * 4) / 4),
+            )
+        pitch = float(metrics.get("linePitch") or 0)
+        if estimated_size * 1.02 <= pitch <= estimated_size * 3.0:
+            line_height = round(pitch * 4) / 4
+            line_height_policy = "observed"
     weight = "bold" if role == "table-header" else "normal"
     confidence = min(0.95, 0.6 + min(0.25, contrast / 255))
     if low_contrast:
         confidence = min(confidence, 0.65)
-    return {
+    result = {
         "schema_version": SCHEMA_VERSION,
         "fontFamily": family,
         "fontFallbacks": [
@@ -172,7 +194,7 @@ def resolve_text_style(
         "fontWeight": weight,
         "textColor": _hex_color(foreground_rgb),
         "textAlign": align,
-        "lineHeightPolicy": "auto",
+        "lineHeightPolicy": line_height_policy,
         "confidence": confidence,
         "evidence": {
             "status": "low-contrast" if low_contrast else "observed",
@@ -184,5 +206,10 @@ def resolve_text_style(
             "ink_pixel_count": ink_count,
             "script": "cjk" if cjk else "latin",
             "parent_center_delta": center_delta,
+            "line_count": line_count,
+            "line_bands": [list(band) for band in bands],
         },
     }
+    if line_height is not None:
+        result["lineHeight"] = line_height
+    return result

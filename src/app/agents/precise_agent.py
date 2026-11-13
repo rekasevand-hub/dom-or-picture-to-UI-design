@@ -20,6 +20,9 @@ from src.app.services.structure.image_contract import (
     recover_image_region_candidates,
     recover_image_text_candidates,
 )
+from src.app.services.structure.fidelity.icon_recovery import (
+    recover_small_icon_regions,
+)
 from src.app.services.structure.fidelity import (
     apply_scene_plan,
     build_content_inventory,
@@ -540,6 +543,11 @@ class PreciseAgent:
             )
             (out / "image_region_recovery.json").write_text(
                 json.dumps(image_region_recovery, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            graph, icon_recovery = recover_small_icon_regions(graph, image)
+            (out / "icon_recovery.json").write_text(
+                json.dumps(icon_recovery, ensure_ascii=False, indent=2) + "\n",
                 encoding="utf-8",
             )
             if isinstance(graph.get("imageEnrichment"), dict):
