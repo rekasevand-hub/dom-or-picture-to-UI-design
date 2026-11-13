@@ -420,10 +420,21 @@ depth 1 / FRAME 1（只有根）/ Auto Layout 0 / 41–164 个孤立顶层叶子
 `figma_adapter._with_parent()` → `code.js appendToParent()` → 找不到父级抛 `PARENT_NOT_FOUND`。
 缺的是语义，不是能力。
 
-**但做第 5 项之前必须先解这个**：`code.js` 的 `applyGeometry()` 在 `appendToParent()` **之后**写
-`node.x = params.x`（绝对坐标）。父级原点非 0 时这会二次偏移。现在没爆，是因为所有节点都挂在
-原点为 0 的根上；一旦有了子 frame，这就是第一个 bug。先用两节点探针验一遍坐标换算，别假设
-插件会帮你算。
+**但做第 5 项之前必须先解这个**：~~`code.js` 的 `applyGeometry()` 在 `appendToParent()` **之后**写
+`node.x = params.x`（绝对坐标）。父级原点非 0 时这会二次偏移。~~ **以上三条均已实测推翻，
+见下方更正块。**
+
+> **11-13 下午更正（勿再按旧文行事）**
+> 1. **顺序相反**：`createFrame` / `createRectangle` 都是 `applyGeometry()` 先、`appendToParent()`
+>    后（`code.js:340/346`、`480/499`、`513/515`）。
+> 2. **spec 的 `x/y` 本来就是父级局部**：根帧建在 `x=22000`，`banner` 的 `x=129` 只有按局部
+>    解释才落在画布内。
+> 3. **按旧假设给插件加换算的实测结果**：`banner` 被推到 **−21871**（`129 − 22000`），
+>    within30 反而 **+0.253**（95.051 vs 94.798）、native 14 → 12，已 revert。
+>
+> **结论：`code.js` 不需要改。** 真要动是调用方把子项坐标减去容器原点——`_offset_spec()` 已经在做
+> （`adapter_base.py:647`）。同时记住：**裸 `_send` 探针不能推断整条流水线的语义**，判据是跑一页
+> 比 owner 数，不是探针读数漂亮。
 
 ### 7.2 两份外部架构评审：采信什么、改什么、否什么
 
