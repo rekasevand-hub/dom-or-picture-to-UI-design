@@ -17,6 +17,7 @@ from src.app.services.structure.fidelity.semantic_partition import (
     CONTAINER_ID_PREFIX,
     build_partition_containers,
     design_fingerprint,
+    refresh_partition_containers,
     strip_partition_containers,
     validate_partition,
 )
@@ -325,3 +326,53 @@ def test_frame_sits_between_its_ancestor_and_its_members() -> None:
     assert len(frames) == 1
     built_index = next(iter(frames))
     assert merged[built_index]["id"] == frame["id"]
+
+
+def test_refresh_follows_moved_members() -> None:
+    """校准挪了成员，容器矩形必须跟着走——否则成员落在框外，帧建不出来。
+
+    2026-11-13 light-form：`行 08` 的 7 个文本整体左移 11px、上移 6px，容器冻在
+    原位 → `member-outside-frame`，12 个行组只剩 4 个建成。
+    """
+    elements = _row()
+    merged, _ = build_partition_containers(
+        elements, [{"label": "row", "members": [1, 2]}]
+    )
+    frame_index = next(
+        i
+        for i, item in enumerate(merged)
+        if str(item.get("id") or "").startswith(CONTAINER_ID_PREFIX)
+    )
+    frame = merged[frame_index]
+    name, ident = frame["name"], frame["id"]
+
+    by_id = {item["id"]: item for item in merged}
+    by_id["e1"]["x"] += 11
+    by_id["e1"]["y"] += 6
+    by_id["e2"]["x"] += 11
+    by_id["e2"]["y"] += 6
+    stats = refresh_partition_containers(merged)
+
+    assert stats.refreshed == 1 and stats.dropped == 0
+    assert (frame["x"], frame["y"], frame["width"], frame["height"]) == (
+        21,
+        16,
+        170,
+        20,
+    )
+    assert frame["name"] == name and frame["id"] == ident
+
+
+def test_refresh_drops_a_container_whose_members_are_gone() -> None:
+    """成员全丢的容器必须从列表里移除，否则会留一个永远建不成的空框。"""
+    elements = _row()
+    merged, _ = build_partition_containers(
+        elements, [{"label": "row", "members": [1, 2]}]
+    )
+    kept = [item for item in merged if item.get("id") not in {"e1", "e2"}]
+    stats = refresh_partition_containers(kept)
+
+    assert stats.dropped == 1
+    assert all(
+        not str(item.get("id") or "").startswith(CONTAINER_ID_PREFIX) for item in kept
+    )

@@ -13,19 +13,55 @@ from src.app.services.structure.fidelity.contracts import normalize_match_text
 
 
 def _text_nodes(readback: Any) -> list[Mapping[str, Any]]:
+    """TEXT 节点，`bounds` 已换算到**根帧坐标系**（也就是设计坐标，0 基）。
+
+    回读里帧内节点的 `bounds` 是相对父帧的。校准会拿这个框去和设计坐标比、并写回
+    `textBox`，所以必须先沿父链累加。2026-11-13：行 Frame 上线后，`暂停自动刷新`
+    的 `textBox` 被写成 `(12.5, 6.5)` 而不是 `(318, 507)`，下一轮渲染再减一次帧原点，
+    标签被挪到画布左上（−294, −496），整页表单文字错位。
+
+    约定与 `native_text_quality._text_node_boxes` 一致：从根帧的 children 开始、
+    原点记作 (0, 0)——根帧自身的 `x` 是画布偏移（如 22000），不属于设计坐标。
+    """
     nodes: list[Mapping[str, Any]] = []
 
-    def walk(value: Any) -> None:
-        if isinstance(value, Mapping):
-            if value.get("type") == "TEXT" and value.get("characters"):
-                nodes.append(value)
-            for child in value.values():
-                walk(child)
-        elif isinstance(value, list):
-            for child in value:
-                walk(child)
+    def walk(node: Any, origin_x: float, origin_y: float) -> None:
+        if isinstance(node, Mapping):
+            bounds = node.get("bounds")
+            local = bounds if isinstance(bounds, Mapping) else {}
+            has_local = bool(local)
+            x = origin_x + float(local.get("x") or 0.0) if has_local else origin_x
+            y = origin_y + float(local.get("y") or 0.0) if has_local else origin_y
+            if node.get("type") == "TEXT" and node.get("characters"):
+                if has_local:
+                    nodes.append(
+                        {
+                            **node,
+                            "bounds": {
+                                "x": x,
+                                "y": y,
+                                "width": float(local.get("width") or 0.0),
+                                "height": float(local.get("height") or 0.0),
+                            },
+                        }
+                    )
+                else:
+                    nodes.append(node)
+            for child in node.get("children") or []:
+                walk(child, x, y)
+        elif isinstance(node, list):
+            for child in node:
+                walk(child, origin_x, origin_y)
 
-    walk(readback)
+    if isinstance(readback, Mapping):
+        children = readback.get("children")
+        roots = children if isinstance(children, list) else [readback]
+    elif isinstance(readback, list):
+        roots = readback
+    else:
+        roots = []
+    for root in roots:
+        walk(root, 0.0, 0.0)
     return nodes
 
 

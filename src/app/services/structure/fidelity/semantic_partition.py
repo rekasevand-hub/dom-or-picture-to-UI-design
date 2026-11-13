@@ -70,6 +70,22 @@ class PartitionStats:
         }
 
 
+@dataclass
+class RefreshStats:
+    """一次「按当前几何重建容器」的结果。"""
+
+    refreshed: int = 0
+    dropped: int = 0
+    dropped_ids: list[str] = field(default_factory=list)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "refreshed": self.refreshed,
+            "dropped": self.dropped,
+            "dropped_ids": list(self.dropped_ids),
+        }
+
+
 def design_fingerprint(elements: Sequence[Mapping[str, Any]]) -> str:
     """这份元素列表的指纹：id + 类型 + 几何，按列表顺序。
 
@@ -364,6 +380,55 @@ def build_partition_containers(
             stats.containers_created += 1
         merged.append(element)
     return merged, stats
+
+
+def refresh_partition_containers(
+    elements: list[dict[str, Any]],
+    *,
+    min_members: int = 1,
+) -> RefreshStats:
+    """按**当前**几何重建每个分区容器的矩形与成员表。
+
+    为什么每次发射前都要重建：校准会移动成员，而且幅度不小。2026-11-13 light-form
+    实测——`行 08` 的 7 个文本整体左移 11px、上移 6px；`行 01` 的 `执行时间` 从
+    (1366,142) 挪到 (1752,286)。容器矩形一旦冻在「分区那一刻」的几何，成员就跑出框外，
+    `resolve_frames` 判 `member-outside-frame` / `member-before-frame`：
+    **12 个行组只剩 4 个建成**，而离线（校准前几何）是 12/12。
+
+    就地改写 `elements` 里的容器（同一个 dict 对象）：渲染、回读、分组报告看到的是
+    同一份几何。成员全丢的容器会被从列表里移除——留着它只会变成一个空框。
+    """
+    by_id = {str(item.get("id")): item for item in elements if item.get("id")}
+    stats = RefreshStats()
+    for container in elements:
+        if not str(container.get("id") or "").startswith(CONTAINER_ID_PREFIX):
+            continue
+        member_ids = [
+            str(child.get("id"))
+            for child in container.get("layoutChildren") or []
+            if child.get("id")
+        ]
+        alive = [mid for mid in member_ids if mid in by_id]
+        rects = [rect for rect in (_element_rect(by_id[mid]) for mid in alive) if rect]
+        if len(rects) < max(1, min_members):
+            stats.dropped += 1
+            stats.dropped_ids.append(str(container.get("id")))
+            continue
+        x, y, width, height = _union(rects)
+        container["x"] = x
+        container["y"] = y
+        container["width"] = width
+        container["height"] = height
+        container["layoutChildren"] = [{"id": mid} for mid in alive]
+        container["imageMVP"] = {
+            **(container.get("imageMVP") or {}),
+            "memberCount": len(alive),
+        }
+        stats.refreshed += 1
+    if stats.dropped_ids:
+        dropped = set(stats.dropped_ids)
+        elements[:] = [item for item in elements if str(item.get("id")) not in dropped]
+    return stats
 
 
 def strip_partition_containers(

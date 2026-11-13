@@ -5,6 +5,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 from src.app.services.structure.fidelity.text_calibration import (
+    _text_nodes,
     calibrate_control_fonts,
     calibrate_form_fonts_from_render,
     calibrate_form_positions_from_render,
@@ -1425,3 +1426,39 @@ def test_form_position_calibration_does_not_clip_a_label_glyph(
     # not by three (the inset used to hide columns 21-23 entirely).
     assert label["x"] == 19
     assert report["adjusted_count"] == 1
+
+
+def test_text_nodes_are_reported_in_root_frame_space() -> None:
+    """帧内 TEXT 的 bounds 是相对父帧的——校准必须换成根帧坐标再用。
+
+    2026-11-13：行 Frame 上线后 `暂停自动刷新` 的 textBox 被写成 (12.5, 6.5)，
+    下一轮渲染又减一次帧原点，标签飞到画布左上 (−294, −496)。
+    """
+    readback = {
+        "type": "FRAME",
+        "name": "root",
+        "x": 22000,
+        "y": 0,
+        "children": [
+            {
+                "type": "FRAME",
+                "name": "行 06",
+                "bounds": {"x": 306, "y": 502, "width": 332, "height": 36},
+                "children": [
+                    {
+                        "type": "TEXT",
+                        "characters": "暂停自动刷新",
+                        "bounds": {"x": 12, "y": 6, "width": 105, "height": 21},
+                    }
+                ],
+            }
+        ],
+    }
+    nodes = _text_nodes(readback)
+    assert len(nodes) == 1
+    assert nodes[0]["bounds"] == {
+        "x": 318.0,
+        "y": 508.0,
+        "width": 105.0,
+        "height": 21.0,
+    }

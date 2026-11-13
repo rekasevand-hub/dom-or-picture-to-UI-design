@@ -395,6 +395,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps(aborted, ensure_ascii=True))
         return 2
 
+    partition_state = None
     if args.partition or args.dump_partition_design:
         # 分区用的下标只对**同一份元素列表**有意义。这里把 mvp 真正要用的那份写出来，
         # 探针读它、分区文件记它的指纹——否则就会出现「对着校准后的终版算分区、
@@ -426,66 +427,57 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         partition_payload = _read_json(args.partition)
         declared = str(partition_payload.get("designSha256") or "")
-        if declared and declared != fingerprint:
-            blocked = {
-                "schema_version": "image-figma-real-run/1.0",
-                "status": "blocked-environment",
-                "sample_id": str(truth.get("sample_id") or ""),
-                "error": (
-                    "partition-design-mismatch: 分区绑定 "
-                    f"{declared[:12]}，当前设计 {fingerprint[:12]}"
-                ),
-                "partition": str(args.partition),
-            }
-            _write_json(output / "acceptance.json", blocked)
-            print(json.dumps(blocked, ensure_ascii=True))
-            return 2
         if not declared:
             print("[partition] 警告：分区没有 designSha256，无法证明它绑的是这份设计")
 
         groups, schema_rejects = validate_partition(
             partition_payload, len(source_elements)
         )
-        partitioned, partition_stats = build_partition_containers(
-            source_elements,
-            groups,
-            canvas=design.get("canvas") or {},
-            min_aspect_ratio=args.partition_min_aspect,
-            row_prefix=args.partition_prefix,
-        )
-        design["elements"] = partitioned
-        partition_report = {
-            "schema_version": "image-figma-partition/1.0",
+        # 分区**不在这里插进设计**。校准回路会按「节点在回读里的框」反复调字号/位置，
+        # 一旦文字被挂进行 Frame，回读框变成帧内相对坐标，校准就会拿错基准
+        # （2026-11-13 light-form：`名称` 量到 21×25、参考 16×33，ink-convergence
+        # 把字号 17.75 压到 13.5，8 条 owner 由 pass 翻 fail）。
+        # 正确顺序是：校准在**扁平**几何上跑完（与基线逐位一致），最后再做一次
+        # 结构化渲染——帧只影响层级，不该牵动排版数值。
+        partition_state = {
             "source": str(args.partition),
-            "elementsBefore": len(source_elements),
-            "elementsAfter": len(partitioned),
-            "minAspectRatio": args.partition_min_aspect,
-            "rowPrefix": args.partition_prefix,
-            "stats": partition_stats.as_dict(),
-            "schemaRejects": [
-                {"label": item.label, "reason": item.reason} for item in schema_rejects
-            ],
-            "rows": [
-                {
-                    "id": item["id"],
-                    "name": item["name"],
-                    "bbox": [item["x"], item["y"], item["width"], item["height"]],
-                    "members": len(item["layoutChildren"]),
-                }
-                for item in partitioned
-                if str(item.get("id") or "").startswith("partition:")
-            ],
+            "groups": groups,
+            "rejects": schema_rejects,
+            "declared": declared,
+            "frozenOn": fingerprint,
         }
-        _write_json(output / "partition.json", partition_report)
         print(
-            "[partition] rows=%d rejected=%d aspect=%.1f"
-            % (
-                partition_stats.containers_created,
-                len(partition_stats.groups_rejected),
-                args.partition_min_aspect,
-            )
+            "[partition] groups=%d schemaRejects=%d aspect=%.1f（校准后插入）"
+            % (len(groups), len(schema_rejects), args.partition_min_aspect)
         )
 
+    def _refresh_partition_rows(candidate_design: dict) -> None:
+        """分区容器的矩形必须跟着**当前**几何走。
+
+        校准会移动成员（light-form 实测：整行左移 11px/上移 6px，个别文本挪 386px）。
+        容器矩形冻在分区那一刻，成员就跑到框外，`resolve_frames` 判
+        `member-outside-frame` / `member-before-frame`，12 个行组只剩 4 个建成。
+        """
+        if not args.partition:
+            return
+        from src.app.services.structure.fidelity.semantic_partition import (
+            refresh_partition_containers,
+        )
+
+        rows = [
+            item
+            for item in candidate_design.get("elements") or []
+            if isinstance(item, dict)
+        ]
+        stats = refresh_partition_containers(rows)
+        candidate_design["elements"] = rows
+        if stats.dropped:
+            print(
+                "[partition] refresh: 保留 %d，移除 %d %s"
+                % (stats.refreshed, stats.dropped, stats.dropped_ids)
+            )
+
+    _refresh_partition_rows(design)
     design.setdefault("canvas", {})
     design["canvas"]["x"] = float(args.origin_x)
     design["canvas"]["y"] = float(args.origin_y)
@@ -535,6 +527,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if calibration_render_count == 0:
             _write_json(output / "figma_design_initial.json", original_design)
         calibration_render_count += 1
+        _refresh_partition_rows(candidate_design)
         _write_json(output / "figma_design.json", candidate_design)
         calibration_root = output / render_suffix
         summary = run_image_figma_evidence(
@@ -601,6 +594,90 @@ def main(argv: Sequence[str] | None = None) -> int:
         "residual_profile": calibration.profile,
     }
     _write_json(output / "font_calibration.json", calibration_report)
+
+    if partition_state is not None:
+        # 校准跑完（扁平几何，数字与基线逐位一致）之后，才把行 Frame 插进去再渲染一次。
+        # 这一次渲染只改层级，不改任何排版数值；像素应与上一步几乎相同。
+        from src.app.services.structure.fidelity.semantic_partition import (
+            build_partition_containers,
+            design_fingerprint,
+        )
+
+        base_rows = [
+            item for item in design.get("elements") or [] if isinstance(item, dict)
+        ]
+        # 分区绑定的是「它要被套用的那份几何」——也就是校准**之后**的这份。
+        # 冻在校准前会出现：表头三格被校准移到表头行后，仍留在「第 1 行」组里，
+        # 组的并集从 21px 撑到 63px，把表头一起圈进去 → covers-other-element。
+        calibrated_fingerprint = design_fingerprint(base_rows)
+        declared = str(partition_state.get("declared") or "")
+        if declared and declared != calibrated_fingerprint:
+            blocked = {
+                "schema_version": "image-figma-real-run/1.0",
+                "status": "blocked-environment",
+                "sample_id": str(truth.get("sample_id") or ""),
+                "error": (
+                    "partition-design-mismatch: 分区绑定 "
+                    f"{declared[:12]}，校准后设计 {calibrated_fingerprint[:12]}"
+                    "（分区必须在校准后的几何上冻结）"
+                ),
+                "partition": str(args.partition),
+                "partitionFrozenOn": str(partition_state.get("frozenOn") or "")[:12],
+            }
+            _write_json(output / "acceptance.json", blocked)
+            print(json.dumps(blocked, ensure_ascii=True))
+            return 2
+        partitioned, partition_stats = build_partition_containers(
+            base_rows,
+            partition_state["groups"],
+            canvas=design.get("canvas") or {},
+            min_aspect_ratio=args.partition_min_aspect,
+            row_prefix=args.partition_prefix,
+        )
+        structured = copy.deepcopy(design)
+        structured["elements"] = partitioned
+        _refresh_partition_rows(structured)
+        run_root, run_summary = _render_calibration_design(
+            structured, "figma_structure"
+        )
+        if run_summary.get("status") != "captured-figma-evidence":
+            _write_json(output / "acceptance.json", run_summary)
+            print(json.dumps(run_summary, ensure_ascii=True))
+            return 2
+        design = structured
+        _write_json(
+            output / "partition.json",
+            {
+                "schema_version": "image-figma-partition/1.0",
+                "source": partition_state["source"],
+                "elementsBefore": len(base_rows),
+                "elementsAfter": len(partitioned),
+                "minAspectRatio": args.partition_min_aspect,
+                "rowPrefix": args.partition_prefix,
+                "stats": partition_stats.as_dict(),
+                "schemaRejects": [
+                    {"label": item.label, "reason": item.reason}
+                    for item in partition_state["rejects"]
+                ],
+                "rows": [
+                    {
+                        "id": item["id"],
+                        "name": item["name"],
+                        "bbox": [item["x"], item["y"], item["width"], item["height"]],
+                        "members": len(item["layoutChildren"]),
+                    }
+                    for item in partitioned
+                    if str(item.get("id") or "").startswith("partition:")
+                ],
+            },
+        )
+        print(
+            "[partition] rows=%d rejected=%d"
+            % (
+                partition_stats.containers_created,
+                len(partition_stats.groups_rejected),
+            )
+        )
 
     region_quality = None
     if regions:
