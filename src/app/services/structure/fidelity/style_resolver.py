@@ -54,6 +54,22 @@ def _alignment(
     return "right", delta
 
 
+def _supports_multiline(text: str, bands: list[tuple[int, int]]) -> bool:
+    """Whether the projection bands really are separate text lines.
+
+    CJK glyphs are made of disjoint horizontal strokes, so a single 28px label
+    splits into several thin bands whose heights differ by a lot.  Real lines
+    of one paragraph share a type scale (near-equal band heights) and carry
+    enough characters to need wrapping; short labels never wrap.
+    """
+    if len(text.strip()) < 8:
+        return False
+    heights = [end - start for start, end in bands]
+    if len(heights) < 2 or min(heights) <= 0:
+        return False
+    return max(heights) / min(heights) <= 1.6
+
+
 def resolve_text_style(
     image_path: str | Path,
     text: str,
@@ -136,6 +152,8 @@ def resolve_text_style(
     bands = ink_line_bands(mask)
     metrics = line_metrics(bands)
     line_count = int(metrics.get("lineCount") or 0)
+    if line_count >= 2 and not _supports_multiline(text, bands):
+        line_count = 1
 
     ys, xs = np.where(mask)
     ink_left = int(xs.min())
