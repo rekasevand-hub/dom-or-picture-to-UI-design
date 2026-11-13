@@ -1,0 +1,32 @@
+{
+  "family": "content-review",
+  "sample": "IMG-CONTENT-REVIEW-20261111 (b4df0d75, 1920x1008, 1x, 内容审核页)",
+  "gold": {
+    "frame_id": "129:8737",
+    "producer": "Figma Make",
+    "scale_to_reference": 0.754717,
+    "note": "2544x1336 重建稿；20/20 框落在墨迹上，20/20 字符串与 readback 一致；命名「内容正在审核中 · 截图还原」"
+  },
+  "pipeline_run": "output/_p25_clean",
+  "note": "2026-11-13 由 holdout #4 转为已登记族：此前它只有 within30/critical/native 三门，没有金稿也就没有 ink_ratio。",
+  "baselines": {
+    "within30_pct": 94.7975,
+    "ink_ratio_median": 1.0,
+    "ink_ratio_pairs": 20,
+    "font_ratio_median": 1.019,
+    "dy_median": 3.8,
+    "critical": {
+      "matched": 18,
+      "required": 18
+    },
+    "structure": {
+      "total_nodes": 42,
+      "max_depth": 1,
+      "frame_count": 1,
+      "vector_count": 0,
+      "text_count": 20,
+      "image_fill_count": 9
+    },
+    "registered_from": "output/_p25_clean"
+  }
+}

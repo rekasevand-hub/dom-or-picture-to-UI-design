@@ -1,11 +1,14 @@
 # -*- coding: utf-8 -*-
 """The gold-tree audit must separate a usable answer key from a paraphrase.
 
-Since the 2026-11-10 renewal all three families are positive controls: their
-gold frames are native-resolution rebuilds that land on the screenshot's text
-and agree with what the pipeline reads.  The negative case (a paraphrasing,
-mis-scaled gold) is exercised with synthetic data, because keeping a broken
-fixture around just to test the detector would mean shipping a broken answer key.
+Every *registered* family is a positive control: its gold frame is a
+reconstruction that lands on the screenshot's text and agrees with what the
+pipeline reads.  The list is derived from the benchmark directory rather than
+hardcoded -- a family only gets registered after its gold passed this audit, so
+a new directory that fails here means a broken answer key was let in.  The
+negative case (a paraphrasing, mis-scaled gold) is exercised with synthetic
+data, because keeping a broken fixture around just to test the detector would
+mean shipping a broken answer key.
 """
 from __future__ import annotations
 
@@ -20,7 +23,9 @@ from scripts import audit_gold_tree
 from scripts.audit_gold_tree import BENCH, _row_pitches, _screenshot_row_pitch, audit
 from scripts.p1_font_weight_evidence import flatten_gold_texts
 
-FAMILIES = ("dark-card-grid", "light-form", "light-table")
+FAMILIES = tuple(
+    sorted(path.name for path in BENCH.iterdir() if (path / "family.json").is_file())
+)
 
 
 def test_every_family_has_boxes_on_ink() -> None:

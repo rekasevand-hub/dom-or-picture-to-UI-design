@@ -1,0 +1,38 @@
+{
+  "schema_version": "image-figma-truth/1.0",
+  "sample_id": "IMG-CONTENT-REVIEW-20261111",
+  "image_sha256": "b4df0d75823436f7d9ffbf24f41afbcacdf47b01c13fc2dc58c7d65aac7f1b83",
+  "image_size": [
+    1920,
+    1008
+  ],
+  "review": {
+    "source": "user-provided screenshot (clipboard)",
+    "gold_frame": "129:8737"
+  },
+  "critical_texts": [
+    "CONTENT SECURITY",
+    "系统运行正常",
+    "CONTENT REVIEW CENTER · 2026",
+    "内容正在审核中",
+    "安全检查进行中",
+    "系统正在对当前内容进行安全审核",
+    "内容完整性检查",
+    "风险特征识别",
+    "访问环境验证",
+    "请求编号",
+    "REQ-OIBFZVUES",
+    "当前队列位置",
+    "预计等待时间",
+    "处理进度",
+    "检查状态",
+    "内容安全协议 v4.2",
+    "90%",
+    "< 1 分钟"
+  ],
+  "controls": [],
+  "containers": [],
+  "tables": [],
+  "assets": [],
+  "backgrounds": []
+}
