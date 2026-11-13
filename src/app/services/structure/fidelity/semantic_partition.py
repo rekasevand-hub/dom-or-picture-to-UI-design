@@ -28,6 +28,10 @@ CONTAINER_ID_PREFIX = "partition:"
 # `resolve_frames` 里必然被 `covers-other-element` 拒掉，先在这里挡掉省一次测量。
 MAX_GROUP_MEMBERS = 24
 
+# 本期只发射行级结构。3.0 的来历见 `build_partition_containers` 的 docstring。
+DEFAULT_MIN_ASPECT_RATIO = 3.0
+DEFAULT_ROW_PREFIX = "行"
+
 
 @dataclass
 class GroupReport:
@@ -208,12 +212,21 @@ def build_partition_containers(
     *,
     canvas: Mapping[str, Any] | None = None,
     close_backing: bool = False,
+    min_aspect_ratio: float = DEFAULT_MIN_ASPECT_RATIO,
+    row_prefix: str = DEFAULT_ROW_PREFIX,
 ) -> tuple[list[dict[str, Any]], PartitionStats]:
     """把合法组变成合成容器，插在各自最早成员之前。
 
     返回**新列表**（深拷贝），调用方的元素列表不受影响。容器与成员的相对次序按
     「容器先、成员后」排，真正的绘制序仍由 `paint_order` 决定——这里只保证下标
     单调，让 `pos_of` 的比较有确定的起点。
+
+    本期只发射**行级**结构：宽高比低于 `min_aspect_ratio` 的组不建容器，记
+    `aspect-too-low`。名字与 id 由组框的 (y, x) 排序派生，与模型给的顺序无关——
+    同一份分区重跑必须得到同一批名字。
+
+    ``min_aspect_ratio`` 的 3.0 不是拍的：2026-11-13 五族实测里，18 个能通过
+    `resolve_frames` 的组宽高比最小 4.88、最大 79.0，3.0 留了 1.6 倍余量。
 
     ``close_backing`` 打开后，每组先补上包住它的底板（见 `_backing_members`），
     容器的插入点也跟着前移到最早的那个成员——底板通常画在文字之前，容器必须排在
@@ -263,7 +276,14 @@ def build_partition_containers(
             backing = _backing_members(members, by_index, rects, canvas_area)
             members = sorted(set(members) | set(backing))
         rect = _union([rects[index] for index in members if index in rects])
-        container = {
+        if rect[3] <= 0 or rect[2] / rect[3] < min_aspect_ratio:
+            # 本期只发射行级结构：宽高比不达标的组直接不建，交给 `resolve_frames`
+            # 去拒是浪费一次测量，而且会把「不发射」和「发射不合格」混成一条。
+            stats.groups_rejected.append(
+                GroupReport(gi, label, members, "aspect-too-low")
+            )
+            continue
+        containers[gi] = {
             "id": f"{CONTAINER_ID_PREFIX}{gi}",
             "type": "container",
             "role": "group",
@@ -280,11 +300,26 @@ def build_partition_containers(
                 "source": "vlm-partition",
                 "grouping_status": "semantic",
                 "memberCount": len(members),
+                "vlmLabel": label[:60],
             },
         }
-        containers[gi] = container
         first_member[gi] = min(members)
         stats.groups_accepted_by_schema += 1
+
+    # 名字与 id 都由**几何**派生，不由组的下标或模型给的顺序派生：同一份分区
+    # 重跑必须得到同一批名字，否则下游按名找帧会在两次运行之间漂移。
+    # 排序键用 (y, x)，读图层的人看到的是从上到下、从左到右，不是绘制序。
+    ordered = sorted(
+        containers.items(),
+        key=lambda pair: (pair[1]["y"], pair[1]["x"]),
+    )
+    renamed: dict[int, dict[str, Any]] = {}
+    for rank, (gi, container) in enumerate(ordered, start=1):
+        container = dict(container)
+        container["id"] = f"{CONTAINER_ID_PREFIX}{rank:02d}"
+        container["name"] = f"{row_prefix} {rank:02d}"
+        renamed[gi] = container
+    containers = renamed
 
     start_at: dict[int, int] = {}
     for gi, index in first_member.items():

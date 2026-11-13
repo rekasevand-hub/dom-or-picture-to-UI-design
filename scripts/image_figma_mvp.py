@@ -85,6 +85,26 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--origin-y", type=float, default=0)
     parser.add_argument("--readback-depth", type=int, default=8)
     parser.add_argument(
+        "--partition",
+        type=Path,
+        default=None,
+        help=(
+            "apply a frozen VLM partition (scripts/vlm_partition_probe.py output) and "
+            "emit row-level frames; without it the run is byte-identical to today"
+        ),
+    )
+    parser.add_argument(
+        "--partition-min-aspect",
+        type=float,
+        default=3.0,
+        help="only groups whose width/height reaches this become a frame",
+    )
+    parser.add_argument(
+        "--partition-prefix",
+        default="行",
+        help="node name prefix for emitted rows ('行 01', '行 02', ...)",
+    )
+    parser.add_argument(
         "--acceptance-policy",
         choices=("1.0", "2.0", "2.1"),
         default="1.0",
@@ -366,6 +386,58 @@ def main(argv: Sequence[str] | None = None) -> int:
         _write_json(output / "acceptance.json", aborted)
         print(json.dumps(aborted, ensure_ascii=True))
         return 2
+
+    if args.partition:
+        # 只做行级结构发射：分区先行过滤（宽高比），`resolve_frames` 再兜底。
+        # 不传这个开关时，下面一行代码都不执行，输出与原来逐字节相同。
+        from src.app.services.structure.fidelity.semantic_partition import (
+            build_partition_containers,
+            validate_partition,
+        )
+
+        partition_payload = _read_json(args.partition)
+        source_elements = [
+            item for item in design.get("elements") or [] if isinstance(item, dict)
+        ]
+        groups, schema_rejects = validate_partition(
+            partition_payload, len(source_elements)
+        )
+        partitioned, partition_stats = build_partition_containers(
+            source_elements,
+            groups,
+            canvas=design.get("canvas") or {},
+            min_aspect_ratio=args.partition_min_aspect,
+            row_prefix=args.partition_prefix,
+        )
+        design["elements"] = partitioned
+        partition_report = {
+            "schema_version": "image-figma-partition/1.0",
+            "source": str(args.partition),
+            "elementsBefore": len(source_elements),
+            "elementsAfter": len(partitioned),
+            "minAspectRatio": args.partition_min_aspect,
+            "rowPrefix": args.partition_prefix,
+            "stats": partition_stats.as_dict(),
+            "schemaRejects": [
+                {"label": item.label, "reason": item.reason} for item in schema_rejects
+            ],
+            "rows": [
+                {"id": item["id"], "name": item["name"], "bbox": [
+                    item["x"], item["y"], item["width"], item["height"]
+                ], "members": len(item["layoutChildren"])}
+                for item in partitioned
+                if str(item.get("id") or "").startswith("partition:")
+            ],
+        }
+        _write_json(output / "partition.json", partition_report)
+        print(
+            "[partition] rows=%d rejected=%d aspect=%.1f"
+            % (
+                partition_stats.containers_created,
+                len(partition_stats.groups_rejected),
+                args.partition_min_aspect,
+            )
+        )
 
     design.setdefault("canvas", {})
     design["canvas"]["x"] = float(args.origin_x)
