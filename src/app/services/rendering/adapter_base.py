@@ -878,8 +878,13 @@ def paint_order(elements: list[dict]) -> list[tuple[int, dict]]:
 
     def _depth(idx: int) -> int:
         rect = rects[idx]
-        if rect is None or elements[idx].get("transparent"):
+        if rect is None:
             return 0
+        # 透明容器自己**仍然**要按「被多少不透明元素覆盖」算深度。把它固定成 0 会让
+        # Frame 排到自己的祖先之前，于是祖先落进 `resolve_frames` 的「Frame 之后」
+        # 窗口、被当成 `covers-other-element` 拒掉——2026-11-13 light-form 12 个行组
+        # 全灭就是这条。`unique_geoms` 已经剔掉透明元素，所以这里算出来正好是成员
+        # 所在的那一层，靠下标（容器插在最早成员之前）决定它先于成员落笔。
         return sum(
             1
             for other in unique_geoms

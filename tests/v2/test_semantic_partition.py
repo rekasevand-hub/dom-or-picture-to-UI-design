@@ -291,3 +291,37 @@ def test_container_has_no_fill_so_a_rejected_group_is_invisible() -> None:
     style = merged[1]["style"]
     assert style["fillColor"] == "transparent"
     assert style["borderColor"] == "transparent"
+
+
+def test_frame_sits_between_its_ancestor_and_its_members() -> None:
+    """行 Frame 的深度必须等于成员那一层——不能固定成 0。
+
+    2026-11-13：透明容器曾被固定成深度 0，于是 Frame 排到自己的祖先之前，
+    祖先落入 `resolve_frames` 的「Frame 之后」窗口，被判 `covers-other-element`；
+    light-form 12 个行组因此全灭、light-table 只建成 1/10。
+    """
+    elements = [
+        _element(0, 0, 0, 400, 300, "container"),  # 页面
+        _element(1, 20, 20, 360, 200, "container"),  # 区块（行的祖先）
+        _element(2, 30, 40, 100, 20, "text", "a"),
+        _element(3, 160, 40, 100, 20, "text", "b"),
+        _element(4, 30, 140, 100, 20, "text", "c"),  # 行外的兄弟，不该进来
+    ]
+    merged, _ = build_partition_containers(
+        elements, [{"label": "row", "members": [2, 3]}]
+    )
+    frame = next(
+        item
+        for item in merged
+        if str(item.get("id") or "").startswith(CONTAINER_ID_PREFIX)
+    )
+    order = [item.get("id") for _i, item in paint_order(merged)]
+    assert order.index("e1") < order.index(frame["id"]) < order.index("e2")
+    assert order.index(frame["id"]) < order.index("e3")
+
+    reasons: dict[int, str] = {}
+    frames = resolve_frames(merged, paint_order(merged), reasons)
+    assert reasons == {}
+    assert len(frames) == 1
+    built_index = next(iter(frames))
+    assert merged[built_index]["id"] == frame["id"]
