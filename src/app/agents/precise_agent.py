@@ -572,6 +572,21 @@ class PreciseAgent:
                 )
                 graph["imageEnrichment"]["controlRecovery"] = control_recovery
 
+        if image_reference is not None:
+            # Last geometry word: every owner has been created, moved and
+            # pruned by now, so the OCR line box wins over the model's guess.
+            from src.app.services.structure.fidelity.text_authority import (
+                apply_text_geometry_authority,
+            )
+
+            graph, text_authority_report = apply_text_geometry_authority(
+                graph,
+                (ocr_supplement or {}).get("observations") or [],
+                width=graph["image_w"],
+                height=graph["image_h"],
+            )
+            _write_json(out / "09_text_authority.json", text_authority_report)
+
         assign_ids(graph)
         assign_parent_depth(graph)
         graph["provenance"]["fallbacks"] = fallbacks
