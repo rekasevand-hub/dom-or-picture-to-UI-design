@@ -16,6 +16,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
+from scripts import audit_gold_tree
 from scripts.audit_gold_tree import BENCH, _row_pitches, _screenshot_row_pitch, audit
 from scripts.p1_font_weight_evidence import flatten_gold_texts
 
@@ -165,3 +166,74 @@ def test_screenshot_pitch_uses_the_mode_not_the_median() -> None:
         image[y : y + 14, 20:100, :] = 20
     pitch = _screenshot_row_pitch(image, [[20, 40, 80, 358]])
     assert pitch is None or pitch == 81.0
+
+
+def test_staging_dir_is_auditable_before_registration(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """A candidate gold must be judgeable without enrolling its family.
+
+    Registration is implicit: any directory under ``benchmark_families`` that
+    holds a ``family.json`` joins every gate run.  Auditing a candidate in place
+    would therefore enroll a family whose answer key has not been accepted yet,
+    so ``--dir`` runs the same measurement against a staging directory.
+    """
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    image = np.full((240, 320, 3), 255, dtype=np.uint8)
+    image[14:19, 14:80] = 20  # ink inside the box, white margin around it
+    Image.fromarray(image).save(staging / "reference.png")
+    (staging / "family.json").write_text(
+        json.dumps(
+            {
+                "family": "staging",
+                "gold": {"scale_to_reference": 1.0},
+                "pipeline_run": "none",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (staging / "gold_tree.json").write_text(
+        json.dumps(
+            {
+                "type": "FRAME",
+                "children": [
+                    {
+                        "type": "TEXT",
+                        "characters": "hello",
+                        "x": 10,
+                        "y": 10,
+                        "width": 80,
+                        "height": 20,
+                        "fontSize": 14,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("scripts.audit_gold_tree._inventory_texts", lambda _dir: set())
+
+    assert audit_gold_tree.main(["--dir", str(staging)]) == 0
+    assert "staging" in capsys.readouterr().out
+
+
+def test_staging_dir_without_family_json_is_refused(tmp_path: Path, capsys) -> None:
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    assert audit_gold_tree.main(["--dir", str(staging)]) == 2
+    assert "no family.json" in capsys.readouterr().out
+
+
+def test_staging_dir_without_gold_is_refused_before_it_crashes(
+    tmp_path: Path, capsys
+) -> None:
+    """The staging flow starts before the gold exists; say so instead of raising."""
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    (staging / "family.json").write_text(
+        json.dumps({"family": "staging", "gold": {"scale_to_reference": 1.0}}),
+        encoding="utf-8",
+    )
+    assert audit_gold_tree.main(["--dir", str(staging)]) == 2
+    assert "no gold_tree.json" in capsys.readouterr().out

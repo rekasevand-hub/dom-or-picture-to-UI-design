@@ -277,6 +277,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--family", action="append", help="restrict to family name(s)")
     parser.add_argument(
+        "--dir",
+        default=None,
+        help=(
+            "audit a staging directory instead of a registered family: it only needs "
+            "family.json / reference.png / gold_tree.json, so a candidate gold can be "
+            "judged before it is allowed into tests/fixtures/benchmark_families"
+        ),
+    )
+    parser.add_argument(
         "--gold",
         default=None,
         help="audit this gold tree instead of the family's frozen one",
@@ -288,6 +297,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         (d for d in BENCH.iterdir() if d.is_dir() and (d / "family.json").is_file()),
         key=lambda d: d.name,
     )
+    if args.dir:
+        staging = Path(args.dir)
+        if not (staging / "family.json").is_file():
+            print(f"[fail] {staging} has no family.json")
+            return 2
+        if not (staging / "gold_tree.json").is_file() and not args.gold:
+            print(f"[fail] {staging} has no gold_tree.json (export it first)")
+            return 2
+        family_dirs = [staging]
     if args.family:
         wanted = set(args.family)
         family_dirs = [d for d in family_dirs if d.name in wanted]
