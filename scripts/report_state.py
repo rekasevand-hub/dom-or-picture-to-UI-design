@@ -32,7 +32,7 @@ END = "<!-- END GENERATED: state -->"
 NATIVE_ONLY_BOLD_RATIO = 0.10
 
 PAGES = (
-    ("holdout #4 内容审核", "output/_p25_clean"),
+    ("holdout #4 内容审核", "output/_benchmark_families/rerun/content-review"),
     ("dark-card-grid", "output/_benchmark_families/rerun/dark-card-grid"),
     ("light-form", "output/_benchmark_families/rerun/light-form"),
     ("light-table", "output/_benchmark_families/rerun/light-table"),
