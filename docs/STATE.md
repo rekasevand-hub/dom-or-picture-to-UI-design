@@ -57,12 +57,27 @@ L1 四项里，「单根 Frame」「原生文字」「回读一致」三项已�
 |---|---|---|---|
 | `检查状态` | coverage 0.59 | **字族** | 700 已是 Noto Sans SC 能给到的最近档位，再往上 CJK advance 不变、面积只多 8–10%，补不上缺口。**换族才能修**，要不要开 `known-bound` 出口是产品决策 |
 | `内容正在审核中` | edgeF1 0.24 | **字族** | 96pt 大标题，尺寸位置都对；参考字族更饱满，不是渲染缺陷 |
-| `REQ-OIBFZVUES` | size | 拉丁加粗改 advance | 加粗让拉丁变宽（400 时 140px，800 时 184px），与宽度容差直接冲突；第二遍收敛在 holdout 上是 0 调整 |
-| `系统运行正常` | position + size | **量具** | 参考侧是「绿点 + 文字」同框，窗口把点裁到边，`dx=0` 是假象。修它要动「跳过不足一字宽的前导 run」，会连带移动 light-form 的 11 条坐标——为 1 个 owner 动 11 条，尚未做 |
+| `REQ-OIBFZVUES` | size | 拉丁加粗改 advance | 加粗让拉丁变宽（400 时 140px，800 时 184px），与宽度容差直接冲突；第二遍收敛在 holdout 上是 0 调整。**金稿复算：`ink_ratio = 1.00`（墨高 17 vs 17）**——字高是对的，挂的是宽度 `widthDelta 6` vs 容差 `5`，只超 1px |
+| `系统运行正常` | position + size | **量具** | 参考侧是「绿点 + 文字」同框，窗口把点裁到边，`dx=0` 是假象。修它要动「跳过不足一字宽的前导 run」，会连带移动 light-form 的 11 条坐标——为 1 个 owner 动 11 条，尚未做。**金稿复算 `ink_ratio = 1.14`（参考墨高 14 / 渲染 16）**：渲染比参考更高，与「量具把参考侧压小」的旧说法方向相反，需复核 |
 
 另有 1 条 `diagnostic-only` scope 的失败，不进 critical 门禁。
 
 **结构（Phase 5）仍是零**，是产品侧最大缺口：每加一条逐元素校准，元素就更散一分。
+
+## 第 4 族转正（11-13）
+
+holdout #4 从此是**已登记族** `content-review`，不再是脱离门禁的单独考卷。原因是它一直缺金稿，只有 within30 / critical / native 三门；现在这点补上了：
+
+| 项 | 值 |
+|---|---|
+| 金稿 | 实时帧 `129:8737`「内容正在审核中 · 截图还原」，2544×1336，`scale_to_reference 0.7547` |
+| 审计 | 20/20 框落墨、20/20 字符串与 readback 一致、**verdict usable** |
+| 答案键 | `ink_ratio = 1.0 (n=20)`、`dy_median 3.8`、`critical 18/18` |
+| 基线 | `within30 94.7975`，`registered_from output/_p25_clean`；`--rerun` 25s 复跑数字逐位一致 |
+
+**代价要写明白**：它是被七轮迭代碰过的图，转正等于承认「它不是没被看过的考卷」，而是回归基线。往后的泛化证据只能来自新族（`tests/fixtures/holdout5_pending/`）。
+
+它还顺手证实了两件事：`REQ-OIBFZVUES` 的字高是对的（1.00，门禁挂的只是宽度超 1px）；`系统运行正常` 的渲染墨迹比参考**高** 2px，和文档里「量具把参考侧压小」的旧解释方向相反，需要复核。
 
 ## 干净基线（11-13 复跑，`gitDirty = false`）
 
@@ -88,7 +103,7 @@ owner 计数没变（30/33），所以这不是回归，是**量具耦合**。�
 
 | # | 事项 | 状态 / 为什么排在这 |
 |---|---|---|
-| 1 | **第 5 族登记**（truth + family + 冻结感知） | 图已存 `tests/fixtures/holdout5_pending/`，**未登记**；登记前不参与门禁、不用于调参。继续在 holdout #4 上调参等于自证 |
+| 1 | **第 5 族登记**（truth + family + 金稿） | 图与 truth 已存 `tests/fixtures/holdout5_pending/`，冻结感知已跑，**只差金稿**。它是目前唯一没被调过参的考卷——第 4 族已于 11-13 转正为基线，不能再用来自证 |
 | 2 | **参考窗口解耦**（0.75em 固定 padding，**不用**并集） | 唯一能立刻解释现存假象的一项（`系统运行正常` 的假 `dx=0`） |
 | 3 | **组依赖声明 `reads / invalidates`** | 先有依赖图才能安全减渲染次数；上线时必须保留 `sequential` 对照臂 |
 | 4 | **笔画比 em 归一化** | `2·面积/周长` 是像素量，字号误差被乘进字重比；这是联合求解的前提 |
@@ -101,6 +116,7 @@ owner 计数没变（30/33），所以这不是回归，是**量具耦合**。�
 - 为某一族加 `if family == ...` 或手写常量 —— 第 4 族是唯一考卷（虽然已被七轮迭代碰过，见下）。
 - **元素框不是字形框**：这个坑已经踩过三次（定位、绘制序、字号宽度通道）。任何"按元素框判断文字"的新代码先想这一条。
 - 用整体平移修 position 类问题 —— 左区 −5 与右区 +2 会一起坏。
+- **不要把 `content-review` 当"没被看过的考卷"** —— 它是第 4 族转正来的回归基线，七轮迭代都碰过它。要么它守住不回归，要么去开新族，别在上面刷分。
 - **不要把单条 owner 的判据翻转当成代码效果** —— 同码复跑里 light-form 已有实例：一条 owner 从 size 失败翻成 edgeF1+position 失败，页面分只动 0.02。要看四组总分与 owner 计数，别看单条。
 
 ## 复现
@@ -110,7 +126,7 @@ PY="C:/Users/lzq/.conda/envs/omni/python.exe"
 # 单页（冻结感知，需要 bridge + Figma 插件在线）
 $PY scripts/image_figma_mvp.py --image <ref.png> --truth <truth.json> \
   --out output/<run> --acceptance-policy 2.1 --reuse-prepared
-# 三族
+# 四族（含 content-review）
 $PY scripts/check_benchmark_families.py --rerun --policy 2.1
 # 刷新上面的数字块
 $PY scripts/report_state.py --write docs/STATE.md
