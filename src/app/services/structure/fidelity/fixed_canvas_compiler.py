@@ -1185,85 +1185,170 @@ def _owner_index(
     return best
 
 
+def _rows(
+    boxes: list[tuple[int, int, int, int]],
+) -> list[list[int]]:
+    """Group boxes that share a horizontal band into rows.
+
+    A card heading and its star button sit on the same line, so treating the
+    card as a flat list of children always produces a negative gap.  Grouping
+    first turns ``heading + star, body, tags`` into three rows.
+    """
+    order = sorted(range(len(boxes)), key=lambda index: (boxes[index][1], boxes[index][0]))
+    rows: list[list[int]] = []
+    bottoms: list[int] = []
+    for index in order:
+        box = boxes[index]
+        for position, bottom in enumerate(bottoms):
+            if box[1] < bottom - 4:
+                rows[position].append(index)
+                bottoms[position] = max(bottom, box[1] + box[3])
+                break
+        else:
+            rows.append([index])
+            bottoms.append(box[1] + box[3])
+    return rows
+
+
+def _row_box(
+    boxes: list[tuple[int, int, int, int]],
+    members: list[int],
+) -> tuple[int, int, int, int]:
+    left = min(boxes[index][0] for index in members)
+    top = min(boxes[index][1] for index in members)
+    right = max(boxes[index][0] + boxes[index][2] for index in members)
+    bottom = max(boxes[index][1] + boxes[index][3] for index in members)
+    return (left, top, right - left, bottom - top)
+
+
+def _vertical_spec(
+    parent: tuple[int, int, int, int],
+    rows: list[tuple[int, int, int, int]],
+) -> dict[str, Any] | None:
+    """Vertical stack spec over row boxes (not raw children)."""
+    if len(rows) < 2:
+        return None
+    ordered = sorted(rows, key=lambda box: (box[1], box[0]))
+    gaps = [
+        ordered[index + 1][1] - (ordered[index][1] + ordered[index][3])
+        for index in range(len(ordered) - 1)
+    ]
+    if any(gap < -4 for gap in gaps):
+        return None
+    # Spacing variance is not disqualifying: a real sidebar mixes section
+    # headers and menu items, and a card mixes a heading with a footer far
+    # below it.  Overlap on the stacking axis is the only structural signal,
+    # and it is what separates one column from a grid.
+    spacing = int(round(sum(gaps) / len(gaps))) if gaps else 0
+    left = min(box[0] for box in ordered) - parent[0]
+    right = (parent[0] + parent[2]) - max(box[0] + box[2] for box in ordered)
+    top = min(box[1] for box in ordered) - parent[1]
+    bottom = (parent[1] + parent[3]) - max(box[1] + box[3] for box in ordered)
+    padding = {
+        "paddingTop": top,
+        "paddingBottom": bottom,
+        "paddingLeft": left,
+        "paddingRight": right,
+    }
+    if any(value < 0 for value in padding.values()):
+        return None
+    return {
+        "mode": "VERTICAL",
+        "itemSpacing": max(0, spacing),
+        "primaryAlign": "MIN",
+        "counterAlign": "MIN",
+        **padding,
+        "source": "geometry",
+    }
+
+
+def _horizontal_spec(
+    parent: tuple[int, int, int, int],
+    boxes: list[tuple[int, int, int, int]],
+) -> dict[str, Any] | None:
+    """Horizontal spec for children that all share one band."""
+    if len(boxes) < 2:
+        return None
+    ordered = sorted(boxes, key=lambda box: (box[0], box[1]))
+    tops = [box[1] for box in ordered]
+    band = max(tops) - min(tops)
+    if band > max(8, int(max(box[3] for box in ordered) * 0.8)):
+        return None
+    gaps = [
+        ordered[index + 1][0] - (ordered[index][0] + ordered[index][2])
+        for index in range(len(ordered) - 1)
+    ]
+    if any(gap < -4 for gap in gaps):
+        return None
+    left = min(box[0] for box in ordered) - parent[0]
+    right = (parent[0] + parent[2]) - max(box[0] + box[2] for box in ordered)
+    top = min(box[1] for box in ordered) - parent[1]
+    bottom = (parent[1] + parent[3]) - max(box[1] + box[3] for box in ordered)
+    padding = {
+        "paddingTop": top,
+        "paddingBottom": bottom,
+        "paddingLeft": left,
+        "paddingRight": right,
+    }
+    if any(value < 0 for value in padding.values()):
+        return None
+    spacing = int(round(sum(gaps) / len(gaps))) if gaps else 0
+    return {
+        "mode": "HORIZONTAL",
+        "itemSpacing": max(0, spacing),
+        "primaryAlign": "MIN",
+        "counterAlign": "MIN",
+        **padding,
+        "source": "geometry",
+    }
+
+
 def _stack_layout(
     parent: tuple[int, int, int, int],
     children: list[tuple[int, int, int, int]],
 ) -> dict[str, Any] | None:
-    """Auto Layout spec when the children form one readable row or column.
-
-    A real card is not a strict grid: a leading icon sits left of its label, a
-    badge hangs at the right edge.  Requiring pixel-equal origins rejected
-    every card.  The tolerance therefore scales with the container, and since
-    ``resolve_frames`` pins each member to its snapshot coordinates, a loose
-    spec never moves anything on the canvas — it only records structure.
-    """
+    """Best-effort spec for a container, trying one row then stacked rows."""
     if len(children) < 2:
         return None
-    parent_width = max(1, parent[2])
-    parent_height = max(1, parent[3])
-    align_tolerance = max(6, int(round(parent_width * 0.25)))
-    align_tolerance_y = max(6, int(round(parent_height * 0.25)))
+    horizontal = _horizontal_spec(parent, children)
+    if horizontal is not None:
+        return horizontal
+    rows = _rows(children)
+    if len(rows) < 2:
+        return None
+    return _vertical_spec(parent, [_row_box(children, row) for row in rows])
 
-    def _spec(
-        mode: str,
-        ordered: list[tuple[int, int, int, int]],
-        tolerance: int,
-    ) -> dict[str, Any] | None:
-        if mode == "VERTICAL":
-            positions = [box[1] for box in ordered]
-            spans = [box[3] for box in ordered]
-            starts = [box[0] for box in ordered]
-        else:
-            positions = [box[0] for box in ordered]
-            spans = [box[2] for box in ordered]
-            starts = [box[1] for box in ordered]
-        if max(starts) - min(starts) > tolerance:
-            return None
-        gaps = [
-            positions[index + 1] - (positions[index] + spans[index])
-            for index in range(len(ordered) - 1)
-        ]
-        if any(gap < -min(spans) for gap in gaps):
-            return None  # children overlap heavily: not a stack
-        if gaps:
-            median_gap = sorted(gaps)[len(gaps) // 2]
-            spacing_tolerance = max(4, int(round(abs(median_gap) * 0.6)))
-            if max(gaps) - min(gaps) > spacing_tolerance:
-                return None
-        spacing = int(round(sum(gaps) / len(gaps))) if gaps else 0
-        left = min(box[0] for box in ordered) - parent[0]
-        right = (parent[0] + parent[2]) - max(box[0] + box[2] for box in ordered)
-        top = min(box[1] for box in ordered) - parent[1]
-        bottom = (parent[1] + parent[3]) - max(box[1] + box[3] for box in ordered)
-        padding = {
-            "paddingTop": top,
-            "paddingBottom": bottom,
-            "paddingLeft": left,
-            "paddingRight": right,
-        }
-        if any(value < 0 for value in padding.values()):
-            return None
-        return {
-            "mode": mode,
-            "itemSpacing": max(0, spacing),
-            "primaryAlign": "MIN",
-            "counterAlign": "MIN",
-            **padding,
-            "source": "geometry",
-        }
 
-    vertical = _spec(
-        "VERTICAL",
-        sorted(children, key=lambda box: (box[1], box[0])),
-        align_tolerance,
-    )
-    if vertical is not None:
-        return vertical
-    return _spec(
-        "HORIZONTAL",
-        sorted(children, key=lambda box: (box[0], box[1])),
-        align_tolerance_y,
-    )
+def _has_nested_container(
+    owner: int,
+    elements: list[dict[str, Any]],
+    rects: list[tuple[int, int, int, int] | None],
+) -> bool:
+    """Whether another container sits inside this one.
+
+    ``resolve_frames`` drops a child frame and then its parent (a parent frame
+    would otherwise re-order the orphaned children), so a container holding a
+    sub-container can never keep a frame on this pass.  Emitting the nested
+    pair is what produced nine frames and zero accepted; skipping the outer one
+    leaves the inner frames viable.
+    """
+    outer = rects[owner]
+    if outer is None:
+        return False
+    for index, element in enumerate(elements):
+        if index == owner or str(element.get("type")) != "container":
+            continue
+        inner = rects[index]
+        if inner is None or inner[2] * inner[3] >= outer[2] * outer[3]:
+            continue
+        if (
+            outer[0] <= inner[0]
+            and outer[1] <= inner[1]
+            and inner[0] + inner[2] <= outer[0] + outer[2]
+            and inner[1] + inner[3] <= outer[1] + outer[3]
+        ):
+            return True
+    return False
 
 
 def attach_layout_frames(elements: list[dict[str, Any]]) -> int:
@@ -1300,6 +1385,8 @@ def attach_layout_frames(elements: list[dict[str, Any]]) -> int:
             continue
         spec = _stack_layout(parent_box, boxes)  # type: ignore[arg-type]
         if spec is None:
+            continue
+        if _has_nested_container(owner, elements, rects):
             continue
         container["layout"] = spec
         container["layoutChildren"] = [

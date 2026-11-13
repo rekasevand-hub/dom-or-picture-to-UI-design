@@ -165,7 +165,38 @@ class TestVerticalStack:
 
 
 class TestLayoutBail:
-    def test_uneven_spacing_does_not_become_a_frame(self, tmp_path: Path):
+    def test_overlapping_children_do_not_become_a_frame(self, tmp_path: Path):
+        # Two owners on top of each other are a duplicate to be resolved, not
+        # a stack: any layout mode here would be a lie about the structure.
+        source = tmp_path / "card.png"
+        _card_image(source)
+        plan = {
+            "image_size": [420, 320],
+            "status": "planned",
+            "reference_id": "layout-probe",
+            "nodes": [
+                {
+                    "id": "card",
+                    "type": "container",
+                    "role": "card",
+                    "bbox": [20, 20, 380, 280],
+                    "content_ref": "container:card",
+                    "parent_id": None,
+                    "children": [],
+                },
+                _text_node("t1", [44, 46, 120, 20], "Revenue summary"),
+                _text_node("t2", [60, 50, 120, 20], "Active users 1,284"),
+            ],
+            "suppressed": [],
+        }
+
+        design = _compile(source, plan)
+
+        assert "layout" not in _by_id(design, "card")
+
+    def test_varied_spacing_still_stacks(self, tmp_path: Path):
+        # A real card mixes a heading, a paragraph and a footer with unequal
+        # gaps; that is still one column and must not be rejected.
         source = tmp_path / "card.png"
         _card_image(source)
         plan = {
@@ -183,15 +214,15 @@ class TestLayoutBail:
                     "children": [],
                 },
                 _text_node("t1", [44, 46, 200, 20], "Revenue summary"),
-                _text_node("t2", [44, 120, 200, 20], "Active users 1,284"),
-                _text_node("t3", [44, 130, 200, 20], "Churn 2.1 percent"),
+                _text_node("t2", [44, 90, 200, 20], "Active users 1,284"),
+                _text_node("t3", [44, 170, 200, 20], "Churn 2.1 percent"),
             ],
             "suppressed": [],
         }
 
         design = _compile(source, plan)
 
-        assert "layout" not in _by_id(design, "card")
+        assert _by_id(design, "card")["layout"]["mode"] == "VERTICAL"
 
     def test_horizontal_row_uses_horizontal_mode(self, tmp_path: Path):
         source = tmp_path / "row.png"
@@ -222,7 +253,16 @@ class TestLayoutBail:
 
 
 class TestNestedFrames:
-    def test_two_cards_inside_a_page_nest_two_levels(self, tmp_path: Path):
+    def test_cards_inside_a_page_become_frames_and_the_page_does_not(
+        self, tmp_path: Path
+    ):
+        """One nesting level only.
+
+        The renderer drops a child frame and then its parent, so a container
+        that holds sub-containers cannot keep a frame on this pass.  The cards
+        themselves are leaf containers and do get frames; the page above them
+        stays flat until the ownership rule is tightened.
+        """
         from PIL import Image, ImageDraw
 
         source = tmp_path / "page.png"
@@ -291,15 +331,11 @@ class TestNestedFrames:
 
         assert _by_id(design, "card1")["layout"]["mode"] == "VERTICAL"
         assert _by_id(design, "card2")["layout"]["mode"] == "VERTICAL"
-        assert _by_id(design, "page")["layout"]["mode"] == "HORIZONTAL"
-        assert [c["id"] for c in _by_id(design, "page")["layoutChildren"]] == [
-            "card1",
-            "card2",
-        ]
+        assert "layout" not in _by_id(design, "page")
 
         ordered = [(index, element) for index, element in enumerate(design["elements"])]
         reasons: dict = {}
         frames = resolve_frames(design["elements"], ordered, reasons)
         ids = {design["elements"][index].get("id") for index in frames}
 
-        assert ids == {"page", "card1", "card2"}, f"nested frames rejected: {reasons}"
+        assert ids == {"card1", "card2"}, f"leaf frames rejected: {reasons}"
