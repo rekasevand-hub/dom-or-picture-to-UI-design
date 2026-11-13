@@ -158,6 +158,35 @@ def _ink_bbox(mask: Any, bbox: list[int]) -> list[int] | None:
     ]
 
 
+def _clip_sides(ink: list[int], window: list[int], tolerance: int = 1) -> list[str]:
+    """Which edges of ``window`` the ink sits on.
+
+    Touching an edge is *necessary* but not sufficient proof that the glyph run
+    was cut: a run can genuinely end exactly on the boundary.  It is still the
+    only signal available offline, so the flag names the sides and lets the
+    reader judge -- it never feeds a check.
+
+    Why it matters: the reference window is the **emitted node box** plus
+    ``box_pad_px``, so a reference run wider than our own box is truncated to
+    it.  The width comparison then degrades to "does our ink fill our box" and
+    cannot punish a render that is *wider* than the reference.  Measured
+    2026-11-13: widening or narrowing that window loses owners (four variants,
+    A 194 > B 183 > D 169 > C 155), and setting ``box_pad_px`` to 0 fakes a
+    +11 because 18 of its 22 gains leave the reference clipped.
+    """
+    wx, wy, ww, wh = window
+    sides: list[str] = []
+    if ink[0] <= wx + tolerance:
+        sides.append("left")
+    if ink[0] + ink[2] >= wx + ww - tolerance:
+        sides.append("right")
+    if ink[1] <= wy + tolerance:
+        sides.append("top")
+    if ink[1] + ink[3] >= wy + wh - tolerance:
+        sides.append("bottom")
+    return sides
+
+
 def _text_ink_mask(region: Any) -> Any:
     """Contrast mask with thin divider lines removed.
 
@@ -768,6 +797,9 @@ def build_native_text_quality(
             )
             continue
         delta_x = rendered_ink[0] - reference_ink[0]
+        # 只记账，不参与判据：参考墨迹贴到窗口边时，宽度比较已经退化成
+        # 「我们的墨迹有没有填满自己的框」。见 `_clip_sides` 的说明。
+        reference_clip_sides = _clip_sides(reference_ink, measure_box)
         delta_y = rendered_ink[1] - reference_ink[1]
         width_tolerance = max(
             width_floor,
@@ -851,6 +883,8 @@ def build_native_text_quality(
                 "measurementSource": measurement_source,
                 "referenceInkBBox": reference_ink,
                 "renderedInkBBox": rendered_ink,
+                "referenceClipped": bool(reference_clip_sides),
+                "referenceClippedSides": reference_clip_sides,
                 "deltaX": delta_x,
                 "deltaY": delta_y,
                 "widthDelta": width_delta,
@@ -913,6 +947,11 @@ def build_native_text_quality(
     measured = [owner for owner in owners if "checks" in owner]
     summary = {
         "ownerCount": len(owners),
+        # 只读诊断：参考墨迹贴到测量窗口边的 owner 数。0 说明这条页面的宽度
+        # 读数没有退化成「填满自己的框」；不代表判据要改。
+        "referenceClippedCount": sum(
+            bool(owner.get("referenceClipped")) for owner in owners
+        ),
         "nativeTextCount": sum(bool(owner.get("nativeText")) for owner in owners),
         "positionPassCount": sum(
             bool(owner.get("checks", {}).get("position")) for owner in owners
