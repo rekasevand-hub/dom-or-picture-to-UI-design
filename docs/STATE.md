@@ -174,7 +174,6 @@ $PY scripts/report_state.py --write docs/STATE.md
 ## 环境陷阱
 
 - **Figma 插件加载的是另一个 checkout**（`D:/LLM-Data/Figma_auto_agent`），不是当前 worktree。改了 `figma_bridge/` 必须同步过去并**在 Figma 里重载插件**，否则跑的是旧代码。
-- **`BRIDGE_BUILD` 现在是 `2026-11-13-parent-relative-geometry`**（2026-11-13 修父级坐标换算时提的）。插件没重载之前，**所有运行会以 `blocked-environment` 拒跑**——这是故意的，不是故障。
 - 现在验收报告会写 `runtime.bridgeBuild / expectedBridgeBuild / gitSha / strategies`，插件版本不一致**直接拒绝运行**——不再靠人去翻 JSON。
 - 跑 Figma 前需要 `python -m src.app.services.bridge_server`（ws://localhost:8765）。
 - **本页数字跑在 `gitDirty = false` 上**（`201961c14`），四组同一次干净工作区跑的；脏基线 `ba6e752 + 未提交改动` 只作留档，不再引用。
