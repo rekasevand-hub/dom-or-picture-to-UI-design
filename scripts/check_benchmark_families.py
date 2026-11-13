@@ -593,6 +593,28 @@ def _preflight(rerun: bool, allow_dirty: bool) -> int | None:
     return None
 
 
+def _batch_builds(family_dirs: list[Path], rerun: bool) -> dict[str, str]:
+    """每个族这次测量实际对应的构建 sha。
+
+    批跑要 8 分钟，期间别的会话提交一笔代码，前后两族就吃的是不同版本：
+    2026-11-13 16:32 那次五族，三个族在 `0dba8d1`、两个族在 `1319414`。
+    导出像素可以逐位相同，但 native / 分层数字会跨版本，不能当基线。
+    """
+    builds: dict[str, str] = {}
+    for family_dir in family_dirs:
+        if rerun:
+            run = ROOT / "output" / "_benchmark_families" / "rerun" / family_dir.name
+        else:
+            meta = _read_json(family_dir / "family.json")
+            run = ROOT / str(meta.get("pipeline_run") or "")
+        path = run / "acceptance.json"
+        if not path.is_file():
+            continue
+        runtime = _read_json(path).get("runtime") or {}
+        builds[family_dir.name] = str(runtime.get("gitSha") or "unknown")
+    return builds
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--family", action="append", help="restrict to family name(s)")
@@ -726,6 +748,14 @@ def main(argv: list[str] | None = None) -> int:
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
+    builds = _batch_builds(family_dirs, args.rerun) if args.rerun else {}
+    mixed = sorted(set(builds.values()))
+    if len(mixed) > 1:
+        print(
+            "\n[mixed] 这批跨了多个构建，不能当基线："
+            + json.dumps(builds, ensure_ascii=False, sort_keys=True)
+        )
+        print("        批跑期间有提交进来。像素可能逐位相同，native / 分层数字却跨版本。")
     out.write_text(
         json.dumps(
             {
@@ -733,6 +763,8 @@ def main(argv: list[str] | None = None) -> int:
                 "mode": "register" if args.register else "gate",
                 "families": results,
                 "regressions": all_regressions,
+                "builds": builds,
+                "mixedBuilds": len(mixed) > 1,
             },
             ensure_ascii=False,
             indent=2,
@@ -758,6 +790,8 @@ def main(argv: list[str] | None = None) -> int:
             f"critical={cr.get('matched')}/{cr.get('required')}"
         )
     print(f"[out  ] {out}")
+    if len(mixed) > 1:
+        return 3
     return 1 if all_regressions else 0
 
 
