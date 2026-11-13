@@ -36,6 +36,7 @@ PAGES = (
     ("dark-card-grid", "output/_benchmark_families/rerun/dark-card-grid"),
     ("light-form", "output/_benchmark_families/rerun/light-form"),
     ("light-table", "output/_benchmark_families/rerun/light-table"),
+    ("atomgit-home", "output/_benchmark_families/rerun/atomgit-home"),
 )
 
 
