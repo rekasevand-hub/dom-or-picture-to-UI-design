@@ -33,6 +33,7 @@ from src.app.services.structure.fidelity.fixed_canvas_compiler import (
     _anchor_table_text,
     _drop_coincident_texts,
     _drop_page_coloured_shells,
+    _fit_table_text,
     _keep_renderable_frames,
     _lift_frame_overlays,
     attach_layout_frames,
@@ -74,6 +75,9 @@ def _build(tag: str) -> tuple[list[dict], list[int], dict]:
     # The fixture is the design as compiled: table cells already sit on the
     # rows their OCR lines were read at, and the frame fields are stripped so
     # the assembly has to be redone from geometry alone.
+    # Type size for table cells is derived from ink, never from the cell box;
+    # replaying it here keeps the rule honest against frozen OCR lines.
+    _fit_table_text(elements, design.get("ocr"), None)
     _drop_page_coloured_shells(elements, background)
     _drop_coincident_texts(elements)
     written = attach_layout_frames(elements)
@@ -262,3 +266,62 @@ def test_inventory_table_headers_sit_on_their_ocr_lines() -> None:
         )
         checked += 1
     assert checked >= 3, f"only {checked} header cells matched an OCR line"
+
+
+def _estimated_width(text: str, font: float) -> float:
+    """Rough advance width: a CJK glyph is one em, a Latin one about 0.55."""
+    width = 0.0
+    for char in text:
+        width += font * (1.0 if ord(char) > 0x2E80 else 0.55)
+    return width
+
+
+@pytest.mark.parametrize("tag", sorted(FRAME_FLOORS))
+def test_table_text_keeps_a_readable_size(tag: str) -> None:
+    """A cell's type size comes from ink, not from the grid interval around it.
+
+    The failure this locks: a 20x54 column produced 40px type, and a header
+    band measured 73px tall produced 54px — one glyph per line, in a column
+    twenty pixels wide.
+    """
+    elements, _accepted, _report = _build(tag)
+    wrong = [
+        (str(element.get("text"))[:14], element["style"]["fontSize"])
+        for element in elements
+        if str(element.get("contentRef") or element.get("id") or "").startswith(
+            ("table-header:", "table-cell:")
+        )
+        and element.get("text")
+        and isinstance(element.get("style"), dict)
+        and element["style"].get("fontSize")
+        and not 8.0 <= float(element["style"]["fontSize"]) <= 34.0
+    ]
+    assert not wrong, f"{tag}: cell type out of range: {wrong[:3]}"
+
+
+@pytest.mark.parametrize("tag", sorted(FRAME_FLOORS))
+def test_no_text_is_wider_than_its_own_box(tag: str) -> None:
+    """One glyph must fit the box it is centred in.
+
+    A box may be wider than its words — that is padding or centring — never
+    narrower than a single character.  A 25px column carrying 55px type is the
+    case this catches, and it is what a box-derived font produces.
+    """
+    elements, _accepted, _report = _build(tag)
+    overflowing = []
+    for element in elements:
+        if element.get("type") != "text" or not element.get("text"):
+            continue
+        style = element.get("style")
+        if not isinstance(style, dict) or not style.get("fontSize"):
+            continue
+        font = float(style["fontSize"])
+        # A single glyph has to fit the box; beyond that the string may wrap,
+        # which is a column problem rather than a type-size problem.
+        needed = font
+        allowed = element["width"] * 1.2 + 8
+        if needed > allowed:
+            overflowing.append(
+                (str(element["text"])[:14], round(font, 1), int(element["width"]), int(needed))
+            )
+    assert not overflowing, f"{tag}: text wider than its box: {overflowing[:3]}"

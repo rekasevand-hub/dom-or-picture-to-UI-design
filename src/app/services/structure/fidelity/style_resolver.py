@@ -132,7 +132,12 @@ def resolve_text_style(
                 "Microsoft YaHei" if _has_cjk(text) else "Arial",
                 "sans-serif",
             ],
-            "fontSize": max(8.0, round(box_height * 0.75 * 4) / 4),
+            # A box can only justify type it can hold.  Deriving the size from
+            # height alone gave a 25x73 table cell 55px type, which then wrapped
+            # one glyph per line; no single glyph may be wider than the box.
+            "fontSize": max(
+                8.0, round(min(box_height * 0.75, max(8.0, box_width)) * 4) / 4
+            ),
             "fontWeight": "bold" if role == "table-header" else "normal",
             "textColor": "#555555",
             "textAlign": align,

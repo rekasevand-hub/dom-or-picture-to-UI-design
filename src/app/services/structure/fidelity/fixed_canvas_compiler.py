@@ -2313,6 +2313,148 @@ def _widen_to_members(
 
 
 TABLE_TEXT_PREFIXES = ("table-header:", "table-cell:")
+#: A table cell never carries a display-size font.  Below the floor a glyph is
+#: unreadable; above the ceiling the "size" came from a box, not from ink.
+TABLE_FONT_MIN = 9.0
+TABLE_FONT_MAX = 34.0
+#: Ink height to font size.  CJK ink fills roughly the em box, so the measured
+#: stroke height is a good estimate of the type size, as ``perception_contract``
+#: already assumes when it takes over from a measured ink box.
+INK_TO_FONT = 0.95
+
+
+def _measure_ink(
+    pixels,
+    box: tuple[int, int, int, int],
+):
+    """Bounding box of the ink inside ``box``, in absolute pixels.
+
+    The local background is taken per cell, so a header on a tinted row and a
+    value on white both work.  Anything below a few pixels of coverage is noise
+    and reported as missing rather than as a two-pixel "line".
+    """
+    if pixels is None:
+        return None
+    try:
+        import numpy as np
+    except Exception:  # pragma: no cover
+        return None
+    x, y, width, height = box
+    left, top = max(0, x), max(0, y)
+    right = min(int(pixels.shape[1]), x + width)
+    bottom = min(int(pixels.shape[0]), y + height)
+    if right - left < 4 or bottom - top < 4:
+        return None
+    crop = pixels[top:bottom, left:right]
+    background = np.median(crop.reshape(-1, 3), axis=0)
+    mask = np.max(np.abs(crop - background), axis=2) > 36
+    if int(mask.sum()) < 8:
+        return None
+    rows = np.where(mask.any(axis=1))[0]
+    columns = np.where(mask.any(axis=0))[0]
+    return (
+        left + int(columns.min()),
+        top + int(rows.min()),
+        int(columns.max() - columns.min() + 1),
+        int(rows.max() - rows.min() + 1),
+    )
+
+
+def _fit_table_text(
+    elements: list[dict[str, Any]],
+    observations: Sequence[Mapping[str, Any]] | None,
+    pixels,
+) -> int:
+    """Size table text by its ink, not by the cell it sits in.
+
+    A cell box is a grid interval.  When the grid is coarse — a narrow column
+    that spans two rows, a header band measured 73px tall — deriving the font
+    from the box height produces 40-55px type in a 20px column, which then
+    wraps one glyph per line.  Ink is the only honest measure: the OCR line
+    when the same words were read, otherwise the foreground mask inside the
+    cell itself.
+
+    Geometry is left alone on purpose: widening a cell to its ink pushes it
+    over a neighbour, and the renderer then refuses the whole table for
+    covering a stranger — measured on inventory2, two frames went that way.
+    A column narrower than its own text is a grid problem, and shrinking the
+    type is the part that can be fixed without moving anything.
+    """
+    cells = [
+        element
+        for element in elements
+        if str(element.get("contentRef") or element.get("id") or "").startswith(
+            TABLE_TEXT_PREFIXES
+        )
+        and element.get("text")
+    ]
+    if not cells:
+        return 0
+    from src.app.services.structure.fidelity.contracts import normalize_match_text
+
+    lines: list[tuple[str, tuple[int, int, int, int]]] = []
+    for observation in observations or []:
+        if not isinstance(observation, Mapping):
+            continue
+        text = normalize_match_text(observation.get("text"))
+        box = observation.get("bbox")
+        if not text or not isinstance(box, (list, tuple)) or len(box) != 4:
+            continue
+        try:
+            values = tuple(int(round(float(value))) for value in box)
+        except (TypeError, ValueError):
+            continue
+        if values[2] <= 0 or values[3] <= 0:
+            continue
+        lines.append((text, values))  # type: ignore[arg-type]
+
+    resized = 0
+    for element in cells:
+        box = _layout_rect(element)
+        if box is None:
+            continue
+        text = normalize_match_text(element.get("text"))
+        ink = None
+        for line_text, line_box in lines:
+            if line_text == text:
+                ink = line_box
+                break
+        if ink is None:
+            ink = _measure_ink(pixels, box)
+        if ink is None:
+            continue
+        font = max(TABLE_FONT_MIN, min(TABLE_FONT_MAX, round(ink[3] * INK_TO_FONT * 4) / 4))
+        style = element.get("style")
+        if not isinstance(style, dict):
+            continue
+        style["fontSize"] = font
+        style["lineHeight"] = max(
+            int(round(font * 1.35)), int(style.get("lineHeight") or 0)
+        )
+        resized += 1
+
+    # A row of cells shares one type size.  Anything far from the row median is
+    # still a bad box measurement, and clamping to the median is what keeps a
+    # single narrow cell from shouting.
+    rows: dict[int, list[dict[str, Any]]] = {}
+    for element in cells:
+        style = element.get("style")
+        if not isinstance(style, dict) or not style.get("fontSize"):
+            continue
+        rows.setdefault(int(round(element["y"] / 10.0)), []).append(element)
+    for row in rows.values():
+        if len(row) < 2:
+            continue
+        sizes = sorted(float(element["style"]["fontSize"]) for element in row)
+        median = sizes[len(sizes) // 2]
+        for element in row:
+            size = float(element["style"]["fontSize"])
+            if size > median * 1.35 or size < median * 0.7:
+                element["style"]["fontSize"] = median
+    return resized
+
+
+TABLE_TEXT_PREFIXES = ("table-header:", "table-cell:")
 #: Below this the grid is roughly right and moving cells only risks tearing a
 #: table that already frames; above it the grid origin is plainly wrong.  The
 #: inventory block is out by 272px, the tables that already work by 20-90px.
@@ -2816,6 +2958,11 @@ def compile_scene_plan_to_design(
     if right_rail is not None:
         elements.append(right_rail)
     _anchor_table_text(elements, ocr_observations)
+    _fit_table_text(
+        elements,
+        ocr_observations,
+        _pixel_edges(image_path, width, height),
+    )
     _drop_page_coloured_shells(elements, background)
     _drop_coincident_texts(elements)
     written_frames = attach_layout_frames(elements)
