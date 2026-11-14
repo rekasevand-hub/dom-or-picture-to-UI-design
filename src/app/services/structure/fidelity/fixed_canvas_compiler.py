@@ -1674,7 +1674,10 @@ def _trim_under_top_band(
                     continue
                 if _rect_contains(rect_a, rect, tolerance=2):
                     inside_a += 1
-                elif _rect_contains(rect_b, rect, tolerance=2):
+                # Independent, not elif: a leaf inside the intersection can be
+                # contained by both rectangles, and counting it for one side
+                # only made the corner look owned when it was actually shared.
+                if _rect_contains(rect_b, rect, tolerance=2):
                     inside_b += 1
             if inside_a and not inside_b:
                 victim, keeper = second, first
@@ -1702,6 +1705,44 @@ def _trim_under_top_band(
                     victim["width"] = victim_rect[2] - (band_right - victim_rect[0])
                     trimmed += 1
     return trimmed
+
+
+def _duplicate_containers(
+    containers: list[int],
+    rects: list[tuple[int, int, int, int] | None],
+    members: dict[int, list[int]],
+) -> set[int]:
+    """Containers measuring the same region twice; keep the richer one.
+
+    A dark sidebar can come back as both ``sidebar`` (0,0,276,682) and
+    ``card`` (0,61,283,765).  They overlap almost completely, the later one
+    paints over the other, and the frame gets rejected for covering a
+    stranger.  Only one of them can own the region, so the one that actually
+    gathered members wins and the other stays flat.
+    """
+    doomed: set[int] = set()
+    for position, first in enumerate(containers):
+        for second in containers[position + 1 :]:
+            first_rect = rects[first]
+            second_rect = rects[second]
+            if first_rect is None or second_rect is None:
+                continue
+            # A container nested inside another overlaps it almost fully by
+            # definition: the card grid fills its main content area.  That is
+            # nesting, not a double measurement.
+            if _rect_contains(first_rect, second_rect, tolerance=2) or _rect_contains(
+                second_rect, first_rect, tolerance=2
+            ):
+                continue
+            if _overlap_over_smaller(first_rect, second_rect) <= 0.85:
+                continue
+            loser = (
+                first
+                if len(members.get(first, ())) < len(members.get(second, ()))
+                else second
+            )
+            doomed.add(loser)
+    return doomed
 
 
 def _keep_renderable_frames(
@@ -1774,7 +1815,14 @@ def attach_layout_frames(elements: list[dict[str, Any]]) -> int:
         members,
         key=lambda index: (rects[index][2] * rects[index][3]) if rects[index] else 0,
     )
+    duplicates = _duplicate_containers(
+        [index for index in order if str(elements[index].get("type")) == "container"],
+        rects,
+        members,
+    )
     for owner in order:
+        if owner in duplicates:
+            continue
         children = members[owner]
         container = elements[owner]
         if str(container.get("type")) != "container":
