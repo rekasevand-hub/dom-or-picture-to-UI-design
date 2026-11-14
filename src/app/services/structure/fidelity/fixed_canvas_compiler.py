@@ -6,7 +6,9 @@ import base64
 import copy
 import hashlib
 import io
+import re
 from collections.abc import Mapping, Sequence
+from difflib import SequenceMatcher
 from typing import Any
 
 from src.app.services.som.design_crops import crop_image_b64
@@ -2713,6 +2715,7 @@ def _anchor_table_text(
         _owner_index(rects, index, parent_candidates=containers) if rects[index] else None
         for index in range(len(elements))
     ]
+    roots, table_rects = _table_roots(elements)
 
     matches: list[tuple[dict[str, Any], tuple[int, int, int, int], int]] = []
     for position, element in enumerate(elements):
@@ -2723,8 +2726,28 @@ def _anchor_table_text(
         box = _layout_rect(element)
         if not text or box is None:
             continue
+        # A cell may only follow words read inside its own table.  A sidebar
+        # label two panels away can share a cell's wording ("盘点单"), and
+        # following it drags the cell — and with it the column — out of the
+        # table.
+        root = roots[position] if position < len(roots) else None
+        table_box = table_rects[root] if root is not None else None
+        if table_box is None:
+            # Not under a declared table node: its owning container is the
+            # table as far as this pass is concerned.
+            owner = owners[position]
+            table_box = rects[owner] if owner is not None else None
+        if table_box is None:
+            continue
         best: tuple[float, tuple[int, int, int, int]] | None = None
         for line_text, line_box in lines:
+            centre_x = line_box[0] + line_box[2] / 2
+            centre_y = line_box[1] + line_box[3] / 2
+            if not (
+                table_box[0] <= centre_x <= table_box[0] + table_box[2]
+                and table_box[1] <= centre_y <= table_box[1] + table_box[3]
+            ):
+                continue
             if line_text != text and owner_text_similarity(line_text, text) < 0.9:
                 continue
             # Both axes, weighted towards y: a wrong grid origin shifts a whole
@@ -2829,6 +2852,20 @@ def _drop_page_coloured_shells(
 
 COINCIDENT_TEXT_COVERAGE = 0.65
 COINCIDENT_TEXT_SIMILARITY = 0.55
+#: Two labels on one line whose boxes overlap less than this vertically are
+#: stacked, not duplicated.
+DUPLICATE_LINE_Y_OVERLAP = 0.6
+#: A shared prefix/suffix this long (after stripping spaces and punctuation) is
+#: one label read twice, even when the middle was cut differently.
+DUPLICATE_LINE_AFFIX = 6
+#: OCR confuses O/0 and l/1, so a pair that differs only in those glyphs is
+#: still the same label.  Measured as a whole-string ratio.
+DUPLICATE_LINE_SIMILARITY = 0.85
+#: Share of the shorter label one unbroken run of the longer has to cover
+#: before the two count as one label read twice.
+DUPLICATE_LINE_COVERAGE = 0.72
+#: Channel distance under which text colour and surface are the same colour.
+INK_MIN_CONTRAST = 30
 
 
 def _text_cleanliness(element: Mapping[str, Any]) -> tuple[int, int]:
@@ -2839,7 +2876,146 @@ def _text_cleanliness(element: Mapping[str, Any]) -> tuple[int, int]:
     )
 
 
-def _drop_coincident_texts(elements: list[dict[str, Any]]) -> int:
+def _rendered_span(element: Mapping[str, Any]) -> tuple[int, int]:
+    """Left edge and right edge a text will actually paint to.
+
+    A synthesized cell can carry a 48px box for a forty-character line: the
+    box is the measurement, the string is what lands on the canvas, and the
+    renderer draws the whole line.  Comparing boxes alone therefore misses the
+    double-printed rows, because the two boxes sit side by side while the two
+    strings overlap by hundreds of pixels.
+    """
+    rect = _layout_rect(element)
+    if rect is None:
+        return (0, 0)
+    left, _top, box_width, _box_height = rect
+    text = str(element.get("text") or "")
+    style = element.get("style") or {}
+    try:
+        font = float(style.get("fontSize") or 0.0)
+    except (TypeError, ValueError):
+        font = 0.0
+    estimated = 0.0
+    for char in text:
+        estimated += font * (1.0 if ord(char) > 0x2E80 else 0.55)
+    return (left, left + max(box_width, int(round(estimated))))
+
+
+def _shared_affix(left: str, right: str) -> int:
+    heads = 0
+    for first, second in zip(left, right):
+        if first != second:
+            break
+        heads += 1
+    tails = 0
+    for first, second in zip(reversed(left), reversed(right)):
+        if first != second:
+            break
+        tails += 1
+    return max(heads, tails)
+
+
+def _label_match_ratio(left: str, right: str) -> float:
+    """Share of the shorter string covered by one unbroken run of the longer.
+
+    A prefix test is too brittle for OCR: "W0505" and "WO505" break it on the
+    fourth character, and the rest of a twenty-character label matches exactly.
+    The longest common run tolerates that single substituted glyph.
+    """
+    if not left or not right:
+        return 0.0
+    block = SequenceMatcher(
+        None, left, right, autojunk=False
+    ).find_longest_match(0, len(left), 0, len(right))
+    return block.size / min(len(left), len(right))
+
+
+def _ink_contrast(
+    element: Mapping[str, Any],
+    elements: Sequence[dict[str, Any]],
+    background: str,
+) -> int:
+    """How far the text colour sits from the surface it is printed on.
+
+    Two readings of one label can differ only in the colour each sampled, and
+    one of them sampled the card instead of the ink: #fefffe words on a white
+    row are there, and cannot be read.  The surface is the smallest container
+    that holds the text; the page is the fallback.
+    """
+    style = element.get("style")
+    if not isinstance(style, dict):
+        return 0
+    ink = _hex_rgb(str(style.get("textColor") or background))
+    box = _layout_rect(element)
+    if box is None:
+        return 0
+    surface = str(background or "")
+    smallest = None
+    centre_x = box[0] + box[2] / 2
+    centre_y = box[1] + box[3] / 2
+    for candidate in elements:
+        if str(candidate.get("type")) != "container":
+            continue
+        fill = _opaque_fill(candidate)
+        if not fill:
+            continue
+        other = _layout_rect(candidate)
+        if other is None:
+            continue
+        if not (
+            other[0] <= centre_x <= other[0] + other[2]
+            and other[1] <= centre_y <= other[1] + other[3]
+        ):
+            continue
+        area = other[2] * other[3]
+        if smallest is None or area < smallest[0]:
+            smallest = (area, fill)
+    if smallest is not None:
+        surface = smallest[1]
+    base = _hex_rgb(surface or background)
+    return max(abs(one - two) for one, two in zip(ink, base))
+
+
+def _preferred_copy(
+    first: int,
+    second: int,
+    elements: Sequence[dict[str, Any]],
+    background: str = "",
+) -> int:
+    """Which of two readings of one label survives.
+
+    A readable reading beats an unreadable one: one of the pair may carry the
+    colour of the surface it was measured against, which prints invisible.
+    Otherwise the fuller string wins — a reading that swallowed the rest of the
+    row still prints the words the shorter one has, while the shorter one drops
+    them.  On equal wording the box that fits its own text better wins, because
+    a 48px box around a 400px line is a measurement error and its x is not
+    trustworthy.
+    """
+    one = str(elements[first].get("text") or "")
+    two = str(elements[second].get("text") or "")
+    first_contrast = _ink_contrast(elements[first], elements, background)
+    second_contrast = _ink_contrast(elements[second], elements, background)
+    if (first_contrast >= INK_MIN_CONTRAST) != (second_contrast >= INK_MIN_CONTRAST):
+        return first if first_contrast >= INK_MIN_CONTRAST else second
+    if len(one) != len(two):
+        return first if len(one) > len(two) else second
+
+    def fit(index: int, text: str) -> float:
+        rect = _layout_rect(elements[index])
+        if rect is None or not text:
+            return 0.0
+        left, right = _rendered_span(elements[index])
+        span = max(1, right - left)
+        return min(rect[2], span) / span
+
+    return first if fit(first, one) >= fit(second, two) else second
+
+
+def _drop_coincident_texts(
+    elements: list[dict[str, Any]],
+    background: str = "",
+) -> int:
     """Remove a label that a later stage measured again over the same words.
 
     Table synthesis writes header cells straight from the detected grid, while
@@ -2851,8 +3027,18 @@ def _drop_coincident_texts(elements: list[dict[str, Any]]) -> int:
     Coverage, not IoU: one box is usually a full-width cell and the other the
     ink-tight line inside it, which keeps IoU low while the smaller box is
     almost entirely covered.
+
+    Two readings of one row can also land *side by side*: the label box was
+    measured narrow, the renderer prints the whole line from it, and the line
+    runs straight over its own twin.  Coverage never fires there — the boxes do
+    not overlap.  So a pair on the same line whose normalised strings share a
+    prefix, a suffix, or one contains the other, is compared on what it will
+    paint rather than on what it was measured as.
     """
-    from src.app.services.structure.fidelity.contracts import owner_text_similarity
+    from src.app.services.structure.fidelity.contracts import (
+        normalize_owner_text,
+        owner_text_similarity,
+    )
 
     texts = [
         index
@@ -2872,36 +3058,62 @@ def _drop_coincident_texts(elements: list[dict[str, Any]]) -> int:
             second_rect = _layout_rect(elements[second])
             if second_rect is None:
                 continue
-            overlap_w = min(first_rect[0] + first_rect[2], second_rect[0] + second_rect[2]) - max(
-                first_rect[0], second_rect[0]
-            )
             overlap_h = min(first_rect[1] + first_rect[3], second_rect[1] + second_rect[3]) - max(
                 first_rect[1], second_rect[1]
             )
-            if overlap_w <= 0 or overlap_h <= 0:
+            if overlap_h <= 0:
                 continue
-            coverage = (overlap_w * overlap_h) / max(
+            box_overlap_w = min(
+                first_rect[0] + first_rect[2], second_rect[0] + second_rect[2]
+            ) - max(first_rect[0], second_rect[0])
+            first_left, first_right = _rendered_span(elements[first])
+            second_left, second_right = _rendered_span(elements[second])
+            overlap_w = min(first_right, second_right) - max(first_left, second_left)
+            if overlap_w <= 0:
+                continue
+            coverage = (box_overlap_w * overlap_h) / max(
                 1, min(first_rect[2] * first_rect[3], second_rect[2] * second_rect[3])
-            )
+            ) if box_overlap_w > 0 else 0.0
             # Same line, one string inside the other: one reading merged the
             # whole row while another reported a single field of it.  The long
             # one already prints every word, so the short copy is redundant —
             # no need for the coverage threshold, the y agreement carries it.
-            if (
-                abs(
-                    (first_rect[1] + first_rect[3] / 2)
-                    - (second_rect[1] + second_rect[3] / 2)
-                )
-                <= min(first_rect[3], second_rect[3]) * 0.6
-            ):
+            same_line = overlap_h / max(1, min(first_rect[3], second_rect[3]))
+            if same_line >= DUPLICATE_LINE_Y_OVERLAP:
                 one = str(elements[first].get("text") or "").strip()
                 two = str(elements[second].get("text") or "").strip()
                 if one and two and (one in two or two in one):
-                    if len(one) <= len(two):
+                    shorter = one if len(one) <= len(two) else two
+                    # A number on its own is a value, not a shortened label:
+                    # the "100" cell in a quantity column is inside the row's
+                    # prose and still needs to print.  The same number twice on
+                    # the same spot is a double print, and that is not a value.
+                    if one == two or (len(shorter) >= 4 and not shorter.isdigit()):
+                        keep = _preferred_copy(first, second, elements, background)
+                        if keep == first:
+                            doomed.add(second)
+                            continue
                         doomed.add(first)
                         break
-                    doomed.add(second)
-                    continue
+                key_one = normalize_owner_text(one)
+                key_two = normalize_owner_text(two)
+                if key_one and key_two and not (
+                    key_one in key_two or key_two in key_one
+                ):
+                    shared = _shared_affix(key_one, key_two)
+                    alike = owner_text_similarity(one, two)
+                    covered = _label_match_ratio(key_one, key_two)
+                    if (
+                        shared >= DUPLICATE_LINE_AFFIX
+                        or alike >= DUPLICATE_LINE_SIMILARITY
+                        or covered >= DUPLICATE_LINE_COVERAGE
+                    ) and min(len(key_one), len(key_two)) >= DUPLICATE_LINE_AFFIX:
+                        keep = _preferred_copy(first, second, elements, background)
+                        other = second if keep == first else first
+                        doomed.add(other)
+                        if keep == first:
+                            continue
+                        break
             if coverage < COINCIDENT_TEXT_COVERAGE:
                 continue
             if (
@@ -2922,6 +3134,539 @@ def _drop_coincident_texts(elements: list[dict[str, Any]]) -> int:
         element for index, element in enumerate(elements) if index not in doomed
     ]
     return len(doomed)
+
+
+#: Names a vision model gives an icon, never words the page prints.  ``search``
+#: and ``mail`` in a toolbar are the magnifier and the envelope; the screenshot
+#: shows two glyphs, and a TEXT node made from the caption prints "search"
+#: across the icon.  Support from OCR is what separates the two: if the words
+#: are really on the page, some line reads them at that very spot.
+ICON_DESCRIPTOR_WORDS = frozenset(
+    {
+        "search",
+        "find",
+        "mail",
+        "envelope",
+        "inbox",
+        "menu",
+        "hamburger",
+        "kebab",
+        "ellipsis",
+        "close",
+        "dismiss",
+        "dropdown",
+        "caret",
+        "chevron",
+        "arrow",
+        "settings",
+        "setting",
+        "gear",
+        "user",
+        "avatar",
+        "profile",
+        "account",
+        "filter",
+        "funnel",
+        "bell",
+        "notification",
+        "more",
+        "plus",
+        "minus",
+        "add",
+        "remove",
+        "edit",
+        "pencil",
+        "delete",
+        "trash",
+        "refresh",
+        "reload",
+        "share",
+        "download",
+        "upload",
+        "link",
+        "home",
+        "back",
+        "forward",
+        "expand",
+        "collapse",
+        "grid",
+        "list",
+        "calendar",
+        "clock",
+        "star",
+        "heart",
+        "bookmark",
+        "cart",
+        "help",
+        "question",
+        "spinner",
+        "loading",
+        "logo",
+        "icon",
+        "badge",
+    }
+)
+#: An icon label is a caption on a glyph, so it lives in a glyph-sized box.
+ICON_DESCRIPTOR_MAX_SIDE = 96
+#: How far from the box OCR may read the same words and still count as proof
+#: that they are printed on the page.
+ICON_DESCRIPTOR_OCR_SLACK = 8
+#: A gap this small is inside the glyph; the words start where the icon ends.
+BADGE_ICON_GAP = 4
+#: A badge is a chip: wide enough for a few words, never taller than a line.
+BADGE_MAX_WIDTH = 260
+BADGE_MAX_HEIGHT = 64
+#: Share of a text or icon that a later-painted fill has to bury to count.
+FILL_OCCLUSION_COVERAGE = 0.5
+#: Colour distance under which a fill is "the page colour again".
+PAGE_FILL_TOLERANCE = 10
+#: A backdrop fragment is a panel-sized patch, not a stray chip.
+PAGE_FRAGMENT_MIN_AREA = 40000
+
+
+def _ocr_lines(
+    observations: Sequence[Mapping[str, Any]] | None,
+) -> list[tuple[str, tuple[int, int, int, int]]]:
+    """Normalised OCR text with its box, ready for matching."""
+    from src.app.services.structure.fidelity.contracts import normalize_match_text
+
+    lines: list[tuple[str, tuple[int, int, int, int]]] = []
+    for observation in observations or ():
+        if not isinstance(observation, Mapping):
+            continue
+        text = normalize_match_text(observation.get("text"))
+        box = observation.get("bbox")
+        if not text or not isinstance(box, (list, tuple)) or len(box) != 4:
+            continue
+        try:
+            values = tuple(int(round(float(value))) for value in box)
+        except (TypeError, ValueError):
+            continue
+        if values[2] <= 0 or values[3] <= 0:
+            continue
+        lines.append((text, values))  # type: ignore[arg-type]
+    return lines
+
+
+def _icon_descriptor(text: str) -> bool:
+    """True when the whole string is a control/icon name, not prose."""
+    words = [word for word in re.split(r"[^a-z]+", str(text or "").strip().lower()) if word]
+    if not words or len(words) > 3:
+        return False
+    return all(word in ICON_DESCRIPTOR_WORDS for word in words)
+
+
+def _has_ocr_support(
+    text: str,
+    box: tuple[int, int, int, int],
+    lines: Sequence[tuple[str, tuple[int, int, int, int]]],
+) -> bool:
+    from src.app.services.structure.fidelity.contracts import (
+        normalize_match_text,
+        owner_text_similarity,
+    )
+
+    key = normalize_match_text(text)
+    if not key:
+        return False
+    for line_text, line_box in lines:
+        if line_text != key and owner_text_similarity(line_text, key) < 0.75:
+            continue
+        left = box[0] - ICON_DESCRIPTOR_OCR_SLACK
+        top = box[1] - ICON_DESCRIPTOR_OCR_SLACK
+        right = box[0] + box[2] + ICON_DESCRIPTOR_OCR_SLACK
+        bottom = box[1] + box[3] + ICON_DESCRIPTOR_OCR_SLACK
+        centre_x = line_box[0] + line_box[2] / 2
+        centre_y = line_box[1] + line_box[3] / 2
+        if left <= centre_x <= right and top <= centre_y <= bottom:
+            return True
+    return False
+
+
+def _drop_icon_descriptor_labels(
+    elements: list[dict[str, Any]],
+    observations: Sequence[Mapping[str, Any]] | None,
+) -> int:
+    """Strip captions the model invented for icons.
+
+    A toolbar comes back as ``search``, ``mail``, ``menu``, ``dropdown``,
+    ``close`` — five words that name five glyphs and appear nowhere in the
+    screenshot.  Written as text they print on top of the glyphs and read as
+    page content, which is worse than the icon alone.
+
+    OCR decides.  When a line really reads those words at that spot (a "Star"
+    button, an English "Search" label) the text stays; without that support the
+    string is a semantic annotation and only the shape is kept.
+    """
+    if not elements:
+        return 0
+    lines = _ocr_lines(observations)
+    doomed: set[int] = set()
+    cleared = 0
+    for index, element in enumerate(elements):
+        kind = str(element.get("type") or "")
+        if kind not in {"text", "button", "input"}:
+            continue
+        text = str(element.get("text") or "").strip()
+        if not text or not text.isascii() or not _icon_descriptor(text):
+            continue
+        if str(element.get("contentRef") or element.get("id") or "").startswith(
+            TABLE_TEXT_PREFIXES
+        ):
+            continue
+        rect = _layout_rect(element)
+        if rect is None or max(rect[2], rect[3]) > ICON_DESCRIPTOR_MAX_SIDE:
+            continue
+        if _has_ocr_support(text, rect, lines):
+            continue
+        if kind == "text":
+            doomed.add(index)
+        else:
+            element["text"] = ""
+            element.pop("controlValue", None)
+        cleared += 1
+    if doomed:
+        elements[:] = [
+            element for index, element in enumerate(elements) if index not in doomed
+        ]
+    return cleared
+
+
+def _separate_badge_icon_text(elements: list[dict[str, Any]]) -> int:
+    """Start a badge's words after the glyph instead of inside it.
+
+    A pill that reads "● 大厂直供" arrives as a box over the pill, an icon cut
+    over the dot and a text box that begins on top of the dot.  The three are
+    measured independently, so nothing notices that the first word is printed
+    through the icon.  Moving the words to the icon's right edge is the whole
+    repair; the pill keeps its size, so no frame changes.
+
+    Only inside a badge: a pill or a button is a few hundred pixels wide and at
+    most a line tall.  A sidebar row is wider than that, and its icon cut
+    already carries the first millimetres of the label as pixels — nudging the
+    text there would print the leading glyph twice.
+    """
+    if not elements:
+        return 0
+    rects = [_layout_rect(element) for element in elements]
+    icons = [
+        index
+        for index, element in enumerate(elements)
+        if str(element.get("type")) == "image"
+        and rects[index] is not None
+        and rects[index][2] <= 48
+        and rects[index][3] <= 48
+    ]
+    if not icons:
+        return 0
+    chips = [
+        index
+        for index, element in enumerate(elements)
+        if str(element.get("type")) == "container"
+        and rects[index] is not None
+        and rects[index][2] <= BADGE_MAX_WIDTH
+        and rects[index][3] <= BADGE_MAX_HEIGHT
+    ]
+    moved = 0
+    for index, element in enumerate(elements):
+        if str(element.get("type")) != "text" or not element.get("text"):
+            continue
+        box = rects[index]
+        if box is None:
+            continue
+        chip = None
+        for candidate in chips:
+            chip_box = rects[candidate]
+            if chip_box is None or not _rect_contains(chip_box, box, tolerance=2):
+                continue
+            if chip is None or chip_box[2] * chip_box[3] < rects[chip][2] * rects[chip][3]:
+                chip = candidate
+        if chip is None:
+            continue
+        chip_box = rects[chip]
+        for icon in icons:
+            icon_box = rects[icon]
+            if icon_box is None or chip_box is None:
+                continue
+            if not _rect_contains(chip_box, icon_box, tolerance=2):
+                continue
+            overlap_h = min(box[1] + box[3], icon_box[1] + icon_box[3]) - max(
+                box[1], icon_box[1]
+            )
+            if overlap_h < min(box[3], icon_box[3]) * 0.5:
+                continue
+            # The words' leading edge has to be *inside* the glyph and they have
+            # to run past it: that is the printed-through-the-icon shape.  A
+            # label that starts left of the icon is a different defect.
+            if not (icon_box[0] + 1 < box[0] < icon_box[0] + icon_box[2] - 1):
+                continue
+            if box[0] + box[2] <= icon_box[0] + icon_box[2]:
+                continue
+            target = icon_box[0] + icon_box[2] + BADGE_ICON_GAP
+            if target <= box[0]:
+                continue
+            # Clearing the glyph must leave the words somewhere to go.  A
+            # two-pixel remainder means the "icon" was measured over the label
+            # as well, so the shift would trade one bad box for another.
+            remaining = box[0] + box[2] - target
+            if remaining < max(12, box[2] * 0.5):
+                continue
+            element["x"] = target
+            element["width"] = max(1, remaining)
+            rects[index] = (target, box[1], element["width"], box[3])
+            moved += 1
+            break
+    return moved
+
+
+def _paint_as_backdrop(
+    elements: Sequence[dict[str, Any]],
+    rects: Sequence[tuple[int, int, int, int] | None],
+    position: Mapping[int, int],
+    index: int,
+    background: str,
+) -> bool:
+    """Repaint a box in the colour of whatever is already under it.
+
+    Only for a box that hides nothing but the backdrop itself: a chip on a
+    panel, a strip on a card.  When real content sits between the two, hiding
+    the fill is the repair and this is not it.
+    """
+    element = elements[index]
+    style = element.get("style")
+    if not isinstance(style, dict):
+        return False
+    box = rects[index]
+    if box is None:
+        return False
+    colour = str(background or "").strip()
+    latest = -1
+    for other, candidate in enumerate(elements):
+        if other == index or position.get(other, -1) >= position.get(index, 0):
+            continue
+        fill = _opaque_fill(candidate)
+        if not fill:
+            continue
+        other_box = rects[other]
+        if other_box is None or not _rect_contains(other_box, box, tolerance=4):
+            continue
+        if position[other] > latest:
+            latest = position[other]
+            colour = fill
+    if not colour:
+        return False
+    if _same_fill(str(style.get("fillColor") or ""), colour, 0):
+        return False
+    style["fillColor"] = colour
+    return True
+
+
+def _make_transparent(element: dict[str, Any]) -> bool:
+    """Leave the border, drop the paint.
+
+    ``none`` is what both renderers understand as "do not fill".  Removing the
+    key is not the same thing: a renderer handed no fill falls back to its own
+    default, and the default rectangle is grey.
+    """
+    style = element.get("style")
+    if not isinstance(style, dict):
+        return False
+    if str(style.get("fillColor") or "").strip().lower() in {"", "none"}:
+        return False
+    style["fillColor"] = "none"
+    return True
+
+
+def _opaque_fill(element: Mapping[str, Any]) -> str:
+    style = element.get("style")
+    if not isinstance(style, dict):
+        return ""
+    return str(style.get("fillColor") or "").strip()
+
+
+def _buried_content(
+    elements: Sequence[dict[str, Any]],
+    rects: Sequence[tuple[int, int, int, int] | None],
+    position: Mapping[int, int],
+    occluder: int,
+    closures: Mapping[int, set[int]],
+) -> list[int]:
+    """Earlier-painted text or icons that a filled box covers."""
+    box = rects[occluder]
+    if box is None:
+        return []
+    own = closures.get(occluder, set())
+    occluder_kind = str(elements[occluder].get("type") or "")
+    buried: list[int] = []
+    for index, element in enumerate(elements):
+        if index == occluder or index in own:
+            continue
+        kind = str(element.get("type") or "")
+        if kind == "text":
+            if not str(element.get("text") or "").strip():
+                continue
+        elif kind == "image":
+            # A glyph-sized cut that **straddles** the box: the icon is real and
+            # half of it is hidden.  One that sits wholly inside is that box's
+            # own decoration — often a control the model invented, invisible in
+            # the screenshot and correct to leave under its backing.
+            rect = rects[index]
+            if rect is None or rect[2] > 64 or rect[3] > 64:
+                continue
+            if _rect_contains(box, rect, tolerance=2):
+                continue
+            # A control's own face is its glyph; the pair composes into a
+            # button, and there is nothing to uncover.
+            if occluder_kind in {"button", "input"}:
+                continue
+        else:
+            continue
+        rect = rects[index]
+        if rect is None or position.get(index, -1) >= position.get(occluder, 0):
+            continue
+        overlap_w = min(rect[0] + rect[2], box[0] + box[2]) - max(rect[0], box[0])
+        overlap_h = min(rect[1] + rect[3], box[1] + box[3]) - max(rect[1], box[1])
+        if overlap_w <= 0 or overlap_h <= 0:
+            continue
+        # Nearly the same rectangle: a control and the glyph cut that is its
+        # own face.  Whatever the order, the two compose into one control, so
+        # there is nothing hidden to repair.
+        union = rect[2] * rect[3] + box[2] * box[3] - overlap_w * overlap_h
+        if union > 0 and (overlap_w * overlap_h) / union >= 0.4:
+            continue
+        if (overlap_w * overlap_h) / max(1, rect[2] * rect[3]) < FILL_OCCLUSION_COVERAGE:
+            continue
+        buried.append(index)
+    return buried
+
+
+def _is_scrim_fragment(
+    elements: Sequence[dict[str, Any]],
+    rects: Sequence[tuple[int, int, int, int] | None],
+    position: Mapping[int, int],
+    fragment: int,
+    fill: str,
+    background: str,
+) -> bool:
+    """A page-coloured patch sitting on a solid panel is the backdrop, not a box.
+
+    A dialog screenshot is dimmed end to end, so the page colour is the scrim.
+    A region measured over the dimmed area then paints that same grey *inside*
+    the white dialog and blocks it.  Repainting the backdrop over a solid panel
+    is never what the picture shows, so the fill goes and only the border (if
+    any) remains.
+    """
+    if not _same_fill(fill, background, PAGE_FILL_TOLERANCE):
+        return False
+    if str(elements[fragment].get("type")) != "container":
+        # A button or an input that happens to be white is a control with a
+        # fill, not a piece of the backdrop.
+        return False
+    box = rects[fragment]
+    if box is None:
+        return False
+    if box[2] * box[3] < PAGE_FRAGMENT_MIN_AREA:
+        return False
+    for index, element in enumerate(elements):
+        if index == fragment or position.get(index, len(elements)) >= position.get(
+            fragment, 0
+        ):
+            continue
+        other = rects[index]
+        if other is None or not _rect_contains(other, box, tolerance=4):
+            continue
+        other_fill = _opaque_fill(element)
+        if not other_fill or _same_fill(other_fill, background, PAGE_FILL_TOLERANCE):
+            continue
+        return True
+    return False
+
+
+def _audit_filled_occluders(
+    elements: list[dict[str, Any]],
+    background: str,
+) -> int:
+    """Stop a solid rectangle from painting over text it does not own.
+
+    Frame batching gathers a frame's closure into one run.  A container that
+    merely *overlaps* the frame — a table section measured a little wider than
+    the card it sits in — is not a member, so it keeps its own slot and now
+    lands after the whole run: the white block covers every row of the table
+    it was supposed to sit behind.  The header bar's backdrop does the same to
+    the nav labels.
+
+    Repairs, in this order:
+
+    * a member of a frame cannot be re-ordered without breaking the run its
+      frame needs — stop painting it instead;
+    * a box that hides nothing but the backdrop is repainted in the backdrop's
+      colour, which changes no pixel except the ones it was covering;
+    * otherwise sink the box below whatever it is hiding by one tier.  If that
+      would cost a frame, stop painting it instead.
+    """
+    if not elements:
+        return 0
+    from src.app.services.rendering.adapter_base import paint_order, resolve_frames
+
+    rects = [_layout_rect(element) for element in elements]
+    closures = {
+        index: _frame_closure(index, elements)
+        for index, element in enumerate(elements)
+        if element.get("layoutChildren")
+    }
+    before = len(resolve_frames(elements, paint_order(elements))) if closures else 0
+
+    order = [index for index, _element in paint_order(elements)]
+    position = {index: spot for spot, index in enumerate(order)}
+    demoted: list[int] = []
+    filled = 0
+    for index, element in enumerate(elements):
+        fill = _opaque_fill(element)
+        if not fill:
+            continue
+        box = rects[index]
+        # Rules, separators and progress bars are strokes, not panels.
+        if box is None or min(box[2], box[3]) <= 12:
+            continue
+        buried = _buried_content(elements, rects, position, index, closures)
+        scrim = _is_scrim_fragment(
+            elements, rects, position, index, fill, background
+        )
+        if not buried and not scrim:
+            continue
+        member_of = next(
+            (
+                closure
+                for key, closure in closures.items()
+                if key != index and index in closure
+            ),
+            None,
+        )
+        if member_of is not None:
+            # A member cannot be re-ordered inside the frame that owns it —
+            # that reordering is exactly what the frame gate refuses — so the
+            # only repair left is to stop painting.
+            if _make_transparent(element):
+                filled += 1
+            continue
+        if not buried:
+            # Nothing but the backdrop is under it: repainting it in the
+            # backdrop's colour hides it without moving anything.
+            if _paint_as_backdrop(elements, rects, position, index, background):
+                filled += 1
+            continue
+        floor = min(int(elements[member].get("zIndex") or 0) for member in buried)
+        element["zIndex"] = floor - 1
+        demoted.append(index)
+
+    if demoted and closures:
+        after = len(resolve_frames(elements, paint_order(elements)))
+        if after < before:
+            for index in demoted:
+                elements[index].pop("zIndex", None)
+                if _make_transparent(elements[index]):
+                    filled += 1
+    return filled + len(demoted)
 
 
 def attach_layout_frames(elements: list[dict[str, Any]]) -> int:
@@ -3160,7 +3905,11 @@ def compile_scene_plan_to_design(
         _pixel_edges(image_path, width, height),
     )
     _drop_page_coloured_shells(elements, background)
-    _drop_coincident_texts(elements)
+    # Icon captions the model invented have to go before the duplicate pass:
+    # "search" over a magnifier looks like a label that a real one duplicates.
+    _drop_icon_descriptor_labels(elements, ocr_observations)
+    _drop_coincident_texts(elements, background)
+    _separate_badge_icon_text(elements)
     written_frames = attach_layout_frames(elements)
     # A frame's members must paint as one contiguous unit; an overlay that
     # lands inside that interval belongs on top of it, not in the middle.
@@ -3172,6 +3921,10 @@ def compile_scene_plan_to_design(
             if element.get("layoutChildren")
         ],
     )
+    # Batching moves a non-member that overlapped a frame's run to *after* the
+    # run, which is how a white block ends up on top of the table it belongs
+    # under.  Check the final order, not the one the boxes were authored in.
+    _audit_filled_occluders(elements, background)
     layout_frames = _keep_renderable_frames(elements, written_frames)
     text_count = sum(
         element.get("type") == "text" and bool(element.get("text"))

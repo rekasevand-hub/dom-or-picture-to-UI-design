@@ -31,12 +31,15 @@ import pytest
 from src.app.services.rendering.adapter_base import paint_order, resolve_frames
 from src.app.services.structure.fidelity.fixed_canvas_compiler import (
     _anchor_table_text,
+    _audit_filled_occluders,
     _drop_coincident_texts,
+    _drop_icon_descriptor_labels,
     _drop_page_coloured_shells,
     _fit_table_text,
     _keep_renderable_frames,
     _lift_frame_overlays,
     _repartition_table_rows,
+    _separate_badge_icon_text,
     attach_layout_frames,
 )
 
@@ -82,10 +85,13 @@ def _build(tag: str) -> tuple[list[dict], list[int], dict]:
     _repartition_table_rows(elements, design.get("ocr"))
     _fit_table_text(elements, design.get("ocr"), None)
     _drop_page_coloured_shells(elements, background)
-    _drop_coincident_texts(elements)
+    _drop_icon_descriptor_labels(elements, design.get("ocr"))
+    _drop_coincident_texts(elements, background)
+    _separate_badge_icon_text(elements)
     written = attach_layout_frames(elements)
     frames = [index for index, element in enumerate(elements) if element.get("layoutChildren")]
     _lift_frame_overlays(elements, frames)
+    _audit_filled_occluders(elements, background)
     reasons: dict[int, str] = {}
     accepted = resolve_frames(elements, paint_order(elements), reasons)
     kept = _keep_renderable_frames(elements, written)
