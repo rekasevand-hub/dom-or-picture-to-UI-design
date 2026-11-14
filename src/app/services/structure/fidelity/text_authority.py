@@ -34,6 +34,8 @@ from src.app.services.structure.fidelity.contracts import (
 MATCH_SIMILARITY = 0.65
 MAX_CENTER_DISTANCE = 60
 NMS_IOU = 0.55
+COINCIDENT_COVERAGE = 0.65
+COINCIDENT_SIMILARITY = 0.55
 SWALLOW_MIN_CHILDREN = 2
 SWALLOW_HEIGHT_RATIO = 1.8
 
@@ -210,6 +212,32 @@ def _swallowing_blocks(owners: Sequence[Mapping[str, Any]]) -> set[int]:
     return flagged
 
 
+def _same_region(
+    box: Sequence[int],
+    other: Sequence[int],
+    text: str,
+    other_text: str,
+) -> bool:
+    """Same words measured twice, with boxes that agree on area but not on IoU.
+
+    A label read by both OCR and the model usually gets one tall box and one
+    tight one — a header cell against its own line of copy.  IoU stays under
+    the threshold because the union is dominated by the taller box, while the
+    smaller box is almost entirely covered.  Requiring the text to agree keeps
+    a genuine cell value inside a wide row label from being swallowed.
+    """
+    if owner_text_similarity(text, other_text) < COINCIDENT_SIMILARITY:
+        return False
+    overlap_w = min(box[0] + box[2], other[0] + other[2]) - max(box[0], other[0])
+    overlap_h = min(box[1] + box[3], other[1] + other[3]) - max(box[1], other[1])
+    if overlap_w <= 0 or overlap_h <= 0:
+        return False
+    coverage = (overlap_w * overlap_h) / max(
+        1, min(box[2] * box[3], other[2] * other[3])
+    )
+    return coverage >= COINCIDENT_COVERAGE
+
+
 def _nms_victims(owners: Sequence[Mapping[str, Any]]) -> set[int]:
     """Drop the weaker owner of every high-overlap pair."""
     ranked = sorted(
@@ -230,6 +258,12 @@ def _nms_victims(owners: Sequence[Mapping[str, Any]]) -> set[int]:
             continue
         if any(
             _iou(box, _bbox_of(owners[other]) or [0, 0, 0, 0]) >= NMS_IOU
+            or _same_region(
+                box,
+                _bbox_of(owners[other]) or [0, 0, 0, 0],
+                str(owners[index].get("text") or ""),
+                str(owners[other].get("text") or ""),
+            )
             for other in kept
         ):
             victims.add(index)

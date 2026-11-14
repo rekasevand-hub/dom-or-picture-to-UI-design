@@ -2188,6 +2188,84 @@ def _widen_to_members(
     return union
 
 
+COINCIDENT_TEXT_COVERAGE = 0.65
+COINCIDENT_TEXT_SIMILARITY = 0.55
+
+
+def _text_cleanliness(element: Mapping[str, Any]) -> tuple[int, int]:
+    """Prefer model wording over a raw OCR line, then the longer string."""
+    return (
+        0 if str(element.get("textBoxAuthority") or "") == "ocr-line" else 1,
+        len(str(element.get("text") or "")),
+    )
+
+
+def _drop_coincident_texts(elements: list[dict[str, Any]]) -> int:
+    """Remove a label that a later stage measured again over the same words.
+
+    Table synthesis writes header cells straight from the detected grid, while
+    OCR reads the same words as a short line.  They are produced by different
+    stages, so the stage that merges text never sees the pair; the export then
+    prints one string on top of the other.  Two text boxes covering the same
+    area and agreeing on the wording are one label — the poorer copy goes.
+
+    Coverage, not IoU: one box is usually a full-width cell and the other the
+    ink-tight line inside it, which keeps IoU low while the smaller box is
+    almost entirely covered.
+    """
+    from src.app.services.structure.fidelity.contracts import owner_text_similarity
+
+    texts = [
+        index
+        for index, element in enumerate(elements)
+        if element.get("type") == "text" and element.get("text")
+    ]
+    doomed: set[int] = set()
+    for position, first in enumerate(texts):
+        if first in doomed:
+            continue
+        first_rect = _layout_rect(elements[first])
+        if first_rect is None:
+            continue
+        for second in texts[position + 1 :]:
+            if second in doomed:
+                continue
+            second_rect = _layout_rect(elements[second])
+            if second_rect is None:
+                continue
+            overlap_w = min(first_rect[0] + first_rect[2], second_rect[0] + second_rect[2]) - max(
+                first_rect[0], second_rect[0]
+            )
+            overlap_h = min(first_rect[1] + first_rect[3], second_rect[1] + second_rect[3]) - max(
+                first_rect[1], second_rect[1]
+            )
+            if overlap_w <= 0 or overlap_h <= 0:
+                continue
+            coverage = (overlap_w * overlap_h) / max(
+                1, min(first_rect[2] * first_rect[3], second_rect[2] * second_rect[3])
+            )
+            if coverage < COINCIDENT_TEXT_COVERAGE:
+                continue
+            if (
+                owner_text_similarity(
+                    elements[first].get("text"), elements[second].get("text")
+                )
+                < COINCIDENT_TEXT_SIMILARITY
+            ):
+                continue
+            if _text_cleanliness(elements[first]) >= _text_cleanliness(elements[second]):
+                doomed.add(second)
+            else:
+                doomed.add(first)
+                break
+    if not doomed:
+        return 0
+    elements[:] = [
+        element for index, element in enumerate(elements) if index not in doomed
+    ]
+    return len(doomed)
+
+
 def attach_layout_frames(elements: list[dict[str, Any]]) -> int:
     """Group elements into Auto Layout frames along the strict containment tree.
 
@@ -2413,6 +2491,7 @@ def compile_scene_plan_to_design(
     )
     if right_rail is not None:
         elements.append(right_rail)
+    _drop_coincident_texts(elements)
     written_frames = attach_layout_frames(elements)
     # A frame's members must paint as one contiguous unit; an overlay that
     # lands inside that interval belongs on top of it, not in the middle.
