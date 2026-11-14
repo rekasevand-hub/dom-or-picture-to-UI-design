@@ -1480,6 +1480,140 @@ def _avoid_coloured_neighbours(
     return moved
 
 
+def _frame_closure(
+    root: int,
+    elements: list[dict[str, Any]],
+) -> set[int]:
+    """Every element painted as part of ``root``'s frame, children included."""
+    by_id = {str(element.get("id")): index for index, element in enumerate(elements)}
+    seen: set[int] = set()
+
+    def walk(index: int) -> None:
+        if index in seen:
+            return
+        seen.add(index)
+        for child in elements[index].get("layoutChildren") or []:
+            nested = by_id.get(str(child.get("id")))
+            if nested is not None and nested not in seen:
+                walk(nested)
+
+    walk(root)
+    return seen
+
+
+def _lift_frame_overlays(
+    elements: list[dict[str, Any]],
+    frames: list[int],
+) -> int:
+    """Pull overlays out of a frame's paint interval and put them on top.
+
+    ``paint_order`` sorts the flat element list by geometry, so a card's
+    background, the floating panel's background and the card's own text end up
+    interleaved: background → overlay → text.  ``resolve_frames`` then sees an
+    outsider inside the frame's interval and rejects the frame.
+
+    A frame's members are already a contiguous unit when it is painted as one
+    node, so anything that lands inside the interval without belonging to the
+    frame is an overlay sitting on top of it.  Moving that whole overlay (its
+    own children too) past the frame with ``zIndex`` restores both facts: the
+    frame paints as one block, and the overlay still covers it.
+    """
+    if not frames:
+        return 0
+    from src.app.services.rendering.adapter_base import paint_order
+
+    # One fixed tier, computed once: bumping a counter per pass let frames
+    # overtake each other and shuffled the whole order.
+    overlay_z = 1 + max((int(element.get("zIndex") or 0) for element in elements), default=0)
+    order = [index for index, _item in paint_order(elements)]
+    position = {index: spot for spot, index in enumerate(order)}
+    lifted = 0
+    for frame in frames:
+        closure = _frame_closure(frame, elements)
+        spots = [position[member] for member in closure if member in position]
+        if not spots:
+            continue
+        last = max(spots)
+        start = position.get(frame, last)
+        frame_box = _layout_rect(elements[frame])
+        if frame_box is None:
+            continue
+        for index in order[start + 1 : last + 1]:
+            if index in closure:
+                continue
+            box = _layout_rect(elements[index])
+            if box is None:
+                continue
+            # Only something that actually covers the frame is an overlay.
+            # Pushing everything in the interval also moved unrelated elements
+            # and threw the whole order off.
+            if not _rects_overlap(frame_box, box):
+                continue
+            # A box inside the frame is its own decoration (a group outline, a
+            # separator) or a straggler member; lifting it would put that
+            # chrome above the very buttons it frames.
+            if _rect_contains(frame_box, box, tolerance=4):
+                continue
+            elements[index]["zIndex"] = overlay_z
+            # Its children ride one tier higher, so they stay above their own
+            # background and above the frame they cover.
+            for other, element in enumerate(elements):
+                if other == index:
+                    continue
+                child = _layout_rect(element)
+                if child is not None and _rect_contains(box, child, tolerance=4):
+                    element["zIndex"] = overlay_z + 1
+            lifted += 1
+    return lifted
+
+
+def _trim_under_top_band(
+    containers: list[dict[str, Any]],
+    width: int,
+) -> int:
+    """Give the top band its strip back.
+
+    The header spans the page and is painted last, so it covers the sidebar's
+    first 72px.  That overlap is meaningless — it is a measuring artefact, not
+    a design — and it makes ``resolve_frames`` treat the header as a later
+    outsider inside the sidebar's rectangle, which blocks the sidebar frame.
+    Trimming the sidebar's top edge to the band's bottom removes the overlap
+    without moving anything visible: the header already hides that strip.
+    """
+    trunks: list[tuple[int, int, int, int]] = []
+    for container in containers:
+        rect = _layout_rect(container)
+        if rect is None:
+            continue
+        if rect[1] <= 2 and rect[3] < 120 and rect[2] >= width * 0.8:
+            trunks.append(rect)
+    if not trunks:
+        return 0
+    trimmed = 0
+    for container in containers:
+        rect = _layout_rect(container)
+        if rect is None or rect[1] > 2:
+            continue
+        for trunk in trunks:
+            if rect == trunk:
+                continue
+            overlap_w = min(rect[0] + rect[2], trunk[0] + trunk[2]) - max(rect[0], trunk[0])
+            if overlap_w <= 2:
+                continue
+            if _rect_contains(rect, trunk, tolerance=2) or _rect_contains(
+                trunk, rect, tolerance=2
+            ):
+                continue
+            band_bottom = trunk[1] + trunk[3]
+            if band_bottom >= rect[1] + rect[3] - 4:
+                continue
+            container["y"] = band_bottom
+            container["height"] = rect[3] - (band_bottom - rect[1])
+            trimmed += 1
+            break
+    return trimmed
+
+
 def _keep_renderable_frames(
     elements: list[dict[str, Any]],
     written: int,
@@ -1566,8 +1700,11 @@ def attach_layout_frames(elements: list[dict[str, Any]]) -> int:
             continue
         if _has_nested_container(children, elements):
             continue
-        if _has_straddling_block(owner, rects, set(children)):
-            continue
+        # No straddling veto here.  An overlay that covers this container is
+        # lifted during the paint-order pass that follows, and only then does
+        # the renderer have the final say.  Vetoing earlier deadlocked the two:
+        # the overlay blocked the frame, and without the frame the overlay was
+        # never lifted.
         container["layout"] = spec
         container["layoutChildren"] = [
             {"id": str(elements[child].get("id") or "")} for child in children
@@ -1686,6 +1823,7 @@ def compile_scene_plan_to_design(
     containers.extend(control_groups)
     decorations.extend(control_group_decorations)
     _avoid_coloured_neighbours(containers, background)
+    _trim_under_top_band(containers, width)
     elements = [*containers, *decorations, *leaves]
     _apply_group_decoration_depths(elements, control_groups)
     form_background = _source_form_background(
@@ -1704,9 +1842,18 @@ def compile_scene_plan_to_design(
     )
     if right_rail is not None:
         elements.append(right_rail)
-    layout_frames = _keep_renderable_frames(
-        elements, attach_layout_frames(elements)
+    written_frames = attach_layout_frames(elements)
+    # A frame's members must paint as one contiguous unit; an overlay that
+    # lands inside that interval belongs on top of it, not in the middle.
+    _lift_frame_overlays(
+        elements,
+        [
+            index
+            for index, element in enumerate(elements)
+            if element.get("layoutChildren")
+        ],
     )
+    layout_frames = _keep_renderable_frames(elements, written_frames)
     text_count = sum(
         element.get("type") == "text" and bool(element.get("text"))
         for element in elements
