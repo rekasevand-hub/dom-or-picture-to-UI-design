@@ -36,6 +36,7 @@ from src.app.services.structure.fidelity.fixed_canvas_compiler import (
     _fit_table_text,
     _keep_renderable_frames,
     _lift_frame_overlays,
+    _repartition_table_rows,
     attach_layout_frames,
 )
 
@@ -75,8 +76,10 @@ def _build(tag: str) -> tuple[list[dict], list[int], dict]:
     # The fixture is the design as compiled: table cells already sit on the
     # rows their OCR lines were read at, and the frame fields are stripped so
     # the assembly has to be redone from geometry alone.
-    # Type size for table cells is derived from ink, never from the cell box;
-    # replaying it here keeps the rule honest against frozen OCR lines.
+    # Type size for table cells is derived from ink, never from the cell box,
+    # and a header row's columns are rebuilt from where its words are.
+    # Replaying both here keeps the rules honest against frozen OCR lines.
+    _repartition_table_rows(elements, design.get("ocr"))
     _fit_table_text(elements, design.get("ocr"), None)
     _drop_page_coloured_shells(elements, background)
     _drop_coincident_texts(elements)
@@ -325,3 +328,32 @@ def test_no_text_is_wider_than_its_own_box(tag: str) -> None:
                 (str(element["text"])[:14], round(font, 1), int(element["width"]), int(needed))
             )
     assert not overflowing, f"{tag}: text wider than its box: {overflowing[:3]}"
+
+
+@pytest.mark.parametrize("tag", ["inventory", "inventory2"])
+def test_table_columns_never_overlap(tag: str) -> None:
+    """A rebuilt row must be a partition, not a pile.
+
+    The inventory header used to arrive as 383 / 408 / 435 / 2492 / 2519 with
+    the words at 626 / 844 / 1064 / 1274 / 1548: five labels crammed into 25px
+    columns and the last two swapped end for end.
+    """
+    elements, _accepted, _report = _build(tag)
+    for table in elements:
+        if not str(table.get("id", "")).startswith("table-node:"):
+            continue
+        top, bottom = table["y"], table["y"] + table["height"]
+        row = [
+            element
+            for element in elements
+            if str(element.get("contentRef") or "").startswith("table-header:")
+            and top <= element["y"] <= bottom
+        ]
+        row.sort(key=lambda element: element["x"])
+        for left, right in zip(row, row[1:]):
+            assert left["x"] + left["width"] <= right["x"] + 1, (
+                f"{tag}: columns overlap {left.get('text')!r} / {right.get('text')!r}"
+            )
+        assert all(element["width"] >= 40 for element in row), (
+            f"{tag}: narrow column {[e['width'] for e in row]}"
+        )

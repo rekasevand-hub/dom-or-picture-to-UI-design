@@ -2360,6 +2360,201 @@ def _measure_ink(
     )
 
 
+#: A row needs at least this many cells agreeing with OCR before its columns
+#: are rebuilt, and at least one of them this far out of place.
+ROW_REPARTITION_MIN_MATCHES = 2
+ROW_REPARTITION_MIN_SHIFT = 40
+#: Cells within this many pixels of each other vertically are one row.
+ROW_BAND = 14
+#: A row's cells must also start at the same height.  A data band whose cells
+#: are scattered over 60px is a partially detected row, and re-slicing it would
+#: invent columns between cells that belong to different lines.
+ROW_SPREAD_MAX = 24
+
+
+def _table_roots(
+    elements: list[dict[str, Any]],
+) -> tuple[list[int | None], list[tuple[int, int, int, int] | None]]:
+    """Owner chain plus, for each element, the table that contains it."""
+    rects = [
+        _layout_rect(element) if str(element.get("type")) in _LAYOUT_MEMBER_TYPES else None
+        for element in elements
+    ]
+    containers = {
+        index
+        for index, element in enumerate(elements)
+        if str(element.get("type")) in ("container", "table")
+    }
+    owners = [
+        _owner_index(rects, index, parent_candidates=containers) if rects[index] else None
+        for index in range(len(elements))
+    ]
+    roots: list[int | None] = []
+    for index in range(len(elements)):
+        current = owners[index]
+        seen: set[int] = set()
+        found = None
+        while current is not None and current not in seen:
+            element = elements[current]
+            if str(element.get("type")) == "table" or str(element.get("id") or "").startswith(
+                "table-node:"
+            ):
+                found = current
+                break
+            seen.add(current)
+            current = owners[current] if current < len(owners) else None
+        roots.append(found)
+    return roots, rects
+
+
+def _repartition_table_rows(
+    elements: list[dict[str, Any]],
+    observations: Sequence[Mapping[str, Any]] | None,
+) -> int:
+    """Rebuild one table row's columns from where its words actually are.
+
+    A detected grid can put a row's columns at the extremes — the inventory
+    header came back as 383 / 408 / 435 / 2492 / 2519 while the words are at
+    626 / 844 / 1064 / 1274 / 1548 — leaving five labels in 25px columns and a
+    pair swapped end for end.  Per-cell nudging cannot fix that: widening one
+    cell pushes it into its neighbour and the renderer refuses the whole table
+    (measured: inventory2 lost two frames).
+
+    So the row is rebuilt as a whole.  Each cell takes its column from the
+    midpoint between its own words and the next cell's words, the first column
+    starts at the row's left edge and the last ends at its right edge.  The
+    result is contiguous by construction, so no cell can overlap another.
+
+    Only OCR whose centre lies inside the table is considered.  Without that
+    filter a sidebar label that happens to share a word with a cell would drag
+    a column out of the table entirely.
+    """
+    if not observations:
+        return 0
+    from src.app.services.structure.fidelity.contracts import (
+        normalize_match_text,
+        owner_text_similarity,
+    )
+
+    # Headers only.  A data row's columns must agree with the header's, and
+    # re-slicing one independently produced columns that no longer lined up
+    # with anything — on inventory2 it cost two frames.  The header is the row
+    # that gets to define them.
+    cells = [
+        index
+        for index, element in enumerate(elements)
+        if str(element.get("contentRef") or element.get("id") or "").startswith(
+            "table-header:"
+        )
+        and element.get("text")
+    ]
+    if len(cells) < ROW_REPARTITION_MIN_MATCHES:
+        return 0
+    roots, rects = _table_roots(elements)
+
+    lines: list[tuple[str, tuple[int, int, int, int]]] = []
+    for observation in observations:
+        if not isinstance(observation, Mapping):
+            continue
+        text = normalize_match_text(observation.get("text"))
+        box = observation.get("bbox")
+        if not text or not isinstance(box, (list, tuple)) or len(box) != 4:
+            continue
+        try:
+            values = tuple(int(round(float(value))) for value in box)
+        except (TypeError, ValueError):
+            continue
+        if values[2] <= 0 or values[3] <= 0:
+            continue
+        lines.append((text, values))  # type: ignore[arg-type]
+
+    # Group by where the words are, not by where the cells currently sit.  A
+    # half-corrected row has some cells on the real baseline and others still
+    # on the grid's, and grouping by the cell would split one row in two.
+    bands: dict[tuple[int, int], list[tuple[int, tuple[int, int, int, int]]]] = {}
+    for index in cells:
+        root = roots[index]
+        box = rects[index]
+        if root is None or box is None:
+            continue
+        table_box = rects[root]
+        if table_box is None:
+            continue
+        text = normalize_match_text(elements[index].get("text"))
+        if not text:
+            continue
+        best = None
+        for line_text, line_box in lines:
+            centre_x = line_box[0] + line_box[2] / 2
+            centre_y = line_box[1] + line_box[3] / 2
+            if not (
+                table_box[0] <= centre_x <= table_box[0] + table_box[2]
+                and table_box[1] <= centre_y <= table_box[1] + table_box[3]
+            ):
+                continue
+            if line_text != text and owner_text_similarity(line_text, text) < 0.85:
+                continue
+            score = abs(centre_x - (box[0] + box[2] / 2))
+            if best is None or score < best[0]:
+                best = (score, line_box)
+        if best is None:
+            continue
+        bands.setdefault((root, int(round(best[1][1] / ROW_BAND))), []).append(
+            (index, best[1])
+        )
+
+    rebuilt = 0
+    for (root, _band), group in bands.items():
+        if len(group) < ROW_REPARTITION_MIN_MATCHES:
+            continue
+        table_box = rects[root]
+        if table_box is None:
+            continue
+        members = [index for index, _line in group]
+        tops = [rects[index][1] for index in members]
+        if max(tops) - min(tops) > ROW_SPREAD_MAX:
+            continue
+        matches = group
+        shift = max(
+            abs((rects[index][0] + rects[index][2] / 2) - (line[0] + line[2] / 2))
+            for index, line in matches
+        )
+        vertical = max(abs(rects[index][1] - line[1]) for index, line in matches)
+        if shift <= ROW_REPARTITION_MIN_SHIFT and vertical <= ROW_REPARTITION_MIN_SHIFT:
+            continue
+
+        matches.sort(key=lambda pair: pair[1][0])
+        left = min(rects[index][0] for index in members)
+        right = max(rects[index][0] + rects[index][2] for index in members)
+        left = max(left, table_box[0])
+        right = min(right, table_box[0] + table_box[2])
+        if right - left < 40:
+            continue
+        boundaries = [left]
+        for position in range(len(matches) - 1):
+            first = matches[position][1]
+            second = matches[position + 1][1]
+            boundaries.append((first[0] + first[2] + second[0]) // 2)
+        boundaries.append(right)
+        boundaries = sorted({min(right, max(left, value)) for value in boundaries})
+        if len(boundaries) != len(matches) + 1:
+            continue
+
+        top = min(rects[index][1] for index in members)
+        bottom = max(rects[index][1] + rects[index][3] for index in members)
+        for position, (index, _line) in enumerate(matches):
+            element = elements[index]
+            element["x"] = boundaries[position]
+            element["width"] = max(1, boundaries[position + 1] - boundaries[position])
+            element["y"] = top
+            element["height"] = max(18, bottom - top)
+            style = element.get("style")
+            if isinstance(style, dict):
+                style["textAlign"] = "center"
+            rebuilt += 1
+    return rebuilt
+
+
 def _fit_table_text(
     elements: list[dict[str, Any]],
     observations: Sequence[Mapping[str, Any]] | None,
@@ -2958,6 +3153,7 @@ def compile_scene_plan_to_design(
     if right_rail is not None:
         elements.append(right_rail)
     _anchor_table_text(elements, ocr_observations)
+    _repartition_table_rows(elements, ocr_observations)
     _fit_table_text(
         elements,
         ocr_observations,
