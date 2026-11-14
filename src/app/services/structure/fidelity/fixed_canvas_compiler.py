@@ -2372,6 +2372,32 @@ ROW_BAND = 14
 #: are scattered over 60px is a partially detected row, and re-slicing it would
 #: invent columns between cells that belong to different lines.
 ROW_SPREAD_MAX = 24
+#: Narrowest column a rebuilt row may produce.  Below this a CJK glyph no longer
+#: fits and the cell wraps into a vertical strip.
+ROW_REPARTITION_MIN_WIDTH = 40
+#: A solid coloured bar: thin, wide, saturated, and filled edge to edge.  A
+#: rule is unsaturated, a border is thinner, a highlighted row is taller.
+BAR_MIN_HEIGHT = 6
+BAR_MAX_HEIGHT = 22
+BAR_MIN_WIDTH = 100
+BAR_MIN_ASPECT = 6.0
+#: Saturation on the 0-255 scale.  A dark slate panel measures 83, a blue bar
+#: around 200 — the floor has to sit between the two or every sidebar edge
+#: becomes a "bar".
+BAR_MIN_SATURATION = 110
+BAR_MIN_VALUE = 40
+BAR_FILL_RATIO = 0.7
+#: Overlap with an element the plan already carries, above which the bar is
+#: that element rather than a missing one.
+BAR_EXISTING_IOU = 0.35
+BAR_MAX_REGIONS = 8
+#: A control has to be at least this far from its own words before the box is
+#: treated as the error rather than a repeat of a label that is simply nearby.
+CONTROL_REANCHOR_MIN_SHIFT = 80
+#: How far a cell may sit from the OCR line it is matched to.  Its own words
+#: are read within a couple of row heights; a line several rows away is a
+#: different row's label that happens to read the same.
+ROW_ATTACH_MAX = 160
 
 
 def _table_roots(
@@ -2473,35 +2499,75 @@ def _repartition_table_rows(
     # Group by where the words are, not by where the cells currently sit.  A
     # half-corrected row has some cells on the real baseline and others still
     # on the grid's, and grouping by the cell would split one row in two.
+    #
+    # The table is taken from the *words*, not from the cell: a cell measured
+    # below the table's own rectangle has no table in its owner chain at all,
+    # and that is exactly the label that stays adrift (inventory2's "失效日期",
+    # 112px under its row).  Its OCR line is inside the table, so the line knows
+    # where the cell belongs even though the cell does not.
+    tables = [
+        index
+        for index, element in enumerate(elements)
+        if str(element.get("type")) == "table"
+        or str(element.get("id") or "").startswith("table-node:")
+    ]
+
+    def table_at(line_box: tuple[int, int, int, int]) -> int | None:
+        centre_x = line_box[0] + line_box[2] / 2
+        centre_y = line_box[1] + line_box[3] / 2
+        best: tuple[int, int] | None = None
+        for table in tables:
+            box = rects[table]
+            if box is None:
+                continue
+            if not (
+                box[0] <= centre_x <= box[0] + box[2]
+                and box[1] <= centre_y <= box[1] + box[3]
+            ):
+                continue
+            area = box[2] * box[3]
+            if best is None or area < best[0]:
+                best = (area, table)
+        return best[1] if best else None
+
     bands: dict[tuple[int, int], list[tuple[int, tuple[int, int, int, int]]]] = {}
     for index in cells:
-        root = roots[index]
         box = rects[index]
-        if root is None or box is None:
-            continue
-        table_box = rects[root]
-        if table_box is None:
+        if box is None:
             continue
         text = normalize_match_text(elements[index].get("text"))
         if not text:
             continue
         best = None
         for line_text, line_box in lines:
-            centre_x = line_box[0] + line_box[2] / 2
-            centre_y = line_box[1] + line_box[3] / 2
-            if not (
-                table_box[0] <= centre_x <= table_box[0] + table_box[2]
-                and table_box[1] <= centre_y <= table_box[1] + table_box[3]
-            ):
-                continue
             if line_text != text and owner_text_similarity(line_text, text) < 0.85:
                 continue
-            score = abs(centre_x - (box[0] + box[2] / 2))
+            if abs((line_box[1] + line_box[3] / 2) - (box[1] + box[3] / 2)) > ROW_ATTACH_MAX:
+                continue
+            owner = table_at(line_box)
+            if owner is None:
+                # Nothing in the picture claims these words: fall back to the
+                # cell's own table, and only if it really contains them.
+                owner = roots[index]
+                table_box = rects[owner] if owner is not None else None
+                centre_x = line_box[0] + line_box[2] / 2
+                centre_y = line_box[1] + line_box[3] / 2
+                if table_box is None or not (
+                    table_box[0] <= centre_x <= table_box[0] + table_box[2]
+                    and table_box[1] <= centre_y <= table_box[1] + table_box[3]
+                ):
+                    continue
+            # Nearest line on both axes, weighted towards y: two tables can
+            # carry the same header words at the same x, and only the row they
+            # sit on tells them apart.
+            score = abs(
+                (line_box[1] + line_box[3] / 2) - (box[1] + box[3] / 2)
+            ) + 0.25 * abs((line_box[0] + line_box[2] / 2) - (box[0] + box[2] / 2))
             if best is None or score < best[0]:
-                best = (score, line_box)
+                best = (score, line_box, owner)
         if best is None:
             continue
-        bands.setdefault((root, int(round(best[1][1] / ROW_BAND))), []).append(
+        bands.setdefault((best[2], int(round(best[1][1] / ROW_BAND))), []).append(
             (index, best[1])
         )
 
@@ -2513,8 +2579,13 @@ def _repartition_table_rows(
         if table_box is None:
             continue
         members = [index for index, _line in group]
-        tops = [rects[index][1] for index in members]
-        if max(tops) - min(tops) > ROW_SPREAD_MAX:
+        # The words decide whether these cells are one row.  Where the *cells*
+        # were measured is the thing being repaired, so a cell sitting a
+        # hundred pixels below its own words is an outlier to pull back, not a
+        # reason to leave the whole row mis-columned — that is how the
+        # inventory2 header kept five squeezed columns and one label adrift.
+        line_tops = [line[1] for _index, line in group]
+        if max(line_tops) - min(line_tops) > ROW_SPREAD_MAX:
             continue
         matches = group
         shift = max(
@@ -2526,24 +2597,35 @@ def _repartition_table_rows(
             continue
 
         matches.sort(key=lambda pair: pair[1][0])
+        cell_tops = sorted(rects[index][1] for index in members)
+        top = cell_tops[len(cell_tops) // 2]
+        inliers = [
+            index for index in members if abs(rects[index][1] - top) <= ROW_SPREAD_MAX
+        ]
+        if not inliers:
+            continue
+        bottom = max(rects[index][1] + rects[index][3] for index in inliers)
+
         left = min(rects[index][0] for index in members)
         right = max(rects[index][0] + rects[index][2] for index in members)
         left = max(left, table_box[0])
         right = min(right, table_box[0] + table_box[2])
-        if right - left < 40:
+        if right - left < ROW_REPARTITION_MIN_WIDTH * len(matches):
             continue
+        # Midpoints between neighbouring words, walked left to right and forced
+        # to stay at least one readable column apart.  The row is then a
+        # partition by construction: `cell[i].right == cell[i+1].left`, nothing
+        # overlaps, and nothing leaves the table.
         boundaries = [left]
         for position in range(len(matches) - 1):
             first = matches[position][1]
             second = matches[position + 1][1]
-            boundaries.append((first[0] + first[2] + second[0]) // 2)
+            boundary = (first[0] + first[2] + second[0]) // 2
+            boundaries.append(max(boundary, boundaries[-1] + ROW_REPARTITION_MIN_WIDTH))
         boundaries.append(right)
-        boundaries = sorted({min(right, max(left, value)) for value in boundaries})
-        if len(boundaries) != len(matches) + 1:
+        if boundaries[-1] < boundaries[-2] + ROW_REPARTITION_MIN_WIDTH:
             continue
 
-        top = min(rects[index][1] for index in members)
-        bottom = max(rects[index][1] + rects[index][3] for index in members)
         for position, (index, _line) in enumerate(matches):
             element = elements[index]
             element["x"] = boundaries[position]
@@ -2901,6 +2983,27 @@ def _rendered_span(element: Mapping[str, Any]) -> tuple[int, int]:
     return (left, left + max(box_width, int(round(estimated))))
 
 
+#: Glyphs OCR swaps for one another inside an identifier.  "WO5OS-OO5" and
+#: "W0505-005" are the same rack, read twice by two engines; without folding,
+#: one substituted letter looks like a different label and both get printed.
+OCR_HOMOGLYPHS = str.maketrans(
+    {
+        "o": "0",
+        "s": "5",
+        "i": "1",
+        "l": "1",
+        "b": "8",
+        "z": "2",
+        "g": "6",
+    }
+)
+
+
+def _fold_homoglyphs(text: str) -> str:
+    """Collapse letter/digit pairs OCR cannot tell apart, for matching only."""
+    return text.translate(OCR_HOMOGLYPHS)
+
+
 def _shared_affix(left: str, right: str) -> int:
     heads = 0
     for first, second in zip(left, right):
@@ -3082,7 +3185,11 @@ def _drop_coincident_texts(
             if same_line >= DUPLICATE_LINE_Y_OVERLAP:
                 one = str(elements[first].get("text") or "").strip()
                 two = str(elements[second].get("text") or "").strip()
-                if one and two and (one in two or two in one):
+                key_one = _fold_homoglyphs(normalize_owner_text(one))
+                key_two = _fold_homoglyphs(normalize_owner_text(two))
+                if one and two and (
+                    one in two or two in one or key_one in key_two or key_two in key_one
+                ):
                     shorter = one if len(one) <= len(two) else two
                     # A number on its own is a value, not a shortened label:
                     # the "100" cell in a quantity column is inside the row's
@@ -3095,13 +3202,11 @@ def _drop_coincident_texts(
                             continue
                         doomed.add(first)
                         break
-                key_one = normalize_owner_text(one)
-                key_two = normalize_owner_text(two)
                 if key_one and key_two and not (
                     key_one in key_two or key_two in key_one
                 ):
                     shared = _shared_affix(key_one, key_two)
-                    alike = owner_text_similarity(one, two)
+                    alike = owner_text_similarity(key_one, key_two)
                     covered = _label_match_ratio(key_one, key_two)
                     if (
                         shared >= DUPLICATE_LINE_AFFIX
@@ -3260,6 +3365,9 @@ def _has_ocr_support(
     text: str,
     box: tuple[int, int, int, int],
     lines: Sequence[tuple[str, tuple[int, int, int, int]]],
+    *,
+    slack: int = ICON_DESCRIPTOR_OCR_SLACK,
+    threshold: float = 0.75,
 ) -> bool:
     from src.app.services.structure.fidelity.contracts import (
         normalize_match_text,
@@ -3270,12 +3378,12 @@ def _has_ocr_support(
     if not key:
         return False
     for line_text, line_box in lines:
-        if line_text != key and owner_text_similarity(line_text, key) < 0.75:
+        if line_text != key and owner_text_similarity(line_text, key) < threshold:
             continue
-        left = box[0] - ICON_DESCRIPTOR_OCR_SLACK
-        top = box[1] - ICON_DESCRIPTOR_OCR_SLACK
-        right = box[0] + box[2] + ICON_DESCRIPTOR_OCR_SLACK
-        bottom = box[1] + box[3] + ICON_DESCRIPTOR_OCR_SLACK
+        left = box[0] - slack
+        top = box[1] - slack
+        right = box[0] + box[2] + slack
+        bottom = box[1] + box[3] + slack
         centre_x = line_box[0] + line_box[2] / 2
         centre_y = line_box[1] + line_box[3] / 2
         if left <= centre_x <= right and top <= centre_y <= bottom:
@@ -3417,6 +3525,265 @@ def _separate_badge_icon_text(elements: list[dict[str, Any]]) -> int:
             moved += 1
             break
     return moved
+
+
+def _table_containing(
+    box: tuple[int, int, int, int],
+    tables: Sequence[int],
+    rects: Sequence[tuple[int, int, int, int] | None],
+) -> int | None:
+    """The smallest table whose rectangle holds this box's centre."""
+    centre_x = box[0] + box[2] / 2
+    centre_y = box[1] + box[3] / 2
+    best: tuple[int, int] | None = None
+    for table in tables:
+        other = rects[table]
+        if other is None:
+            continue
+        if not (
+            other[0] <= centre_x <= other[0] + other[2]
+            and other[1] <= centre_y <= other[1] + other[3]
+        ):
+            continue
+        area = other[2] * other[3]
+        if best is None or area < best[0]:
+            best = (area, table)
+    return best[1] if best else None
+
+
+def _recover_saturated_bars(
+    elements: list[dict[str, Any]],
+    image_path: str,
+    width: int,
+    height: int,
+) -> int:
+    """Add the solid coloured bars nothing else in the plan accounts for.
+
+    A progress bar is the one element every perception stage drops: too thin to
+    be a container, no words on it, not a glyph.  The review screen came back
+    with "处理进度 90%" and nothing under it.  Pixels know: a run six to
+    twenty-two pixels tall, at least a hundred wide, saturated, and almost
+    completely filled is a painted bar, not a line, not a border, not text.
+    """
+    import numpy as np
+    from PIL import Image
+
+    try:
+        import cv2
+    except Exception:  # pragma: no cover - opencv is a pipeline dependency
+        return 0
+    try:
+        image = np.asarray(Image.open(image_path).convert("RGB"), dtype=np.int16)
+    except (OSError, ValueError):
+        return 0
+    if image.ndim != 3 or image.shape[0] < 8 or image.shape[1] < 8:
+        return 0
+    image = image[:height, :width].astype(np.int32)
+    pool = image.reshape(-1, 3)
+    # HSV saturation, computed the cheap way: (max - min) / max.  int32 is not
+    # optional: on int16 the 255x multiply overflows and a blue bar reads as
+    # unsaturated noise.
+    high = pool.max(axis=1)
+    low = pool.min(axis=1)
+    saturation = np.where(high > 0, (high - low) * 255 // np.maximum(high, 1), 0)
+    mask = (
+        (saturation.reshape(image.shape[:2]) >= BAR_MIN_SATURATION)
+        & (high.reshape(image.shape[:2]) >= BAR_MIN_VALUE)
+    ).astype(np.uint8)
+    if not mask.any():
+        return 0
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((3, 3), dtype=np.uint8))
+    count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(mask, 8)
+
+    rects = [_layout_rect(element) for element in elements]
+    texts = [
+        rects[index]
+        for index, element in enumerate(elements)
+        if str(element.get("type")) == "text" and element.get("text") and rects[index]
+    ]
+
+    candidates: list[tuple[int, list[int]]] = []
+    for index in range(1, count):
+        x, y, box_width, box_height, area = (int(value) for value in stats[index, :5])
+        if box_height < BAR_MIN_HEIGHT or box_height > BAR_MAX_HEIGHT:
+            continue
+        if box_width < BAR_MIN_WIDTH:
+            continue
+        if box_width / max(1, box_height) < BAR_MIN_ASPECT:
+            continue
+        if area / max(1, box_width * box_height) < BAR_FILL_RATIO:
+            continue
+        box = (x, y, box_width, box_height)
+        # Words printed on it means it is a highlight behind a label, not a bar.
+        if any(_iou(box, text) >= 0.25 for text in texts):
+            continue
+        # Already in the design: a rule, a chip, a divider that came with a fill.
+        if any(
+            rect is not None
+            and _iou(box, rect) >= BAR_EXISTING_IOU
+            for rect in rects
+        ):
+            continue
+        candidates.append((area, [x, y, box_width, box_height]))
+
+    if not candidates:
+        return 0
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    added = 0
+    from src.app.services.structure.image_contract import _dominant_color
+    from src.app.services.structure.fidelity.pixel_probe import (
+        sample_container_decoration,
+    )
+
+    for _area, box in candidates[:BAR_MAX_REGIONS]:
+        digest = hashlib.sha1(
+            f"{box[0]}:{box[1]}:{box[2]}:{box[3]}:{image_path}".encode("utf-8")
+        ).hexdigest()[:16]
+        style: dict[str, Any] = {"fillColor": _dominant_color(image_path, box, inset=1)}
+        style.update(sample_container_decoration(image_path, box, style["fillColor"]))
+        style.setdefault("borderRadius", max(2, min(box[3] // 2, 8)))
+        elements.append(
+            {
+                "id": f"bar:{digest}",
+                "type": "container",
+                "x": box[0],
+                "y": box[1],
+                "width": box[2],
+                "height": box[3],
+                "text": "",
+                "style": style,
+                "role": "progress",
+                "name": "Progress bar",
+                "contentRef": f"bar:{digest}",
+                "sceneOwnerId": f"bar:{digest}",
+                "imageMVP": {
+                    "source": "pixel-recovery",
+                    "role": "progress",
+                    "grouping_status": "recovered",
+                },
+            }
+        )
+        added += 1
+    return added
+
+
+def _resolve_misfiled_controls(
+    elements: list[dict[str, Any]],
+    observations: Sequence[Mapping[str, Any]] | None,
+    image_path: str,
+) -> int:
+    """Put a control back where its own words were read, or drop the copy.
+
+    A navigation item measured over a table is a double fault: the table now
+    has a stranger painted across its first row, and the sidebar row it came
+    from is empty.  OCR knows where those words really are.  When nothing on
+    the page reads them at the box the control sits in, the box is the error —
+    move it onto its line, and sample the fill again, because the colour was
+    taken at the wrong place too (a cyan nav pill measured over a white table
+    becomes white).
+
+    If another element already prints those words at that line, the control is
+    a second copy of it and goes away instead of stacking on it.
+    """
+    if not elements:
+        return 0
+    from src.app.services.structure.fidelity.contracts import (
+        normalize_owner_text,
+        owner_text_similarity,
+    )
+
+    lines = _ocr_lines(observations)
+    if not lines:
+        return 0
+    rects = [_layout_rect(element) for element in elements]
+    tables = [
+        index
+        for index, element in enumerate(elements)
+        if str(element.get("type")) == "table"
+        or str(element.get("id") or "").startswith("table-node:")
+    ]
+    if not tables:
+        return 0
+    doomed: set[int] = set()
+    repaired = 0
+    for index, element in enumerate(elements):
+        if str(element.get("type")) not in {"button", "input"}:
+            continue
+        if str(element.get("contentRef") or "").startswith(TABLE_TEXT_PREFIXES):
+            continue
+        text = normalize_owner_text(element.get("text"))
+        box = rects[index]
+        if not text or box is None:
+            continue
+        if _table_containing(box, tables, rects) is None:
+            continue
+        # Words printed here already?  Then the box is right and this is not
+        # the defect this pass handles.
+        if _has_ocr_support(
+            str(element.get("text") or ""), box, lines, slack=4, threshold=0.85
+        ):
+            continue
+        target: tuple[float, tuple[int, int, int, int]] | None = None
+        for line_text, line_box in lines:
+            if line_text != text and owner_text_similarity(line_text, text) < 0.85:
+                continue
+            distance = abs(
+                (line_box[0] + line_box[2] / 2) - (box[0] + box[2] / 2)
+            ) + abs((line_box[1] + line_box[3] / 2) - (box[1] + box[3] / 2))
+            if distance < CONTROL_REANCHOR_MIN_SHIFT:
+                continue
+            if target is None or distance < target[0]:
+                target = (distance, line_box)
+        if target is None:
+            continue
+        line_box = target[1]
+        twin = any(
+            other is not element
+            and other_index not in doomed
+            and str(other.get("type")) in {"text", "button", "input"}
+            and normalize_owner_text(other.get("text"))
+            and owner_text_similarity(other.get("text"), element.get("text")) >= 0.85
+            and _rect_contains(
+                _layout_rect(other) or (0, 0, 0, 0), line_box, tolerance=12
+            )
+            for other_index, other in enumerate(elements)
+        )
+        if twin:
+            doomed.add(index)
+            repaired += 1
+            continue
+        width, height = box[2], box[3]
+        new_x = int(round(line_box[0] + line_box[2] / 2 - width / 2))
+        new_y = int(round(line_box[1] + line_box[3] / 2 - height / 2))
+        element["x"], element["y"] = new_x, new_y
+        moved = (new_x, new_y, width, height)
+        rects[index] = moved
+        _resample_fill(element, image_path, moved)
+        repaired += 1
+    if doomed:
+        elements[:] = [
+            element for index, element in enumerate(elements) if index not in doomed
+        ]
+    return repaired
+
+
+def _resample_fill(
+    element: dict[str, Any],
+    image_path: str,
+    box: tuple[int, int, int, int],
+) -> None:
+    """Take the fill colour from where the element now sits."""
+    style = element.get("style")
+    if not isinstance(style, dict) or not style.get("fillColor"):
+        return
+    from src.app.services.structure.image_contract import _dominant_color
+
+    try:
+        colour = _dominant_color(image_path, list(box))
+    except Exception:  # noqa: BLE001 - a colour hint must never break the build
+        return
+    if colour:
+        style["fillColor"] = colour
 
 
 def _paint_as_backdrop(
@@ -3904,12 +4271,18 @@ def compile_scene_plan_to_design(
         ocr_observations,
         _pixel_edges(image_path, width, height),
     )
+    # Bars are the one element every perception stage drops: too thin for a
+    # container, no words, not a glyph.
+    _recover_saturated_bars(elements, image_path, width, height)
     _drop_page_coloured_shells(elements, background)
     # Icon captions the model invented have to go before the duplicate pass:
     # "search" over a magnifier looks like a label that a real one duplicates.
     _drop_icon_descriptor_labels(elements, ocr_observations)
     _drop_coincident_texts(elements, background)
     _separate_badge_icon_text(elements)
+    # A control measured over a table belongs to the words OCR read for it,
+    # which are somewhere else entirely.
+    _resolve_misfiled_controls(elements, ocr_observations, image_path)
     written_frames = attach_layout_frames(elements)
     # A frame's members must paint as one contiguous unit; an overlay that
     # lands inside that interval belongs on top of it, not in the middle.

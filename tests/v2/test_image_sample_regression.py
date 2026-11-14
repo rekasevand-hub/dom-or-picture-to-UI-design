@@ -39,6 +39,7 @@ from src.app.services.structure.fidelity.fixed_canvas_compiler import (
     _keep_renderable_frames,
     _lift_frame_overlays,
     _repartition_table_rows,
+    _resolve_misfiled_controls,
     _separate_badge_icon_text,
     attach_layout_frames,
 )
@@ -88,6 +89,7 @@ def _build(tag: str) -> tuple[list[dict], list[int], dict]:
     _drop_icon_descriptor_labels(elements, design.get("ocr"))
     _drop_coincident_texts(elements, background)
     _separate_badge_icon_text(elements)
+    _resolve_misfiled_controls(elements, design.get("ocr"), "")
     written = attach_layout_frames(elements)
     frames = [index for index, element in enumerate(elements) if element.get("layoutChildren")]
     _lift_frame_overlays(elements, frames)

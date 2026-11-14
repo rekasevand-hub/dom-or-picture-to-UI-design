@@ -1,16 +1,21 @@
-"""The four presentation rules, on synthetic cases.
+"""The presentation rules, on synthetic cases.
 
 Each rule answers a defect measured on the seven benchmarks, and each test
 states the smallest shape that shows it.  The screenshots themselves are not
-needed: these passes are geometry and strings.
+needed: these passes are geometry, strings and one drawn bar.
 """
 
 from __future__ import annotations
+
+from pathlib import Path
 
 from src.app.services.structure.fidelity.fixed_canvas_compiler import (
     _audit_filled_occluders,
     _drop_coincident_texts,
     _drop_icon_descriptor_labels,
+    _recover_saturated_bars,
+    _repartition_table_rows,
+    _resolve_misfiled_controls,
     _separate_badge_icon_text,
 )
 
@@ -202,3 +207,341 @@ def test_a_backdrop_fragment_is_repainted_in_the_panel_colour() -> None:
     ]
     assert _audit_filled_occluders(elements, "#666666") == 1
     assert elements[1]["style"]["fillColor"] == "#ffffff"
+
+
+# -- table row re-partition ------------------------------------------------
+
+
+def _table(index: int, x: int, y: int, width: int, height: int) -> dict:
+    return {
+        "id": f"table-node:table:{index}",
+        "type": "container",
+        "x": x,
+        "y": y,
+        "width": width,
+        "height": height,
+        "style": {"fillColor": "#ffffff"},
+    }
+
+
+def _header(index: int, x: int, y: int, width: int, height: int, text: str) -> dict:
+    element = _text(index, x, y, width, height, text)
+    element["id"] = f"table-header:{index}"
+    element["contentRef"] = f"table-header:{index}"
+    element["style"]["textAlign"] = "center"
+    return element
+
+
+def test_a_header_cell_below_the_table_is_pulled_back_into_its_row() -> None:
+    """inventory2's 失效日期 printed 112px under its own words."""
+    elements = [
+        _table(0, 100, 100, 600, 60),
+        _header(0, 110, 100, 80, 40, "单位"),
+        _header(1, 300, 100, 80, 40, "数量"),
+        _header(2, 200, 180, 80, 40, "日期"),
+    ]
+    ocr = [
+        {"text": "单位", "bbox": [140, 105, 40, 20]},
+        {"text": "数量", "bbox": [330, 105, 40, 20]},
+        {"text": "日期", "bbox": [240, 105, 40, 20]},
+    ]
+    assert _repartition_table_rows(elements, ocr) == 3
+    cells = elements[1:]
+    assert [cell["y"] for cell in cells] == [100, 100, 100]
+    ordered = sorted(cells, key=lambda cell: cell["x"])
+    for left, right in zip(ordered, ordered[1:]):
+        assert left["x"] + left["width"] <= right["x"] + 1
+        assert right["x"] >= 100 and right["x"] + right["width"] <= 700
+
+
+def test_a_row_of_cells_from_two_tables_is_not_merged() -> None:
+    """The same header words in two tables must follow their own rows."""
+    elements = [
+        _table(0, 100, 100, 600, 60),
+        _table(1, 100, 400, 600, 60),
+        _header(0, 100, 100, 120, 40, "单位"),
+        _header(1, 150, 100, 220, 40, "数量"),
+        _header(2, 100, 400, 120, 40, "单位"),
+        _header(3, 150, 400, 220, 40, "数量"),
+    ]
+    ocr = [
+        {"text": "单位", "bbox": [140, 105, 40, 20]},
+        {"text": "数量", "bbox": [330, 105, 40, 20]},
+        {"text": "单位", "bbox": [140, 405, 40, 20]},
+        {"text": "数量", "bbox": [330, 405, 40, 20]},
+    ]
+    assert _repartition_table_rows(elements, ocr) >= 2
+    assert [cell["y"] for cell in elements[2:4]] == [100, 100]
+    assert [cell["y"] for cell in elements[4:6]] == [400, 400]
+
+
+# -- misfiled controls -----------------------------------------------------
+
+
+def test_a_nav_control_measured_over_a_table_goes_back_to_its_words() -> None:
+    elements = [
+        _table(0, 100, 100, 400, 120),
+        {
+            "id": "control:1",
+            "type": "button",
+            "x": 150,
+            "y": 120,
+            "width": 80,
+            "height": 40,
+            "text": "库存管理",
+            "style": {"fillColor": "#ffffff"},
+        },
+    ]
+    ocr = [{"text": "库存管理", "bbox": [10, 300, 60, 20]}]
+    assert _resolve_misfiled_controls(elements, ocr, "") == 1
+    control = elements[1]
+    assert control["x"] == 0 and control["y"] == 290
+
+
+def test_a_nav_control_whose_words_are_already_printed_is_dropped() -> None:
+    elements = [
+        _table(0, 100, 100, 400, 120),
+        {
+            "id": "control:1",
+            "type": "button",
+            "x": 150,
+            "y": 120,
+            "width": 80,
+            "height": 40,
+            "text": "库存信息",
+            "style": {"fillColor": "#ffffff"},
+        },
+        _text(2, 8, 296, 90, 24, "库存信息"),
+    ]
+    ocr = [{"text": "库存信息", "bbox": [10, 300, 60, 20]}]
+    assert _resolve_misfiled_controls(elements, ocr, "") == 1
+    assert [element["id"] for element in elements] == [
+        "table-node:table:0",
+        "text:2",
+    ]
+
+
+def test_a_control_that_sits_on_its_own_words_is_left_alone() -> None:
+    elements = [
+        _table(0, 100, 100, 400, 120),
+        {
+            "id": "control:1",
+            "type": "button",
+            "x": 150,
+            "y": 120,
+            "width": 80,
+            "height": 40,
+            "text": "执行",
+            "style": {"fillColor": "#3366ff"},
+        },
+    ]
+    ocr = [{"text": "执行", "bbox": [160, 130, 60, 20]}]
+    assert _resolve_misfiled_controls(elements, ocr, "") == 0
+    assert elements[1]["x"] == 150
+
+
+# -- saturated bars --------------------------------------------------------
+
+
+def test_a_saturated_progress_bar_is_recovered_from_pixels(tmp_path: Path) -> None:
+    from PIL import Image
+
+    image = Image.new("RGB", (400, 140), "white")
+    for x in range(20, 320):
+        for y in range(40, 51):
+            image.putpixel((x, y), (40, 120, 250))
+    for x in range(20, 320):  # an unsaturated rule right below it
+        image.putpixel((x, 90), (200, 200, 200))
+    path = tmp_path / "bar.png"
+    image.save(path)
+    elements: list[dict] = []
+    assert _recover_saturated_bars(elements, str(path), 400, 140) == 1
+    bar = elements[0]
+    assert (bar["x"], bar["y"], bar["width"]) == (20, 40, 300)
+    assert 9 <= bar["height"] <= 12
+    assert bar["style"]["fillColor"].startswith("#")
+    assert bar["style"]["borderRadius"] >= 2
+
+
+def test_a_grey_rule_is_not_a_bar() -> None:
+    from PIL import Image
+
+    image = Image.new("RGB", (400, 140), "white")
+    for x in range(20, 320):
+        for y in range(40, 46):
+            image.putpixel((x, y), (200, 200, 200))
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as folder:
+        path = Path(folder) / "rule.png"
+        image.save(path)
+        assert _recover_saturated_bars([], str(path), 400, 140) == 0
+
+
+# -- table row re-partition ------------------------------------------------
+
+
+def _table(index: int, x: int, y: int, width: int, height: int) -> dict:
+    return {
+        "id": f"table-node:table:{index}",
+        "type": "container",
+        "x": x,
+        "y": y,
+        "width": width,
+        "height": height,
+        "style": {"fillColor": "#ffffff"},
+    }
+
+
+def _header(index: int, x: int, y: int, width: int, height: int, text: str) -> dict:
+    element = _text(index, x, y, width, height, text)
+    element["id"] = f"table-header:{index}"
+    element["contentRef"] = f"table-header:{index}"
+    element["style"]["textAlign"] = "center"
+    return element
+
+
+def test_a_header_cell_below_the_table_is_pulled_back_into_its_row() -> None:
+    """inventory2's 失效日期 printed 112px under its own words."""
+    elements = [
+        _table(0, 100, 100, 600, 60),
+        _header(0, 110, 100, 80, 40, "单位"),
+        _header(1, 300, 100, 80, 40, "数量"),
+        _header(2, 200, 180, 80, 40, "日期"),
+    ]
+    ocr = [
+        {"text": "单位", "bbox": [140, 105, 40, 20]},
+        {"text": "数量", "bbox": [330, 105, 40, 20]},
+        {"text": "日期", "bbox": [240, 105, 40, 20]},
+    ]
+    assert _repartition_table_rows(elements, ocr) == 3
+    cells = elements[1:]
+    assert [cell["y"] for cell in cells] == [100, 100, 100]
+    ordered = sorted(cells, key=lambda cell: cell["x"])
+    for left, right in zip(ordered, ordered[1:]):
+        assert left["x"] + left["width"] <= right["x"] + 1
+        assert right["x"] >= 100 and right["x"] + right["width"] <= 700
+
+
+def test_a_row_of_cells_from_two_tables_is_not_merged() -> None:
+    """The same header words in two tables must follow their own rows."""
+    elements = [
+        _table(0, 100, 100, 600, 60),
+        _table(1, 100, 400, 600, 60),
+        _header(0, 100, 100, 120, 40, "单位"),
+        _header(1, 150, 100, 220, 40, "数量"),
+        _header(2, 100, 400, 120, 40, "单位"),
+        _header(3, 150, 400, 220, 40, "数量"),
+    ]
+    ocr = [
+        {"text": "单位", "bbox": [140, 105, 40, 20]},
+        {"text": "数量", "bbox": [330, 105, 40, 20]},
+        {"text": "单位", "bbox": [140, 405, 40, 20]},
+        {"text": "数量", "bbox": [330, 405, 40, 20]},
+    ]
+    assert _repartition_table_rows(elements, ocr) >= 2
+    assert [cell["y"] for cell in elements[2:4]] == [100, 100]
+    assert [cell["y"] for cell in elements[4:6]] == [400, 400]
+
+
+# -- misfiled controls -----------------------------------------------------
+
+
+def test_a_nav_control_measured_over_a_table_goes_back_to_its_words() -> None:
+    elements = [
+        _table(0, 100, 100, 400, 120),
+        {
+            "id": "control:1",
+            "type": "button",
+            "x": 150,
+            "y": 120,
+            "width": 80,
+            "height": 40,
+            "text": "库存管理",
+            "style": {"fillColor": "#ffffff"},
+        },
+    ]
+    ocr = [{"text": "库存管理", "bbox": [10, 300, 60, 20]}]
+    assert _resolve_misfiled_controls(elements, ocr, "") == 1
+    control = elements[1]
+    assert control["x"] == 0 and control["y"] == 290
+
+
+def test_a_nav_control_whose_words_are_already_printed_is_dropped() -> None:
+    elements = [
+        _table(0, 100, 100, 400, 120),
+        {
+            "id": "control:1",
+            "type": "button",
+            "x": 150,
+            "y": 120,
+            "width": 80,
+            "height": 40,
+            "text": "库存信息",
+            "style": {"fillColor": "#ffffff"},
+        },
+        _text(2, 8, 296, 90, 24, "库存信息"),
+    ]
+    ocr = [{"text": "库存信息", "bbox": [10, 300, 60, 20]}]
+    assert _resolve_misfiled_controls(elements, ocr, "") == 1
+    assert [element["id"] for element in elements] == [
+        "table-node:table:0",
+        "text:2",
+    ]
+
+
+def test_a_control_that_sits_on_its_own_words_is_left_alone() -> None:
+    elements = [
+        _table(0, 100, 100, 400, 120),
+        {
+            "id": "control:1",
+            "type": "button",
+            "x": 150,
+            "y": 120,
+            "width": 80,
+            "height": 40,
+            "text": "执行",
+            "style": {"fillColor": "#3366ff"},
+        },
+    ]
+    ocr = [{"text": "执行", "bbox": [160, 130, 60, 20]}]
+    assert _resolve_misfiled_controls(elements, ocr, "") == 0
+    assert elements[1]["x"] == 150
+
+
+# -- saturated bars --------------------------------------------------------
+
+
+def test_a_saturated_progress_bar_is_recovered_from_pixels(tmp_path: Path) -> None:
+    from PIL import Image
+
+    image = Image.new("RGB", (400, 140), "white")
+    for x in range(20, 320):
+        for y in range(40, 51):
+            image.putpixel((x, y), (40, 120, 250))
+    for x in range(20, 320):  # an unsaturated rule right below it
+        image.putpixel((x, 90), (200, 200, 200))
+    path = tmp_path / "bar.png"
+    image.save(path)
+    elements: list[dict] = []
+    assert _recover_saturated_bars(elements, str(path), 400, 140) == 1
+    bar = elements[0]
+    assert (bar["x"], bar["y"], bar["width"]) == (20, 40, 300)
+    assert 9 <= bar["height"] <= 12
+    assert bar["style"]["fillColor"].startswith("#")
+    assert bar["style"]["borderRadius"] >= 2
+
+
+def test_a_grey_rule_is_not_a_bar() -> None:
+    from PIL import Image
+
+    image = Image.new("RGB", (400, 140), "white")
+    for x in range(20, 320):
+        for y in range(40, 46):
+            image.putpixel((x, y), (200, 200, 200))
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as folder:
+        path = Path(folder) / "rule.png"
+        image.save(path)
+        assert _recover_saturated_bars([], str(path), 400, 140) == 0
