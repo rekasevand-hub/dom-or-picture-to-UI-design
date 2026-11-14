@@ -1528,11 +1528,25 @@ def _lift_frame_overlays(
     # by every frame in this pass, so an overlay lifted for one frame could end
     # up level with another frame's members and stay inside its interval.
     overlay_z = OVERLAY_TIER
-    order = [index for index, _item in paint_order(elements)]
-    position = {index: spot for spot, index in enumerate(order)}
-    lifted = 0
-    for frame in frames:
-        closure = _frame_closure(frame, elements)
+    lifted: set[int] = set()
+    lifted_count = 0
+    closures = {frame: _frame_closure(frame, elements) for frame in frames}
+    # Largest frame first.  The big grid pushes its overlay out of the way
+    # before the small panel is examined; walking the other way round let the
+    # panel push the grid's own text up in return.
+    for frame in sorted(
+        frames,
+        key=lambda index: (
+            -(_layout_rect(elements[index]) or (0, 0, 0, 0))[2]
+            * (_layout_rect(elements[index]) or (0, 0, 0, 0))[3]
+        ),
+    ):
+        # Refresh after every frame: pushing one overlay changes the order the
+        # next frame sees, and stale indices are how the two frames kept
+        # handing members back and forth.
+        order = [index for index, _item in paint_order(elements)]
+        position = {index: spot for spot, index in enumerate(order)}
+        closure = closures[frame]
         spots = [position[member] for member in closure if member in position]
         if not spots:
             continue
@@ -1541,15 +1555,24 @@ def _lift_frame_overlays(
         frame_box = _layout_rect(elements[frame])
         if frame_box is None:
             continue
+        frame_area = frame_box[2] * frame_box[3]
+        # Members of *other* frames must not be dragged along: an overlay's
+        # icon can be geometrically inside a card, so it also belongs to the
+        # grid's closure.  Lifting it stretched the grid's interval past the
+        # overlay and re-blocked the frame.
+        foreign: set[int] = set()
+        for other_frame, other_closure in closures.items():
+            if other_frame in (frame, None):
+                continue
+            foreign |= other_closure
+        foreign -= closure
         for index in order[start + 1 : last + 1]:
-            if index in closure:
+            if index in closure or index in lifted:
                 continue
             box = _layout_rect(elements[index])
             if box is None:
                 continue
             # Only something that actually covers the frame is an overlay.
-            # Pushing everything in the interval also moved unrelated elements
-            # and threw the whole order off.
             if not _rects_overlap(frame_box, box):
                 continue
             # A box inside the frame is its own decoration (a group outline, a
@@ -1557,17 +1580,25 @@ def _lift_frame_overlays(
             # chrome above the very buttons it frames.
             if _rect_contains(frame_box, box, tolerance=4):
                 continue
+            # An ancestor or any larger container is the layer *underneath*,
+            # never an overlay on top: pushing it would invert the stack.
+            if _rect_contains(box, frame_box, tolerance=4):
+                continue
+            if box[2] * box[3] >= frame_area:
+                continue
             elements[index]["zIndex"] = overlay_z
             # Its children ride one tier higher, so they stay above their own
             # background and above the frame they cover.
             for other, element in enumerate(elements):
-                if other == index:
+                if other == index or other in foreign:
                     continue
                 child = _layout_rect(element)
                 if child is not None and _rect_contains(box, child, tolerance=4):
                     element["zIndex"] = overlay_z + 1
-            lifted += 1
-    return lifted
+                    lifted.add(other)
+            lifted.add(index)
+            lifted_count += 1
+    return lifted_count
 
 
 def _trim_under_top_band(

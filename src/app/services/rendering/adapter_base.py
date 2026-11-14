@@ -923,8 +923,11 @@ def paint_order(elements: list[dict]) -> list[tuple[int, dict]]:
     return sorted(
         enumerate(elements),
         key=lambda pair: (
-            1 if pair[1].get("overlay") else 0,
+            # zIndex first.  An overlay lifted above a frame must actually come
+            # after that frame's members; when zIndex sat below the overlay
+            # flag, a lifted container could still be ordered before plain text.
             int(pair[1].get("zIndex") or 0),
+            1 if pair[1].get("overlay") else 0,
             1 if pair[1].get("cropBackdrop") else 0,
             _paint_depth(pair[0], pair[1]),
             pair[0],
