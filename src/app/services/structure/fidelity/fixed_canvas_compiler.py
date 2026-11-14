@@ -1585,6 +1585,10 @@ def _lift_frame_overlays(
         for index in order[start + 1 : last + 1]:
             if index in closure or index in lifted:
                 continue
+            if elements[index].get("planeDetached"):
+                # It stands on the page behind the dialog.  Lifting it would put
+                # the page's own content on top of the glass.
+                continue
             box = _layout_rect(elements[index])
             if box is None:
                 continue
@@ -3670,6 +3674,160 @@ def _drop_icon_descriptor_labels(
     return cleared
 
 
+def _chip_ink(
+    pixels,
+    box: tuple[int, int, int, int],
+    fill: str,
+) -> tuple[str, float] | None:
+    """Colour and height of the glyphs printed on a chip.
+
+    The chip's fill is known, so the ink is whatever stands far from it.  The
+    median of those pixels is the type colour, and their vertical extent gives
+    the size the way the table pass measures it.
+    """
+    try:
+        import numpy as np
+    except Exception:  # pragma: no cover - imaging stack is a hard dependency
+        return None
+    if pixels is None:
+        return None
+    frame_height, frame_width = pixels.shape[:2]
+    x, y, width, height = box
+    left, top = max(0, x), max(0, y)
+    right = min(frame_width, x + width)
+    bottom = min(frame_height, y + height)
+    if right - left < 4 or bottom - top < 4:
+        return None
+    patch = pixels[top:bottom, left:right]
+    target = np.asarray(_hex_rgb(fill), dtype=np.int16)
+    distance = np.abs(patch - target).max(axis=2)
+    strong = distance >= 60
+    if int(strong.sum()) < 4:
+        return None
+    # The glyph's core, not its antialiased rim: the rim blends into the chip
+    # and turns a white label pale green.
+    core = distance >= max(60.0, float(distance.max()) * 0.8)
+    ink = patch[core] if int(core.sum()) >= 4 else patch[strong]
+    colour = "#%02x%02x%02x" % tuple(
+        int(value) for value in np.median(ink.reshape(-1, 3), axis=0)
+    )
+    rows = np.where(strong.sum(axis=1) >= max(2, (right - left) // 20))[0]
+    if rows.size == 0:
+        return None
+    return colour, float(rows.max() - rows.min() + 1)
+
+
+def _restore_chip_labels(
+    elements: list[dict[str, Any]],
+    image_path: str,
+    canvas: tuple[int, int] | None,
+    ocr_observations: Sequence[Mapping[str, Any]] | None,
+) -> int:
+    """Put the word back inside a badge whose label was absorbed by its row.
+
+    A row reads two ways: "库位" on the green chip, and the whole line as one
+    string.  The line wins the duplicate pass — it carries every word — and the
+    chip is left empty: the badge is real, its word is missing.  OCR still has
+    the chip's own reading at the chip's own coordinates, so the label is rebuilt
+    from there, centred in the chip and inked in the chip's own type colour.
+    """
+    if not ocr_observations or not canvas:
+        return 0
+    pixels = _pixel_edges(image_path, canvas[0], canvas[1])
+    lines: list[tuple[str, tuple[int, int, int, int]]] = []
+    for observation in ocr_observations:
+        if not isinstance(observation, Mapping):
+            continue
+        text = str(observation.get("text") or "").strip()
+        box = observation.get("bbox")
+        if not text or not isinstance(box, (list, tuple)) or len(box) != 4:
+            continue
+        try:
+            lines.append((text, tuple(int(value) for value in box)))
+        except (TypeError, ValueError):
+            continue
+    if not lines:
+        return 0
+    existing = [
+        rect
+        for rect in (
+            _layout_rect(element)
+            for element in elements
+            if str(element.get("type")) == "text" and element.get("text")
+        )
+        if rect is not None
+    ]
+    restored = 0
+    for element in list(elements):
+        if str(element.get("role") or "") != "text-backdrop":
+            continue
+        chip = _layout_rect(element)
+        if chip is None:
+            continue
+        if not (
+            CHIP_MIN_WIDTH <= chip[2] <= CHIP_MAX_WIDTH and chip[3] <= CHIP_MAX_HEIGHT
+        ):
+            continue
+        if any(_rect_contains(chip, other, tolerance=2) for other in existing):
+            continue
+        fill = _solid_fill(element)
+        if not fill:
+            continue
+        best: tuple[float, str, tuple[int, int, int, int]] | None = None
+        for text, line in lines:
+            if not _rect_contains(chip, line, tolerance=3):
+                continue
+            share = _overlap_share(line, chip)
+            if best is None or share > best[0]:
+                best = (share, text, line)
+        if best is None or best[0] < 0.5:
+            continue
+        ink = _chip_ink(pixels, best[2], fill)
+        colour = ink[0] if ink else "#ffffff"
+        height = ink[1] if ink else best[2][3] * 0.8
+        size = min(max(height * INK_TO_FONT, TABLE_FONT_MIN), TABLE_FONT_MAX)
+        width = best[2][2]
+        digest = hashlib.sha1(
+            f"{chip[0]}:{chip[1]}:{best[1]}".encode("utf-8")
+        ).hexdigest()[:16]
+        # A badge centres its word; the OCR box is the ink's own extent, so its
+        # size is kept and only its origin is moved to the middle.
+        box_x = chip[0] + (chip[2] - width) / 2
+        box_y = chip[1] + (chip[3] - best[2][3]) / 2
+        label = {
+            "id": f"text:chip-{digest}",
+            "type": "text",
+            "x": int(round(box_x)),
+            "y": int(round(box_y)),
+            "width": width,
+            "height": best[2][3],
+            "text": best[1],
+            "style": {
+                "textColor": colour,
+                "fontSize": round(size, 2),
+                "fontWeight": "normal",
+                "fontFamily": "Noto Sans SC",
+                "textAlign": "center",
+            },
+            "contentRef": f"text:chip-{digest}",
+            "sceneOwnerId": f"text:chip-{digest}",
+            "imageMVP": {
+                "source": "pixel-recovery",
+                "role": "text",
+                "candidate_type": "text",
+                "grouping_status": "recovered",
+                "reference_only": False,
+                "generated": False,
+                "textStatus": "ocr-chip-label",
+            },
+            "badgeLabel": True,
+        }
+        elements.append(label)
+        existing.append((label["x"], label["y"], label["width"], label["height"]))
+        restored += 1
+    return restored
+
+
 def _separate_badge_icon_text(elements: list[dict[str, Any]]) -> int:
     """Start a badge's words after the glyph instead of inside it.
 
@@ -4721,6 +4879,397 @@ def _audit_filled_occluders(
     return filled + len(demoted)
 
 
+#: Colour distance at which the surface under a member is a different plane
+#: from the box that claims it.
+PLANE_SURFACE_DELTA = 40
+#: ... and at which that surface is the page itself.
+PLANE_PAGE_DELTA = 40
+#: Share of the ring around a member that has to be page colour.  A member
+#: straddling the plane edge samples both sides, and only an unambiguous
+#: majority is worth acting on.
+PLANE_PAGE_SHARE = 0.8
+#: How far a sampled column may sit from the container's fill and still count
+#: as that fill.  Wide enough for a soft shadow, far below any page colour.
+PLANE_EDGE_TOLERANCE = 24
+#: A cut smaller than this is an antialiased rim, not an over-measured box.
+PLANE_TRIM_MIN = 4
+#: A chip is a badge for one short word.  The band is what tells a badge from a
+#: card: wider is a panel, shorter is a dot.
+CHIP_MIN_WIDTH = 36
+CHIP_MAX_WIDTH = 72
+CHIP_MAX_HEIGHT = 72
+
+
+def _solid_fill(element: Mapping[str, Any]) -> str:
+    """The element's fill when it paints one, else an empty string."""
+    fill = _opaque_fill(element).lower()
+    if not fill or fill in {"none", "transparent"}:
+        return ""
+    return fill
+
+
+def _plane_children(
+    elements: Sequence[Mapping[str, Any]],
+    rects: Sequence[tuple[int, int, int, int] | None],
+) -> dict[int, list[int]]:
+    """Geometric containment tree, recovered roles excluded as parents."""
+    recovered = {"text-backdrop", "mark", "progress"}
+    containers = {
+        index
+        for index, element in enumerate(elements)
+        if str(element.get("type")) == "container"
+        and str(element.get("role") or "") not in recovered
+    }
+    children: dict[int, list[int]] = {}
+    owners: list[int | None] = []
+    for index, rect in enumerate(rects):
+        if rect is None:
+            owners.append(None)
+            continue
+        owner = _owner_index(rects, index, parent_candidates=containers)
+        owners.append(owner)
+        if owner is not None:
+            children.setdefault(owner, []).append(index)
+    return children
+
+
+def _member_anchor(
+    index: int,
+    rects: Sequence[tuple[int, int, int, int] | None],
+    children: Mapping[int, list[int]],
+) -> tuple[int, int, int, int] | None:
+    """Where a member actually stands: its own box, narrowed to its content.
+
+    A container's measured box can be far wider than what it holds — the
+    background page's form section was measured at the full content width while
+    every word it owns sits in the right column.  Its content is what stands on
+    a plane, so that is what gets sampled.
+    """
+    own = rects[index]
+    if own is None:
+        return None
+    nested = children.get(index) or []
+    if not nested:
+        return own
+    union = _union_rect(nested, rects)
+    if union is None or not _rect_contains(own, union, tolerance=4):
+        return own
+    return union
+
+
+def _page_share(
+    pixels,
+    box: tuple[int, int, int, int],
+    colour: str,
+    spread: int = 6,
+) -> float:
+    """Share of the band just outside ``box`` painted ``colour``."""
+    try:
+        import numpy as np
+    except Exception:  # pragma: no cover - imaging stack is a hard dependency
+        return 0.0
+    if pixels is None or not colour:
+        return 0.0
+    target = np.asarray(_hex_rgb(colour), dtype=np.int16)
+    frame_height, frame_width = pixels.shape[:2]
+    x, y, box_width, box_height = box
+    left = max(0, x - spread)
+    right = min(frame_width, x + box_width + spread)
+    top = max(0, y - spread)
+    bottom = min(frame_height, y + box_height + spread)
+    if right - left < 4 or bottom - top < 4:
+        return 0.0
+    patch = pixels[top:bottom, left:right]
+    mask = np.ones(patch.shape[:2], dtype=bool)
+    inner_left = max(0, x - left)
+    inner_top = max(0, y - top)
+    mask[inner_top : inner_top + box_height, inner_left : inner_left + box_width] = False
+    sample = patch[mask]
+    if sample.size == 0:
+        return 0.0
+    distance = np.abs(sample - target).max(axis=1)
+    return float((distance <= PLANE_PAGE_DELTA).mean())
+
+
+def _filled_edge(
+    pixels,
+    box: tuple[int, int, int, int],
+    fill: str,
+    edge: str,
+    floor: int,
+) -> int | None:
+    """Walk in from ``edge`` and stop on the first line that paints ``fill``.
+
+    The median of a whole column is used, not a single pixel: a copyright line
+    sits in the middle of the band being skipped, and one white glyph is not the
+    dialog starting again.
+    """
+    try:
+        import numpy as np
+    except Exception:  # pragma: no cover - imaging stack is a hard dependency
+        return None
+    if pixels is None or not fill:
+        return None
+    x, y, width, height = box
+    target = np.asarray(_hex_rgb(fill), dtype=np.int16)
+    inset = 4 if min(width, height) > 16 else 0
+    if edge in {"left", "right"}:
+        band = pixels[y + inset : y + height - inset, :]
+        if band.shape[0] < 2:
+            return None
+        columns = (
+            range(x + width - 1, max(-1, floor - 1), -1)
+            if edge == "right"
+            else range(x, min(band.shape[1], floor + 1))
+        )
+        for column in columns:
+            if column < 0 or column >= band.shape[1]:
+                continue
+            median = np.median(band[:, column].reshape(-1, 3), axis=0)
+            if float(np.abs(median - target).max()) <= PLANE_EDGE_TOLERANCE:
+                return column + 1 if edge == "right" else column
+        return None
+    band = pixels[:, x + inset : x + width - inset]
+    if band.shape[1] < 2:
+        return None
+    rows = (
+        range(y + height - 1, max(-1, floor - 1), -1)
+        if edge == "bottom"
+        else range(y, min(band.shape[0], floor + 1))
+    )
+    for row in rows:
+        if row < 0 or row >= band.shape[0]:
+            continue
+        median = np.median(band[row].reshape(-1, 3), axis=0)
+        if float(np.abs(median - target).max()) <= PLANE_EDGE_TOLERANCE:
+            return row + 1 if edge == "bottom" else row
+    return None
+
+
+def _evict_cross_plane_members(
+    elements: list[dict[str, Any]],
+    image_path: str,
+    canvas: tuple[int, int] | None,
+    background: str | None,
+    ocr_observations: Sequence[Mapping[str, Any]] | None = None,
+) -> tuple[int, int]:
+    """Give back the members that never lived inside their container.
+
+    A dialog is measured once, and a wide measurement swallows everything to
+    its right: the page's own column, a copyright line two hundred pixels below
+    the dialog's last row.  They become members, so the union of members reaches
+    the page edge, and every downstream "is this box too big?" test answers no.
+
+    The screenshot knows which plane each element is on.  Sampling the band
+    around a member: a member of the white dialog stands on white, a member of
+    the dimmed page behind it stands on the page colour.  When that band is the
+    page colour while the container paints something else entirely, the member
+    is on the other side of the glass — it is detached, painted underneath, and
+    stops voting on the container's extent.
+
+    A control detached this way whose label nothing on the page reads, and whose
+    declared fill is not what its box actually shows, is an invented control on
+    the background plane: it is removed rather than left as a black pill on a
+    grey page.
+    """
+    if not background or not canvas:
+        return 0, 0
+    pixels = _pixel_edges(image_path, canvas[0], canvas[1])
+    if pixels is None:
+        return 0, 0
+    rects = [_layout_rect(element) for element in elements]
+    children = _plane_children(elements, rects)
+    lines = _ocr_lines(ocr_observations)
+    page = str(background)
+    doomed: set[int] = set()
+    evicted = 0
+    for container, members in children.items():
+        if str(elements[container].get("type")) != "container":
+            continue
+        fill = _solid_fill(elements[container])
+        if not fill or _same_fill(fill, page, PLANE_SURFACE_DELTA):
+            continue
+        for member in members:
+            anchor = _member_anchor(member, rects, children)
+            if anchor is None:
+                continue
+            if _page_share(pixels, anchor, page) < PLANE_PAGE_SHARE:
+                continue
+            element = elements[member]
+            element["planeDetached"] = True
+            # The layer underneath, by construction: it must never be lifted
+            # over the box that was merely mis-measured.
+            element["zIndex"] = -1
+            evicted += 1
+            if str(element.get("type")) not in {"button", "input"}:
+                continue
+            text = str(element.get("text") or "").strip()
+            if not text or _has_ocr_support(text, anchor, lines, slack=8, threshold=0.8):
+                continue
+            shown = _page_share(pixels, anchor, fill)
+            if shown > 0.2:
+                continue
+            doomed.add(member)
+    if doomed:
+        elements[:] = [
+            element for index, element in enumerate(elements) if index not in doomed
+        ]
+    return evicted, len(doomed)
+
+
+def _beyond_is_page(
+    pixels,
+    box: tuple[int, int, int, int],
+    edge: str,
+    coordinate: int,
+    background: str,
+    spread: int = 6,
+) -> bool:
+    """Whether the band just outside ``coordinate`` is the page colour.
+
+    The trim repairs a box that walks over the page.  If the paint on the other
+    side is *not* the page — a sidebar's own highlight band, another panel — the
+    edge is where the design puts it and cutting it would expose the canvas.
+    """
+    try:
+        import numpy as np
+    except Exception:  # pragma: no cover - imaging stack is a hard dependency
+        return False
+    if pixels is None or not background:
+        return False
+    frame_height, frame_width = pixels.shape[:2]
+    x, y, width, height = box
+    if edge == "left":
+        band = (slice(y, y + height), slice(max(0, coordinate - spread), coordinate))
+    elif edge == "right":
+        band = (
+            slice(y, y + height),
+            slice(coordinate, min(frame_width, coordinate + spread)),
+        )
+    elif edge == "top":
+        band = (slice(max(0, coordinate - spread), coordinate), slice(x, x + width))
+    else:
+        band = (
+            slice(coordinate, min(frame_height, coordinate + spread)),
+            slice(x, x + width),
+        )
+    patch = pixels[band]
+    if patch.size == 0:
+        return False
+    median = np.median(patch.reshape(-1, 3), axis=0)
+    target = np.asarray(_hex_rgb(background), dtype=np.int16)
+    return float(np.abs(median - target).max()) <= PLANE_PAGE_DELTA
+
+
+def _trim_to_fill_boundary(
+    elements: list[dict[str, Any]],
+    image_path: str,
+    canvas: tuple[int, int] | None,
+    background: str | None,
+) -> int:
+    """Cut a container back to the edge its own paint actually reaches.
+
+    Once the members that stood on the page have been given back, the union of
+    what is left is where the container's content really ends.  Any face of the
+    box beyond that is examined against the picture: if the pixels just inside
+    the declared edge are not the container's own fill, the edge is walking over
+    the page and is pulled in to the colour step.  Padding that *is* fill is
+    left alone — the dialog's inner margin is part of the dialog.
+    """
+    if not background or not canvas:
+        return 0
+    pixels = _pixel_edges(image_path, canvas[0], canvas[1])
+    if pixels is None:
+        return 0
+    rects = [_layout_rect(element) for element in elements]
+    children = _plane_children(elements, rects)
+    containers = {
+        index
+        for index, element in enumerate(elements)
+        if str(element.get("type")) == "container" and rects[index] is not None
+    }
+    trimmed = 0
+    for container in containers:
+        own = rects[container]
+        fill = _solid_fill(elements[container])
+        if own is None or not fill or _same_fill(fill, background, PLANE_SURFACE_DELTA):
+            continue
+        members = [
+            index
+            for index in children.get(container, [])
+            if not elements[index].get("planeDetached")
+        ]
+        # A single member is a card around one label; its padding is design.
+        if len(members) < 2:
+            continue
+        union = _union_rect(members, rects)
+        if union is None:
+            continue
+        left, top = own[0], own[1]
+        right, bottom = own[0] + own[2], own[1] + own[3]
+        found_left = (
+            _filled_edge(pixels, own, fill, "left", union[0])
+            if union[0] - left >= PLANE_TRIM_MIN
+            else None
+        )
+        found_top = (
+            _filled_edge(pixels, own, fill, "top", union[1])
+            if union[1] - top >= PLANE_TRIM_MIN
+            else None
+        )
+        found_right = (
+            _filled_edge(pixels, own, fill, "right", union[0] + union[2])
+            if right - (union[0] + union[2]) >= PLANE_TRIM_MIN
+            else None
+        )
+        found_bottom = (
+            _filled_edge(pixels, own, fill, "bottom", union[1] + union[3])
+            if bottom - (union[1] + union[3]) >= PLANE_TRIM_MIN
+            else None
+        )
+        if found_left is not None and not _beyond_is_page(
+            pixels, own, "left", found_left, background
+        ):
+            found_left = None
+        if found_top is not None and not _beyond_is_page(
+            pixels, own, "top", found_top, background
+        ):
+            found_top = None
+        if found_right is not None and not _beyond_is_page(
+            pixels, own, "right", found_right, background
+        ):
+            found_right = None
+        if found_bottom is not None and not _beyond_is_page(
+            pixels, own, "bottom", found_bottom, background
+        ):
+            found_bottom = None
+        # A step of one or two pixels is the container's own antialiased rim.
+        if found_left is not None and found_left - left < PLANE_TRIM_MIN:
+            found_left = None
+        if found_top is not None and found_top - top < PLANE_TRIM_MIN:
+            found_top = None
+        if found_right is not None and right - found_right < PLANE_TRIM_MIN:
+            found_right = None
+        if found_bottom is not None and bottom - found_bottom < PLANE_TRIM_MIN:
+            found_bottom = None
+        new_left = left if found_left is None else found_left
+        new_top = top if found_top is None else found_top
+        new_right = right if found_right is None else found_right
+        new_bottom = bottom if found_bottom is None else found_bottom
+        if (new_left, new_top, new_right, new_bottom) == (left, top, right, bottom):
+            continue
+        if new_right - new_left < 8 or new_bottom - new_top < 8:
+            continue
+        element = elements[container]
+        element["x"] = new_left
+        element["y"] = new_top
+        element["width"] = new_right - new_left
+        element["height"] = new_bottom - new_top
+        rects[container] = (new_left, new_top, new_right - new_left, new_bottom - new_top)
+        trimmed += 1
+    return trimmed
+
+
 def attach_layout_frames(elements: list[dict[str, Any]]) -> int:
     """Group elements into Auto Layout frames along the strict containment tree.
 
@@ -4744,7 +5293,11 @@ def attach_layout_frames(elements: list[dict[str, Any]]) -> int:
         and str(element.get("role") or "") not in recovered_roles
     }
     owners = [
-        _owner_index(rects, index, parent_candidates=containers)
+        # An element the plane pass gave back to the page is nobody's child:
+        # the dialog it was measured inside was simply too wide.
+        None
+        if elements[index].get("planeDetached")
+        else _owner_index(rects, index, parent_candidates=containers)
         if rects[index]
         else None
         for index in range(len(elements))
@@ -4979,9 +5532,18 @@ def compile_scene_plan_to_design(
     _drop_icon_descriptor_labels(elements, ocr_observations)
     _drop_coincident_texts(elements, background)
     _separate_badge_icon_text(elements)
+    # A chip whose word was absorbed by the row's own line prints empty; OCR
+    # read that chip's word at the chip's coordinates.
+    _restore_chip_labels(elements, image_path, (width, height), ocr_observations)
     # A control measured over a table belongs to the words OCR read for it,
     # which are somewhere else entirely.
     _resolve_misfiled_controls(elements, ocr_observations, image_path)
+    # A member standing on the page's own surface was never inside the dialog
+    # that claims it: give it back, then cut the dialog down to its own paint.
+    _evict_cross_plane_members(
+        elements, image_path, (width, height), background, ocr_observations
+    )
+    _trim_to_fill_boundary(elements, image_path, (width, height), background)
     written_frames = attach_layout_frames(elements)
     # A frame's members must paint as one contiguous unit; an overlay that
     # lands inside that interval belongs on top of it, not in the middle.

@@ -545,3 +545,196 @@ def test_a_grey_rule_is_not_a_bar() -> None:
         path = Path(folder) / "rule.png"
         image.save(path)
         assert _recover_saturated_bars([], str(path), 400, 140) == 0
+
+
+# -- cross-plane members ---------------------------------------------------
+
+
+def _dialog_scene(tmp_path: Path) -> Path:
+    """A white dialog on a grey page, with page content to its right."""
+    from PIL import Image
+
+    image = Image.new("RGB", (420, 260), (102, 102, 102))
+    for x in range(40, 280):
+        for y in range(10, 250):
+            image.putpixel((x, y), (255, 255, 255))
+    # a word inside the dialog and a word on the page beside it
+    for x in range(60, 120):
+        for y in range(40, 52):
+            image.putpixel((x, y), (30, 30, 30))
+    for x in range(320, 390):
+        for y in range(40, 52):
+            image.putpixel((x, y), (20, 20, 20))
+    path = tmp_path / "dialog.png"
+    image.save(path)
+    return path
+
+
+def test_a_member_standing_on_the_page_is_detached_from_the_dialog(
+    tmp_path: Path,
+) -> None:
+    """wecom-modal's copyright line was a member of a dialog it sat beside."""
+    from src.app.services.structure.fidelity.fixed_canvas_compiler import (
+        _evict_cross_plane_members,
+    )
+
+    path = _dialog_scene(tmp_path)
+    elements = [
+        # measured to the page edge, the way the dialog in the screenshot was
+        _box(0, 40, 10, 380, 240, "#ffffff"),
+        _text(1, 60, 40, 60, 12, "标题"),
+        _text(2, 320, 40, 70, 12, "版权"),
+    ]
+    evicted, dropped = _evict_cross_plane_members(
+        elements, str(path), (420, 260), "#666666", None
+    )
+    assert (evicted, dropped) == (1, 0)
+    assert elements[1].get("planeDetached") is None
+    assert elements[2]["planeDetached"] is True
+    assert int(elements[2]["zIndex"]) < 0
+
+
+def test_a_dialog_is_cut_back_to_the_edge_of_its_own_paint(tmp_path: Path) -> None:
+    """A box measured to the page edge is repainted over the page."""
+    from src.app.services.structure.fidelity.fixed_canvas_compiler import (
+        _evict_cross_plane_members,
+        _trim_to_fill_boundary,
+    )
+
+    path = _dialog_scene(tmp_path)
+    elements = [
+        _box(0, 40, 10, 380, 240, "#ffffff"),
+        _text(1, 60, 40, 60, 12, "标题"),
+        _text(3, 60, 120, 60, 12, "正文"),
+        _text(2, 320, 40, 70, 12, "版权"),
+    ]
+    _evict_cross_plane_members(elements, str(path), (420, 260), "#666666", None)
+    assert _trim_to_fill_boundary(elements, str(path), (420, 260), "#666666") == 1
+    assert elements[0]["x"] == 40
+    assert elements[0]["x"] + elements[0]["width"] == 280
+
+
+def test_padding_that_is_fill_is_left_alone(tmp_path: Path) -> None:
+    """A dialog's inner margin is part of the dialog, not overshoot."""
+    from src.app.services.structure.fidelity.fixed_canvas_compiler import (
+        _trim_to_fill_boundary,
+    )
+
+    path = _dialog_scene(tmp_path)
+    elements = [
+        _box(0, 40, 10, 240, 240, "#ffffff"),
+        _text(1, 80, 60, 40, 12, "标题"),
+        _text(2, 80, 160, 40, 12, "正文"),
+    ]
+    assert _trim_to_fill_boundary(elements, str(path), (420, 260), "#666666") == 0
+    assert (elements[0]["x"], elements[0]["width"]) == (40, 240)
+
+
+def test_a_control_on_the_page_with_no_words_is_removed(tmp_path: Path) -> None:
+    """A black 关闭 pill that nothing on the page reads is an invention."""
+    from src.app.services.structure.fidelity.fixed_canvas_compiler import (
+        _evict_cross_plane_members,
+    )
+
+    path = _dialog_scene(tmp_path)
+    elements = [
+        _box(0, 40, 10, 380, 240, "#ffffff"),
+        _text(1, 60, 40, 60, 12, "标题"),
+        {
+            "id": "control:9",
+            "type": "button",
+            "x": 320,
+            "y": 30,
+            "width": 70,
+            "height": 30,
+            "text": "关闭",
+            "style": {"fillColor": "#111111"},
+        },
+    ]
+    evicted, dropped = _evict_cross_plane_members(
+        elements,
+        str(path),
+        (420, 260),
+        "#666666",
+        [{"text": "标题", "bbox": [60, 40, 60, 12]}],
+    )
+    assert evicted == 1 and dropped == 1
+    assert [element["id"] for element in elements] == ["container:0", "text:1"]
+
+
+# -- chip labels -----------------------------------------------------------
+
+
+def _chip_scene(tmp_path: Path) -> Path:
+    from PIL import Image
+
+    image = Image.new("RGB", (300, 120), (250, 250, 250))
+    for x in range(20, 82):
+        for y in range(20, 80):
+            image.putpixel((x, y), (0, 204, 0))
+    for x in range(34, 68):
+        for y in range(38, 62):
+            image.putpixel((x, y), (255, 255, 255))
+    path = tmp_path / "chip.png"
+    image.save(path)
+    return path
+
+
+def test_an_empty_badge_gets_its_word_back(tmp_path: Path) -> None:
+    """inventory's green chips printed with nothing inside them."""
+    from src.app.services.structure.fidelity.fixed_canvas_compiler import (
+        _restore_chip_labels,
+    )
+
+    path = _chip_scene(tmp_path)
+    elements = [
+        {
+            "id": "backdrop:1",
+            "type": "container",
+            "role": "text-backdrop",
+            "x": 20,
+            "y": 20,
+            "width": 62,
+            "height": 60,
+            "style": {"fillColor": "#00cc00", "borderRadius": 24},
+        }
+    ]
+    assert _restore_chip_labels(
+        elements,
+        str(path),
+        (300, 120),
+        [{"text": "库位", "bbox": [34, 38, 34, 24]}],
+    ) == 1
+    label = elements[1]
+    assert label["text"] == "库位"
+    assert label["style"]["textAlign"] == "center"
+    assert label["style"]["textColor"].lower() in {"#ffffff", "#fefefe"}
+    assert label["x"] == 34 and label["badgeLabel"] is True
+
+
+def test_a_badge_that_already_has_its_word_is_left_alone(tmp_path: Path) -> None:
+    from src.app.services.structure.fidelity.fixed_canvas_compiler import (
+        _restore_chip_labels,
+    )
+
+    path = _chip_scene(tmp_path)
+    elements = [
+        {
+            "id": "backdrop:1",
+            "type": "container",
+            "role": "text-backdrop",
+            "x": 20,
+            "y": 20,
+            "width": 62,
+            "height": 60,
+            "style": {"fillColor": "#00cc00"},
+        },
+        _text(2, 30, 36, 40, 22, "库位"),
+    ]
+    assert _restore_chip_labels(
+        elements,
+        str(path),
+        (300, 120),
+        [{"text": "库位", "bbox": [34, 38, 34, 24]}],
+    ) == 0
+    assert len(elements) == 2
