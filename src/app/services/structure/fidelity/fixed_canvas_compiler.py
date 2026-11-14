@@ -1361,6 +1361,47 @@ def _has_nested_container(
     return False
 
 
+def _overlap_over_smaller(
+    left: tuple[int, int, int, int],
+    right: tuple[int, int, int, int],
+) -> float:
+    overlap_w = min(left[0] + left[2], right[0] + right[2]) - max(left[0], right[0])
+    overlap_h = min(left[1] + left[3], right[1] + right[3]) - max(left[1], right[1])
+    if overlap_w <= 0 or overlap_h <= 0:
+        return 0.0
+    intersection = overlap_w * overlap_h
+    return intersection / max(1, min(left[2] * left[3], right[2] * right[3]))
+
+
+def _has_straddling_block(
+    owner: int,
+    rects: list[tuple[int, int, int, int] | None],
+    members: set[int],
+) -> bool:
+    """Whether a non-member covers most of this frame.
+
+    A floating panel often comes back alongside a button that fills it to
+    within two pixels.  The button belongs to whichever container happened to
+    contain it first, so the panel can never own it — and a frame that covers
+    a stranger is rejected.  Such a container is an ambiguous duplicate of its
+    own child, not a layout box.
+    """
+    frame = rects[owner]
+    if frame is None:
+        return False
+    frame_area = frame[2] * frame[3]
+    for index, other in enumerate(rects):
+        if index == owner or other is None or index in members:
+            continue
+        # Ancestors and siblings cover the frame by definition; only a smaller
+        # neighbour can be the ambiguous duplicate we are looking for.
+        if other[2] * other[3] >= frame_area:
+            continue
+        if _overlap_over_smaller(frame, other) > 0.8:
+            return True
+    return False
+
+
 def attach_layout_frames(elements: list[dict[str, Any]]) -> int:
     """Group elements into Auto Layout frames along the strict containment tree.
 
@@ -1407,6 +1448,8 @@ def attach_layout_frames(elements: list[dict[str, Any]]) -> int:
         if spec is None:
             continue
         if _has_nested_container(owner, elements, rects):
+            continue
+        if _has_straddling_block(owner, rects, set(children)):
             continue
         container["layout"] = spec
         container["layoutChildren"] = [
