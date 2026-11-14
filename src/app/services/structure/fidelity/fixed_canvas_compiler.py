@@ -1124,6 +1124,8 @@ def _table_decorations(
     return decorations
 
 
+OVERLAY_TIER = 1000
+
 _LAYOUT_MEMBER_TYPES = {
     "text",
     "image",
@@ -1522,9 +1524,10 @@ def _lift_frame_overlays(
         return 0
     from src.app.services.rendering.adapter_base import paint_order
 
-    # One fixed tier, computed once: bumping a counter per pass let frames
-    # overtake each other and shuffled the whole order.
-    overlay_z = 1 + max((int(element.get("zIndex") or 0) for element in elements), default=0)
+    # Overlays go to a tier nothing else reaches.  A "max + 1" value is shared
+    # by every frame in this pass, so an overlay lifted for one frame could end
+    # up level with another frame's members and stay inside its interval.
+    overlay_z = OVERLAY_TIER
     order = [index for index, _item in paint_order(elements)]
     position = {index: spot for spot, index in enumerate(order)}
     lifted = 0
