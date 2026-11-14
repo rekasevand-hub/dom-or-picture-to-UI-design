@@ -2419,6 +2419,25 @@ def _drop_coincident_texts(elements: list[dict[str, Any]]) -> int:
             coverage = (overlap_w * overlap_h) / max(
                 1, min(first_rect[2] * first_rect[3], second_rect[2] * second_rect[3])
             )
+            # Same line, one string inside the other: one reading merged the
+            # whole row while another reported a single field of it.  The long
+            # one already prints every word, so the short copy is redundant —
+            # no need for the coverage threshold, the y agreement carries it.
+            if (
+                abs(
+                    (first_rect[1] + first_rect[3] / 2)
+                    - (second_rect[1] + second_rect[3] / 2)
+                )
+                <= min(first_rect[3], second_rect[3]) * 0.6
+            ):
+                one = str(elements[first].get("text") or "").strip()
+                two = str(elements[second].get("text") or "").strip()
+                if one and two and (one in two or two in one):
+                    if len(one) <= len(two):
+                        doomed.add(first)
+                        break
+                    doomed.add(second)
+                    continue
             if coverage < COINCIDENT_TEXT_COVERAGE:
                 continue
             if (
