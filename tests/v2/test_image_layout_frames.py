@@ -331,11 +331,12 @@ class TestNestedFrames:
 
         assert _by_id(design, "card1")["layout"]["mode"] == "VERTICAL"
         assert _by_id(design, "card2")["layout"]["mode"] == "VERTICAL"
-        assert "layout" not in _by_id(design, "page")
+        page = _by_id(design, "page")
+        assert page.get("layout"), "the page should wrap the cards into a third level"
 
         ordered = [(index, element) for index, element in enumerate(design["elements"])]
         reasons: dict = {}
         frames = resolve_frames(design["elements"], ordered, reasons)
         ids = {design["elements"][index].get("id") for index in frames}
 
-        assert ids == {"card1", "card2"}, f"leaf frames rejected: {reasons}"
+        assert ids == {"page", "card1", "card2"}, f"nested frames rejected: {reasons}"

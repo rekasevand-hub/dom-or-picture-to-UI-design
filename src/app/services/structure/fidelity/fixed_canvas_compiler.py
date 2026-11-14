@@ -1330,47 +1330,59 @@ def _stack_layout(
 
 
 def _has_nested_container(
-    owner: int,
+    children: list[int],
     elements: list[dict[str, Any]],
-    rects: list[tuple[int, int, int, int] | None],
 ) -> bool:
-    """Whether another container sits inside this one.
+    """Whether a member container is still waiting to become a frame.
 
-    ``resolve_frames`` drops a child frame and then its parent (a parent frame
-    would otherwise re-order the orphaned children), so a container holding a
-    sub-container can never keep a frame on this pass.  Emitting the nested
-    pair is what produced nine frames and zero accepted; skipping the outer one
-    leaves the inner frames viable.
+    ``collect()`` builds a frame's member closure from its members plus the
+    members of member *frames*.  A child container without ``layoutChildren``
+    leaves its own children outside that closure, and the renderer rejects the
+    parent for covering them.  Processing innermost-first and holding a parent
+    back until its child containers are framed yields a real frame tree instead
+    of a flat pile.
     """
-    outer = rects[owner]
-    if outer is None:
-        return False
-    for index, element in enumerate(elements):
-        if index == owner or str(element.get("type")) != "container":
-            continue
-        inner = rects[index]
-        if inner is None or inner[2] * inner[3] >= outer[2] * outer[3]:
-            continue
-        if (
-            outer[0] <= inner[0]
-            and outer[1] <= inner[1]
-            and inner[0] + inner[2] <= outer[0] + outer[2]
-            and inner[1] + inner[3] <= outer[1] + outer[3]
-        ):
-            return True
-    return False
+    return any(
+        str(elements[index].get("type")) == "container"
+        and not elements[index].get("layoutChildren")
+        for index in children
+    )
 
 
 def _overlap_over_smaller(
     left: tuple[int, int, int, int],
     right: tuple[int, int, int, int],
 ) -> float:
+    """Intersection over the smaller area.
+
+    Note this returns 1.0 for any box fully inside the other, which makes it
+    useless for "is this a duplicate of the frame" — use ``_iou`` for that.
+    """
     overlap_w = min(left[0] + left[2], right[0] + right[2]) - max(left[0], right[0])
     overlap_h = min(left[1] + left[3], right[1] + right[3]) - max(left[1], right[1])
     if overlap_w <= 0 or overlap_h <= 0:
         return 0.0
     intersection = overlap_w * overlap_h
     return intersection / max(1, min(left[2] * left[3], right[2] * right[3]))
+
+
+def _iou(
+    left: tuple[int, int, int, int],
+    right: tuple[int, int, int, int],
+) -> float:
+    """Intersection over union.
+
+    ``_overlap_over_smaller`` reports 1.0 when a small icon sits inside a large
+    frame, which rejected every container: a grid is never "mostly covered" by
+    one of its own children.  Only a box of comparable size can be a duplicate.
+    """
+    overlap_w = min(left[0] + left[2], right[0] + right[2]) - max(left[0], right[0])
+    overlap_h = min(left[1] + left[3], right[1] + right[3]) - max(left[1], right[1])
+    if overlap_w <= 0 or overlap_h <= 0:
+        return 0.0
+    intersection = overlap_w * overlap_h
+    union = left[2] * left[3] + right[2] * right[3] - intersection
+    return intersection / union if union > 0 else 0.0
 
 
 def _has_straddling_block(
@@ -1397,7 +1409,7 @@ def _has_straddling_block(
         # neighbour can be the ambiguous duplicate we are looking for.
         if other[2] * other[3] >= frame_area:
             continue
-        if _overlap_over_smaller(frame, other) > 0.8:
+        if _iou(frame, other) > 0.8:
             return True
     return False
 
@@ -1468,6 +1480,38 @@ def _avoid_coloured_neighbours(
     return moved
 
 
+def _keep_renderable_frames(
+    elements: list[dict[str, Any]],
+    written: int,
+) -> int:
+    """Drop frames the renderer would reject, so the count means what it says.
+
+    ``resolve_frames`` is the only authority on whether a frame survives — it
+    checks paint order, member order and the closure over members — so ask it
+    directly instead of duplicating those rules here.  A container whose
+    rectangle a later-painted sibling covers can never be a frame: the
+    floating panel and the AtomCode button are painted over the card grid, and
+    the header is painted over the sidebar.  Those two stay flat, which is
+    correct: wrapping them would let the frame swallow the overlay.
+    """
+    if not written:
+        return 0
+    from src.app.services.rendering.adapter_base import paint_order, resolve_frames
+
+    reasons: dict[int, str] = {}
+    accepted = set(resolve_frames(elements, paint_order(elements), reasons))
+    kept = 0
+    for index, element in enumerate(elements):
+        if not element.get("layoutChildren"):
+            continue
+        if index in accepted:
+            kept += 1
+            continue
+        element.pop("layoutChildren", None)
+        element.pop("layout", None)
+    return kept
+
+
 def attach_layout_frames(elements: list[dict[str, Any]]) -> int:
     """Group elements into Auto Layout frames along the strict containment tree.
 
@@ -1500,7 +1544,14 @@ def attach_layout_frames(elements: list[dict[str, Any]]) -> int:
         members.setdefault(owner, []).append(index)
 
     built = 0
-    for owner, children in members.items():
+    # Innermost first: a parent may only become a frame once every container
+    # among its members is already a frame.
+    order = sorted(
+        members,
+        key=lambda index: (rects[index][2] * rects[index][3]) if rects[index] else 0,
+    )
+    for owner in order:
+        children = members[owner]
         container = elements[owner]
         if str(container.get("type")) != "container":
             continue
@@ -1513,7 +1564,7 @@ def attach_layout_frames(elements: list[dict[str, Any]]) -> int:
         spec = _stack_layout(parent_box, boxes)  # type: ignore[arg-type]
         if spec is None:
             continue
-        if _has_nested_container(owner, elements, rects):
+        if _has_nested_container(children, elements):
             continue
         if _has_straddling_block(owner, rects, set(children)):
             continue
@@ -1653,7 +1704,9 @@ def compile_scene_plan_to_design(
     )
     if right_rail is not None:
         elements.append(right_rail)
-    layout_frames = attach_layout_frames(elements)
+    layout_frames = _keep_renderable_frames(
+        elements, attach_layout_frames(elements)
+    )
     text_count = sum(
         element.get("type") == "text" and bool(element.get("text"))
         for element in elements
