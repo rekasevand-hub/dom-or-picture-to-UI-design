@@ -45,6 +45,7 @@ from src.app.services.structure.fidelity.fixed_canvas_compiler import (
 )
 
 FIXTURES = Path(__file__).parent / "fixtures" / "image_samples"
+ROOT = Path(__file__).resolve().parents[2]
 
 #: Accepted frames measured on the frozen designs.  A floor, not an equality:
 #: gaining a frame is never a regression, losing one always is.
@@ -365,3 +366,27 @@ def test_table_columns_never_overlap(tag: str) -> None:
         assert all(element["width"] >= 40 for element in row), (
             f"{tag}: narrow column {[e['width'] for e in row]}"
         )
+
+
+@pytest.mark.parametrize("tag", sorted(FRAME_FLOORS))
+def test_pixel_replay_keeps_the_frames(tag: str, tmp_path: Path) -> None:
+    """The pixel passes can change a frame's members, so replay the real one.
+
+    ``_build`` replays the frozen design, which carries no screenshot and
+    therefore skips badge, mark, bar and OCR-snap recovery.  Those run on every
+    real image and can cost a frame (a snapped label once dropped AtomGit's card
+    grid), so the full replay is the only place that can catch it.
+    """
+    source = ROOT / "output" / f"_v2_fit_{tag}" / "pipeline" / "10_pagegraph.json"
+    if not source.is_file():
+        pytest.skip(f"{tag}: frozen pagegraph not on disk")
+    import sys
+
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from replay_pagegraph import replay  # noqa: PLC0415
+
+    report = replay(tag, "_test", out_dir=tmp_path)
+    assert report["frames"] >= FRAME_FLOORS[tag], (
+        f"{tag}: replay produced {report['frames']} frames, "
+        f"floor is {FRAME_FLOORS[tag]}"
+    )
