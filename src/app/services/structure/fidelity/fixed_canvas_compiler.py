@@ -1615,15 +1615,31 @@ def _lift_frame_overlays(
             )
             # Its children ride one tier higher, so they stay above their own
             # background and above the frame they cover.
-            for other, element in enumerate(elements):
-                if other == index or other in foreign:
+            riders = [
+                other
+                for other, element in enumerate(elements)
+                if other != index
+                and other not in foreign
+                and (
+                    child := _layout_rect(element)
+                )
+                is not None
+                and _rect_contains(box, child, tolerance=4)
+            ]
+            # A lifted element that is itself a frame must take its members
+            # with it.  Geometry is not enough to find them: the members that
+            # overhang the frame's own rectangle are exactly the ones the
+            # containment test misses, and they stay below it — the renderer
+            # then rejects the frame for having a member painted before it.
+            if elements[index].get("layoutChildren"):
+                riders.extend(_frame_closure(index, elements))
+            for other in riders:
+                if other == index:
                     continue
-                child = _layout_rect(element)
-                if child is not None and _rect_contains(box, child, tolerance=4):
-                    element["zIndex"] = max(
-                        int(element.get("zIndex") or 0), target_z + 1
-                    )
-                    lifted.add(other)
+                elements[other]["zIndex"] = max(
+                    int(elements[other].get("zIndex") or 0), target_z + 1
+                )
+                lifted.add(other)
             lifted.add(index)
             lifted_count += 1
     return lifted_count
@@ -1834,8 +1850,91 @@ def _merge_slots(
     return slots
 
 
+def _pixel_edges(
+    image_path: str,
+    width: int,
+    height: int,
+):
+    """Load the screenshot as an array, or None when it cannot be read.
+
+    Boundaries are searched per container rather than over the whole image: a
+    rule under one panel spans a few hundred pixels, and averaging it into a
+    2560px-wide profile buries the step in the sidebar's own colours.
+    """
+    try:
+        import numpy as np
+        from PIL import Image
+    except Exception:  # pragma: no cover - imaging stack is a hard dependency
+        return None
+    try:
+        image = Image.open(image_path).convert("RGB")
+        if image.size != (width, height):
+            image = image.resize((width, height))
+        return np.asarray(image, dtype=np.int16)
+    except Exception:  # pragma: no cover - unreadable file
+        return None
+
+
+PIXEL_EDGE_MIN_STEP = 10.0
+
+
+def _pixel_limit(
+    edge: str,
+    span: tuple[int, int],
+    cross: tuple[int, int],
+    pixels,
+) -> int | None:
+    """Strongest colour boundary inside one padding band, if there is one.
+
+    ``span`` is the band along the edge's axis, ``cross`` the container's extent
+    on the other axis.  Returns the coordinate to snap to, or None when the band
+    is flat — which is exactly what a genuine padding margin looks like.
+    """
+    try:
+        import numpy as np
+    except Exception:  # pragma: no cover
+        return None
+    low, high = span
+    if high - low < 4 or pixels is None:
+        return None
+    top, bottom = max(0, cross[0]), max(0, cross[1])
+    if bottom - top < 2:
+        return None
+    if edge in ("top", "bottom"):
+        band = pixels[low:high, top:bottom]
+        if band.shape[0] < 2:
+            return None
+        steps = np.abs(np.diff(band, axis=0)).mean(axis=(1, 2))
+        if steps.size == 0:
+            return None
+        position = int(np.argmax(steps))
+        if float(steps[position]) < PIXEL_EDGE_MIN_STEP:
+            return None
+        return low + position + 1
+    band = pixels[top:bottom, max(0, low) : max(0, high)]
+    if band.ndim != 3 or band.shape[1] < 2:
+        return None
+    steps = np.abs(np.diff(band, axis=1)).mean(axis=(0, 2))
+    position = int(np.argmax(steps))
+    if float(steps[position]) < PIXEL_EDGE_MIN_STEP:
+        return None
+    return max(0, low) + position + 1
+
+
+def _paints_page(element: Mapping[str, Any], background: str | None) -> bool:
+    """Whether resizing this container leaves the picture unchanged."""
+    style = element.get("style") or {}
+    fill = str(style.get("fillColor") or "").strip().lower()
+    if not fill or fill in {"transparent", "none"}:
+        return True
+    return bool(background) and fill == str(background).strip().lower()
+
+
 def _trim_overshoot_into_conflicts(
     elements: list[dict[str, Any]],
+    image_path: str | None = None,
+    canvas: tuple[int, int] | None = None,
+    background: str | None = None,
 ) -> int:
     """Shrink a container edge only where its padding actually collides.
 
@@ -1879,6 +1978,11 @@ def _trim_overshoot_into_conflicts(
             current = owners[current] if current < len(owners) else None
         return False
 
+    pixels = (
+        _pixel_edges(image_path, canvas[0], canvas[1])
+        if image_path and canvas
+        else None
+    )
     trimmed = 0
     for container in containers:
         own = rects[container]
@@ -1945,6 +2049,26 @@ def _trim_overshoot_into_conflicts(
                 limit = candidate if limit is None else (
                     min(limit, candidate) if edge in ("bottom", "right") else max(limit, candidate)
                 )
+            if limit is None and pixels is not None:
+                spans = {
+                    "bottom": ((bottom, own[1] + own[3]), (own[0], own[0] + own[2])),
+                    "top": ((own[1], top), (own[0], own[0] + own[2])),
+                    "right": ((right, own[0] + own[2]), (own[1], own[1] + own[3])),
+                    "left": ((own[0], left), (own[1], own[1] + own[3])),
+                }
+                band, cross = spans[edge]
+                candidate = _pixel_limit(edge, band, cross, pixels)
+                # Only a container that paints the page colour (or nothing) may
+                # be resized on pixel evidence alone: for anything else the box
+                # is also a visible rectangle, and moving it changes the picture.
+                # The move is capped to a small correction, because a large one
+                # is a mis-detected content edge, not slack.
+                if candidate is not None and _paints_page(
+                    elements[container], background
+                ):
+                    distance = abs(candidate - (own[1] if edge in ("top", "bottom") else own[0]))
+                    if distance <= 24:
+                        limit = candidate
             if limit is None:
                 continue
             if edge == "bottom":
@@ -2186,6 +2310,57 @@ def _widen_to_members(
     element["width"], element["height"] = union[2], union[3]
     rects[owner] = union
     return union
+
+
+def _drop_page_coloured_shells(
+    elements: list[dict[str, Any]],
+    background: str,
+) -> int:
+    """Remove containers that paint the page colour and own nothing.
+
+    A dialog screenshot is dimmed end to end, so the page background itself is
+    the scrim colour and several boxes measure out as the same flat grey.  One
+    of them lands on top of a real card and blocks its frame, yet it adds not a
+    single pixel: it paints exactly what is already there.
+
+    Only shell containers are removed — ones with no members of their own and
+    no picture or text.  Anything that owns content still has a job.
+    """
+    target = str(background or "").strip().lower()
+    if not target.startswith("#"):
+        return 0
+    rects = [
+        _layout_rect(element) if str(element.get("type")) in _LAYOUT_MEMBER_TYPES else None
+        for element in elements
+    ]
+    containers = {
+        index
+        for index, element in enumerate(elements)
+        if str(element.get("type")) == "container"
+    }
+    owners = [
+        _owner_index(rects, index, parent_candidates=containers) if rects[index] else None
+        for index in range(len(elements))
+    ]
+    owning = {owner for owner in owners if owner is not None}
+    doomed = [
+        index
+        for index in containers
+        if index not in owning
+        and not elements[index].get("imageBase64")
+        and not elements[index].get("text")
+        and str((elements[index].get("style") or {}).get("fillColor") or "")
+        .strip()
+        .lower()
+        == target
+    ]
+    if not doomed:
+        return 0
+    drop = set(doomed)
+    elements[:] = [
+        element for index, element in enumerate(elements) if index not in drop
+    ]
+    return len(doomed)
 
 
 COINCIDENT_TEXT_COVERAGE = 0.65
@@ -2473,7 +2648,9 @@ def compile_scene_plan_to_design(
     _avoid_coloured_neighbours(containers, background)
     _trim_under_top_band(containers, leaves, width)
     elements = [*containers, *decorations, *leaves]
-    _trim_overshoot_into_conflicts(elements)
+    _trim_overshoot_into_conflicts(
+        elements, image_path, (width, height), background
+    )
     _apply_group_decoration_depths(elements, control_groups)
     form_background = _source_form_background(
         image_path,
@@ -2491,6 +2668,7 @@ def compile_scene_plan_to_design(
     )
     if right_rail is not None:
         elements.append(right_rail)
+    _drop_page_coloured_shells(elements, background)
     _drop_coincident_texts(elements)
     written_frames = attach_layout_frames(elements)
     # A frame's members must paint as one contiguous unit; an overlay that
