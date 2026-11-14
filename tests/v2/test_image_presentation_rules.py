@@ -738,3 +738,171 @@ def test_a_badge_that_already_has_its_word_is_left_alone(tmp_path: Path) -> None
         [{"text": "库位", "bbox": [34, 38, 34, 24]}],
     ) == 0
     assert len(elements) == 2
+
+
+# -- OCR promotion ---------------------------------------------------------
+
+
+def _plain_scene(tmp_path: Path, background=(255, 255, 255)) -> Path:
+    from PIL import Image
+
+    image = Image.new("RGB", (400, 240), background)
+    # glyph-shaped strokes, not a filled bar: a solid block is a panel, and
+    # that is what the panel pass is supposed to find.
+    for glyph in range(6):
+        left = 30 + glyph * 20
+        for x in range(left, left + 3):
+            for y in range(40, 56):
+                image.putpixel((x, y), (20, 20, 20))
+        for x in range(left + 3, left + 16):
+            image.putpixel((x, 40), (20, 20, 20))
+            image.putpixel((x, 55), (20, 20, 20))
+    path = tmp_path / "plain.png"
+    image.save(path)
+    return path
+
+
+def test_a_line_no_node_covers_becomes_a_text_node(tmp_path: Path) -> None:
+    """AtomGit's nav bar and marketplace's menu were never in the plan."""
+    from src.app.services.structure.fidelity.fixed_canvas_compiler import (
+        _promote_ocr_text,
+    )
+
+    path = _plain_scene(tmp_path)
+    elements: list[dict] = []
+    added = _promote_ocr_text(
+        elements,
+        str(path),
+        (400, 240),
+        [{"text": "探索更多", "bbox": [30, 40, 120, 16], "confidence": 0.9}],
+    )
+    assert added == 1
+    assert elements[0]["text"] == "探索更多"
+    assert (elements[0]["x"], elements[0]["y"]) == (30, 40)
+
+
+def test_a_line_an_existing_node_already_prints_is_not_added_twice(
+    tmp_path: Path,
+) -> None:
+    from src.app.services.structure.fidelity.fixed_canvas_compiler import (
+        _promote_ocr_text,
+    )
+
+    path = _plain_scene(tmp_path)
+    elements = [_text(0, 30, 40, 120, 16, "探索更多")]
+    added = _promote_ocr_text(
+        elements,
+        str(path),
+        (400, 240),
+        [{"text": "探索更多", "bbox": [30, 40, 120, 16], "confidence": 0.9}],
+    )
+    assert added == 0 and len(elements) == 1
+
+
+def test_the_same_words_measured_elsewhere_are_moved_not_copied(
+    tmp_path: Path,
+) -> None:
+    """A node on the right row but the wrong x is OCR's to correct."""
+    from src.app.services.structure.fidelity.fixed_canvas_compiler import (
+        _promote_ocr_text,
+    )
+
+    path = _plain_scene(tmp_path)
+    elements = [_text(0, 250, 40, 60, 16, "探索更多")]
+    added = _promote_ocr_text(
+        elements,
+        str(path),
+        (400, 240),
+        [{"text": "探索更多", "bbox": [30, 40, 120, 16], "confidence": 0.9}],
+    )
+    assert added == 0
+    assert len(elements) == 1
+    assert (elements[0]["x"], elements[0]["width"]) == (30, 120)
+
+
+# -- low-contrast panels ---------------------------------------------------
+
+
+def _soft_card_scene(tmp_path: Path) -> Path:
+    from PIL import Image
+
+    image = Image.new("RGB", (900, 700), (255, 255, 255))
+    for x in range(30, 390):
+        for y in range(30, 220):
+            image.putpixel((x, y), (247, 248, 251))
+    for x in range(60, 140):  # a word inside it, so it is not a flat blob
+        for y in range(60, 72):
+            image.putpixel((x, y), (30, 30, 30))
+    path = tmp_path / "card.png"
+    image.save(path)
+    return path
+
+
+def test_a_card_three_channels_off_the_page_is_recovered(tmp_path: Path) -> None:
+    from src.app.services.structure.fidelity.fixed_canvas_compiler import (
+        _recover_soft_panels,
+    )
+
+    path = _soft_card_scene(tmp_path)
+    elements: list[dict] = []
+    assert _recover_soft_panels(elements, str(path), 900, 700, "#ffffff") == 1
+    panel = elements[0]
+    assert (panel["x"], panel["y"], panel["width"], panel["height"]) == (30, 30, 360, 190)
+    assert panel["style"]["fillColor"] == "#f7f8fb"
+
+
+def test_a_line_of_text_is_not_a_card(tmp_path: Path) -> None:
+    from src.app.services.structure.fidelity.fixed_canvas_compiler import (
+        _recover_soft_panels,
+    )
+
+    path = _plain_scene(tmp_path)
+    assert _recover_soft_panels([], str(path), 400, 240, "#ffffff") == 0
+
+
+# -- page ground -----------------------------------------------------------
+
+
+def test_a_tinted_page_gets_its_own_ground(tmp_path: Path) -> None:
+    from src.app.services.structure.fidelity.fixed_canvas_compiler import (
+        _recover_page_fill,
+    )
+
+    from PIL import Image
+
+    image = Image.new("RGB", (400, 240), (234, 238, 248))
+    path = tmp_path / "tinted.png"
+    image.save(path)
+    elements: list[dict] = []
+    assert _recover_page_fill(elements, str(path), 400, 240, "#fefefe") is True
+    assert elements and elements[0]["role"] == "page-ground"
+    assert elements[0]["style"]["fillColor"] == "#eaeef8"
+
+
+def test_a_page_that_matches_its_declaration_is_left_alone(tmp_path: Path) -> None:
+    from src.app.services.structure.fidelity.fixed_canvas_compiler import (
+        _recover_page_fill,
+    )
+
+    path = _plain_scene(tmp_path)
+    elements: list[dict] = []
+    assert _recover_page_fill(elements, str(path), 400, 240, "#ffffff") is False
+    assert elements == []
+
+
+# -- residual patches ------------------------------------------------------
+
+
+def test_a_residual_region_is_cut_out_of_the_screenshot(tmp_path: Path) -> None:
+    from src.app.services.structure.fidelity.fixed_canvas_compiler import (
+        _apply_residual_patches,
+    )
+
+    path = _soft_card_scene(tmp_path)
+    elements: list[dict] = []
+    assert _apply_residual_patches(elements, str(path), (900, 700), [[30, 30, 120, 60]]) == 1
+    patch = elements[0]
+    assert patch["type"] == "image" and patch["role"] == "patch"
+    assert (patch["x"], patch["y"], patch["width"], patch["height"]) == (30, 30, 120, 60)
+    assert patch.get("imageBase64")
+    assert int(patch["zIndex"]) > 0

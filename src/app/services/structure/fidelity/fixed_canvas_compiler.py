@@ -1936,6 +1936,111 @@ def _paints_page(element: Mapping[str, Any], background: str | None) -> bool:
     return bool(background) and fill == str(background).strip().lower()
 
 
+#: A container's declared fill may be a few channels off what the box actually
+#: shows: the sample landed on a border, a shadow, or the page behind an
+#: over-measured edge.  Beyond this it is the wrong colour, not a rounding.
+FILL_CALIBRATION_DELTA = 6
+#: The interior has to be one colour before it may overrule the declaration.
+FILL_CALIBRATION_SHARE = 0.6
+
+
+def _calibrate_container_fills(
+    elements: list[dict[str, Any]],
+    image_path: str,
+    width: int,
+    height: int,
+    background: str = "",
+) -> int:
+    """Repaint a container in the colour its own interior actually is.
+
+    ``card:container-9`` came back #d9d9d9 for a band that is white in the
+    screenshot — the sample landed on the band's top shadow — and AtomGit's
+    pink cards were declared #fef4f2 against a truth of #fee7e0.  One wrong
+    fill paints a whole card wrong, so it is worth one pass over the picture.
+
+    Only a uniform interior may overrule the declaration: a box that reaches
+    past its own card samples two colours, and there is nothing better to say
+    about it than what the model already said.
+    """
+    if not image_path:
+        return 0
+    try:
+        import numpy as np
+        from PIL import Image
+    except Exception:  # pragma: no cover - imaging stack is a hard dependency
+        return 0
+    try:
+        image = np.asarray(Image.open(image_path).convert("RGB"), dtype=np.int16)
+    except (OSError, ValueError):
+        return 0
+    if image.ndim != 3:
+        return 0
+    pictures = [
+        box
+        for box in (
+            _layout_rect(element)
+            for element in elements
+            if element.get("imageBase64")
+        )
+        if box is not None
+    ]
+    changed = 0
+    for element in elements:
+        if str(element.get("type")) != "container":
+            continue
+        fill = _solid_fill(element)
+        if not fill:
+            continue
+        # A box that paints the page is a shell, not a panel: its interior is
+        # whatever happens to be in front of it, and repainting it white is how
+        # a dialog ends up with three white sections across its dark backdrop.
+        if background and _same_fill(fill, background, FILL_CALIBRATION_DELTA):
+            continue
+        box = _layout_rect(element)
+        if box is None or box[2] * box[3] < 400:
+            continue
+        inset = 3 if min(box[2], box[3]) > 8 else 0
+        x = max(0, box[0] + inset)
+        y = max(0, box[1] + inset)
+        right = min(image.shape[1], box[0] + box[2] - inset)
+        bottom = min(image.shape[0], box[1] + box[3] - inset)
+        if right - x < 4 or bottom - y < 4:
+            continue
+        if any(_overlap_share(box, picture) >= 0.5 for picture in pictures):
+            # The box is a picture frame; its average is not a fill.
+            continue
+        # The container's own surface is the ring just inside its edge.  Its
+        # interior may be full of cards, and a page whose middle is two cards
+        # would otherwise be repainted in the cards' colour.
+        ring = 4 if min(right - x, bottom - y) > 12 else 0
+        patch = np.concatenate(
+            [
+                image[y : y + ring, x:right].reshape(-1, 3),
+                image[bottom - ring : bottom, x:right].reshape(-1, 3),
+                image[y:bottom, x : x + ring].reshape(-1, 3),
+                image[y:bottom, right - ring : right].reshape(-1, 3),
+            ]
+        ) if ring else image[y:bottom, x:right].reshape(-1, 3)
+        if patch.size == 0:
+            continue
+        colour = _dominant_colour(patch)
+        if colour is None:
+            continue
+        quantised = (patch.reshape(-1, 3) // 16).astype(np.int32)
+        keys = quantised[:, 0] * 4096 + quantised[:, 1] * 64 + quantised[:, 2]
+        chosen = (np.asarray(colour, dtype=np.int32) // 16)
+        key = int(chosen[0] * 4096 + chosen[1] * 64 + chosen[2])
+        share = float((keys == key).mean())
+        if share < FILL_CALIBRATION_SHARE:
+            continue
+        hexed = "#{:02x}{:02x}{:02x}".format(*colour)
+        if _same_fill(hexed, fill, FILL_CALIBRATION_DELTA):
+            continue
+        element.setdefault("style", {})["fillColor"] = hexed
+        changed += 1
+    return changed
+
+
 def _trim_overshoot_into_conflicts(
     elements: list[dict[str, Any]],
     image_path: str | None = None,
@@ -3382,15 +3487,17 @@ def _drop_coincident_texts(
     for position, first in enumerate(texts):
         if first in doomed:
             continue
-        if elements[first].get("badgeLabel"):
-            # A word with a chip sampled under it is that chip's label; the
-            # other reading of it belongs to the row and can live beside it.
-            continue
+        first_badge = bool(elements[first].get("badgeLabel"))
         first_rect = _layout_rect(elements[first])
         if first_rect is None:
             continue
         for second in texts[position + 1 :]:
-            if second in doomed or elements[second].get("badgeLabel"):
+            if second in doomed:
+                continue
+            # A chip's own word and the row's reading of the same line are two
+            # different objects and can live beside each other.  Two chip words
+            # are not: one of them is a second print of the same label.
+            if first_badge != bool(elements[second].get("badgeLabel")):
                 continue
             second_rect = _layout_rect(elements[second])
             if second_rect is None:
@@ -3715,6 +3822,186 @@ def _chip_ink(
     if rows.size == 0:
         return None
     return colour, float(rows.max() - rows.min() + 1)
+
+
+#: A line OCR read this confidently is a line that is on the page.
+OCR_PROMOTE_CONFIDENCE = 0.6
+#: ... unless a node already paints that box: anything above this share of the
+#: OCR line covered by an existing text node is "already there".
+OCR_PROMOTE_MAX_IOA = 0.3
+#: Two readings on one line whose strings agree this well are the same words.
+OCR_PROMOTE_SIMILARITY = 0.6
+#: ... and at this agreement the node is simply misplaced: the words are the
+#: same, so OCR's box is where they belong and the node is moved, not copied.
+OCR_PROMOTE_MOVE_SIMILARITY = 0.9
+
+
+def _promote_ocr_text(
+    elements: list[dict[str, Any]],
+    image_path: str,
+    canvas: tuple[int, int] | None,
+    ocr_observations: Sequence[Mapping[str, Any]] | None,
+) -> int:
+    """Turn words OCR read into text nodes the plan never carried.
+
+    The scene plan is a model's summary of a screenshot, and it skips whole nav
+    bars, button labels and status lines: marketplace's 首页/模型广场/控制台,
+    AtomGit's AtomCode/探索更多, review's 系统运行正常.  OCR read every one of
+    them at its true coordinates, but until now those readings were only used to
+    *correct* nodes that already existed — a missed line stayed missing.
+
+    A confident line that no node covers is promoted as an ordinary text node.
+    From there it follows the same path as any other: chip sampling paints the
+    red/blue/black pill behind it, duplicate removal still applies, and the
+    frame pass decides whether it belongs to a container.  Exact wording is
+    skipped rather than merged — a line that overlaps a node, or repeats one on
+    the same row, was already printed.
+    """
+    if not ocr_observations or not canvas:
+        return 0
+    from src.app.services.structure.fidelity.contracts import (
+        normalize_match_text,
+        owner_text_similarity,
+    )
+
+    width, height = canvas
+    existing: list[tuple[tuple[int, int, int, int], str]] = []
+    for element in elements:
+        if str(element.get("type")) != "text" or not element.get("text"):
+            continue
+        rect = _layout_rect(element)
+        if rect is None:
+            continue
+        existing.append((rect, normalize_match_text(element.get("text"))))
+
+    added = 0
+    for observation in ocr_observations:
+        if not isinstance(observation, Mapping):
+            continue
+        try:
+            confidence = float(observation.get("confidence") or 0)
+        except (TypeError, ValueError):
+            continue
+        if confidence < OCR_PROMOTE_CONFIDENCE:
+            continue
+        text = str(observation.get("text") or "").strip()
+        if len(text) < 2 or text.isdigit():
+            continue
+        if not any(character.isalnum() for character in text):
+            continue
+        box = observation.get("bbox")
+        if not isinstance(box, (list, tuple)) or len(box) != 4:
+            continue
+        try:
+            left, top, box_width, box_height = (int(value) for value in box)
+        except (TypeError, ValueError):
+            continue
+        if box_width < 6 or box_height < 8:
+            continue
+        left = max(0, left)
+        top = max(0, top)
+        box_width = min(box_width, width - left)
+        box_height = min(box_height, height - top)
+        if box_width < 6 or box_height < 8:
+            continue
+        rect = (left, top, box_width, box_height)
+        key = normalize_match_text(text)
+        moved = False
+        blocked = False
+        for element in elements:
+            if str(element.get("type")) != "text" or not element.get("text"):
+                continue
+            if str(element.get("imageMVP", {}).get("source")) == "ocr-promotion":
+                continue
+            other_rect = _layout_rect(element)
+            if other_rect is None:
+                continue
+            rows = min(rect[1] + rect[3], other_rect[1] + other_rect[3]) - max(
+                rect[1], other_rect[1]
+            )
+            if rows < min(rect[3], other_rect[3]) * 0.6:
+                continue
+            if (
+                owner_text_similarity(element.get("text"), text)
+                < OCR_PROMOTE_MOVE_SIMILARITY
+            ):
+                continue
+            # Same words on the same row: this is the node that was measured in
+            # the wrong place, and OCR is where it actually is.  Moving it is
+            # the repair; adding a second copy prints the row twice.
+            if abs(other_rect[0] - left) > 6 or abs(other_rect[2] - box_width) > 8:
+                element["x"] = left
+                element["y"] = top
+                element["width"] = box_width
+                element["height"] = box_height
+                style = element.get("style")
+                if isinstance(style, dict):
+                    style["textAlign"] = "left"
+                for name in ("textBox", "textEmBox"):
+                    value = element.get(name)
+                    if isinstance(value, (list, tuple)) and len(value) == 4:
+                        element[name] = [left, top, box_width, box_height]
+                moved = True
+            else:
+                blocked = True
+            break
+        if moved:
+            continue
+        if blocked:
+            continue
+        for other_rect, other_key in existing:
+            if _overlap_share(rect, other_rect) >= OCR_PROMOTE_MAX_IOA:
+                blocked = True
+                break
+            rows = min(rect[1] + rect[3], other_rect[1] + other_rect[3]) - max(
+                rect[1], other_rect[1]
+            )
+            same_row = rows >= min(rect[3], other_rect[3]) * 0.6
+            if not other_key or not key:
+                continue
+            # OCR reads a paragraph line by line while the plan writes it as one
+            # box with different wrapping, so the same words can sit ten pixels
+            # apart and still be one sentence.  Within a few line heights, one
+            # string containing the other is a repeat, not a new label.
+            near = abs(
+                (rect[1] + rect[3] / 2) - (other_rect[1] + other_rect[3] / 2)
+            ) <= max(rect[3], other_rect[3]) * 2.5
+            if (same_row or near) and (key in other_key or other_key in key):
+                blocked = True
+                break
+            if same_row and owner_text_similarity(other_key, key) >= OCR_PROMOTE_SIMILARITY:
+                blocked = True
+                break
+        if blocked:
+            continue
+        digest = hashlib.sha1(
+            f"{left}:{top}:{box_width}:{box_height}:{text}".encode("utf-8")
+        ).hexdigest()[:16]
+        node = {
+            "id": f"text:ocr-{digest}",
+            "type": "text",
+            "role": "text",
+            "bbox": [left, top, box_width, box_height],
+            "text": text,
+            "content_ref": f"text:ocr-{digest}",
+        }
+        element = _text_element(
+            node,
+            image_path=image_path,
+            width=width,
+            height=height,
+            node_by_id={},
+        )
+        # The line was read, not described: it keeps OCR's own box.
+        element["x"] = left
+        element["y"] = top
+        element["width"] = box_width
+        element["height"] = box_height
+        element.setdefault("imageMVP", {})["source"] = "ocr-promotion"
+        elements.append(element)
+        existing.append((rect, key))
+        added += 1
+    return added
 
 
 def _restore_chip_labels(
@@ -4185,9 +4472,11 @@ BACKDROP_MAX_PAD = 32
 #: A chip closes on every side; fewer edges is a neighbour, not a chip.
 BACKDROP_MIN_SIDES = 3
 #: A chip hugs its words.  A container's border sits further out than this, and
-#: a box that reaches it is the card, not a badge.
-BACKDROP_MAX_PAD_PER_SIDE = 20
-BACKDROP_MAX_TOTAL_PAD = 56
+#: a box that reaches it is the card, not a badge.  A button is the widest chip
+#: there is: 登录 is two glyphs in a 98px pill, so 23px of padding per side is
+#: still a control and not a panel.
+BACKDROP_MAX_PAD_PER_SIDE = 32
+BACKDROP_MAX_TOTAL_PAD = 96
 #: Share of a side's pixels that has to leave the fill before it is an edge.
 BACKDROP_EDGE_SHARE = 0.6
 #: A patch larger than this share of the canvas is a surface, not a badge.
@@ -4469,6 +4758,503 @@ def _overlap_share(
     if width <= 0 or height <= 0:
         return 0.0
     return (width * height) / max(1, box[2] * box[3])
+
+
+#: A card can be three channels away from the page it sits on: marketplace's
+#: #161618 on #0d0d0f, AtomGit's #fdf6f5 on #ffffff.  Six is the floor where a
+#: difference is real and no longer compression noise.
+SOFT_PANEL_MIN_DELTA = 6
+#: A page can be a gradient.  Eight bands follow it closely enough that the
+#: step between neighbours is under the eye's threshold.
+PAGE_BANDS = 8
+#: A solid panel fills its own box.  A line of text covers half of it at most,
+#: which is what keeps this from recovering every word as a card.
+SOFT_PANEL_MIN_FILL = 0.9
+#: An outline-only box (an empty input) fills nothing; its *border* closes the
+#: box instead, so the share of the bbox perimeter that is drawn is the test.
+SOFT_PANEL_MIN_EDGE = 0.8
+SOFT_PANEL_MIN_WIDTH = 24
+SOFT_PANEL_MIN_HEIGHT = 16
+SOFT_PANEL_MIN_AREA = 800
+#: Never the page itself: a blob that covers most of the canvas is the ground.
+SOFT_PANEL_MAX_SHARE = 0.5
+#: Already described by a filled element or a picture: nothing to add.
+SOFT_PANEL_EXISTING_IOA = 0.7
+SOFT_PANEL_MAX_REGIONS = 24
+
+
+def _panel_edge_share(mask, box: tuple[int, int, int, int]) -> float:
+    """Share of a box's one-pixel perimeter that is painted."""
+    import numpy as np
+
+    x, y, width, height = box
+    if width < 3 or height < 3:
+        return 0.0
+    top = mask[y, x : x + width]
+    bottom = mask[y + height - 1, x : x + width]
+    left = mask[y : y + height, x]
+    right = mask[y : y + height, x + width - 1]
+    sides = np.concatenate([top, bottom, left, right])
+    return float(sides.mean()) if sides.size else 0.0
+
+
+def _already_painted(
+    box: tuple[int, int, int, int],
+    fill: str,
+    covered: Sequence[tuple[tuple[int, int, int, int], str]],
+) -> bool:
+    """Whether an existing filled box already paints this patch in this colour.
+
+    Geometry alone is not enough: the sidebar paints #364150 across its whole
+    height, and the cyan highlight inside it is a *different* element that the
+    plan never had.  Covering is only "already there" when the colour agrees.
+    """
+    for other, other_fill in covered:
+        share = _overlap_share(box, other)
+        if share < SOFT_PANEL_EXISTING_IOA:
+            continue
+        if not other_fill:
+            # A picture: its pixels are the answer, not a fill.
+            if share >= 0.5:
+                return True
+            continue
+        if not fill or _same_fill(fill, other_fill, SOFT_PANEL_MIN_DELTA):
+            return True
+    return False
+
+
+#: A block of one flat colour is a button, a highlight, a chip.  It has to be
+#: big enough to be a block and opaque enough to fill its own box; words never
+#: do either.
+COLOUR_REGION_MIN_PIXELS = 600
+COLOUR_REGION_MIN_FILL = 0.9
+COLOUR_REGION_MIN_SIDE = 14
+COLOUR_REGION_MAX_SHARE = 0.35
+COLOUR_REGION_TOLERANCE = 10
+COLOUR_REGION_MIN_SAMPLES = 2500
+COLOUR_REGION_MAX = 40
+
+
+def _recover_colour_regions(
+    elements: list[dict[str, Any]],
+    image_path: str,
+    width: int,
+    height: int,
+    background: str,
+) -> int:
+    """Recover flat blocks of one colour that the plan never described.
+
+    Thresholding against the page merges everything into one blob: the sidebar,
+    the highlighted menu row inside it and the badge on top of that are one
+    component because they all differ from the page.  Segmenting *per colour*
+    separates them, and a fill that occupies more than 90% of its own bounding
+    box is a block — a button, a highlight bar, a chip — while text covers less
+    than half of its box and is dropped without a second thought.
+    """
+    try:
+        import numpy as np
+        from PIL import Image
+    except Exception:  # pragma: no cover - imaging stack is a hard dependency
+        return 0
+    try:
+        import cv2
+    except Exception:  # pragma: no cover - opencv is a pipeline dependency
+        return 0
+    try:
+        image = np.asarray(Image.open(image_path).convert("RGB"), dtype=np.int16)
+    except (OSError, ValueError):
+        return 0
+    if image.ndim != 3:
+        return 0
+    image = image[:height, :width]
+    page = np.asarray(_hex_rgb(background), dtype=np.int16) if background else None
+
+    quantised = (image // 12).astype(np.int32)
+    keys = quantised[:, :, 0] * 4096 + quantised[:, :, 1] * 64 + quantised[:, :, 2]
+    values, counts = np.unique(keys.reshape(-1), return_counts=True)
+    order = np.argsort(counts)[::-1]
+    colours: list[tuple[int, int, int]] = []
+    for position in order[:24]:
+        if int(counts[position]) < COLOUR_REGION_MIN_SAMPLES:
+            break
+        key = int(values[position])
+        sample = image.reshape(-1, 3)[keys.reshape(-1) == key]
+        colour = tuple(int(value) for value in np.median(sample, axis=0))
+        if page is not None and max(
+            abs(one - two) for one, two in zip(colour, tuple(page))
+        ) < SOFT_PANEL_MIN_DELTA:
+            continue
+        colours.append(colour)
+
+    covered: list[tuple[tuple[int, int, int, int], str]] = []
+    for element in elements:
+        box = _layout_rect(element)
+        if box is None:
+            continue
+        fill = _solid_fill(element)
+        if fill:
+            covered.append((box, fill))
+        elif element.get("imageBase64"):
+            covered.append((box, ""))
+
+    canvas_area = max(1, width * height)
+    found: list[tuple[int, tuple[int, int, int, int], str]] = []
+    for colour in colours:
+        target = np.asarray(colour, dtype=np.int16)
+        mask = (
+            np.abs(image - target).max(axis=2) <= COLOUR_REGION_TOLERANCE
+        ).astype(np.uint8)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((3, 3), dtype=np.uint8))
+        count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(mask, 8)
+        for index in range(1, count):
+            x, y, box_width, box_height, area = (
+                int(value) for value in stats[index, :5]
+            )
+            if area < COLOUR_REGION_MIN_PIXELS:
+                continue
+            if box_width < COLOUR_REGION_MIN_SIDE or box_height < COLOUR_REGION_MIN_SIDE:
+                continue
+            if box_width * box_height > canvas_area * COLOUR_REGION_MAX_SHARE:
+                continue
+            if area / max(1, box_width * box_height) < COLOUR_REGION_MIN_FILL:
+                continue
+            found.append(
+                (
+                    area,
+                    (x, y, box_width, box_height),
+                    "#{:02x}{:02x}{:02x}".format(*colour),
+                )
+            )
+    if not found:
+        return 0
+    found.sort(key=lambda item: item[0], reverse=True)
+    added = 0
+    for _area, box, fill in found:
+        if added >= COLOUR_REGION_MAX:
+            break
+        if _already_painted(box, fill, covered):
+            continue
+        if any(_iou(box, other) >= 0.8 for other, _fill in covered):
+            continue
+        digest = hashlib.sha1(
+            f"{box[0]}:{box[1]}:{box[2]}:{box[3]}:{fill}".encode("utf-8")
+        ).hexdigest()[:16]
+        elements.append(
+            {
+                "id": f"block:{digest}",
+                "type": "container",
+                "x": box[0],
+                "y": box[1],
+                "width": box[2],
+                "height": box[3],
+                "text": "",
+                "style": {"fillColor": fill},
+                "role": "panel",
+                "name": "Colour block",
+                "contentRef": f"block:{digest}",
+                "sceneOwnerId": f"block:{digest}",
+                "imageMVP": {
+                    "source": "pixel-recovery",
+                    "role": "panel",
+                    "grouping_status": "recovered",
+                },
+            }
+        )
+        covered.append((box, fill))
+        added += 1
+    return added
+
+
+def _recover_page_fill(
+    elements: list[dict[str, Any]],
+    image_path: str,
+    width: int,
+    height: int,
+    background: str,
+) -> bool:
+    """Paint the canvas in the colours the screenshot's own margins are.
+
+    The plan declares a page colour, and a page is not always that colour:
+    review's ground is a pale blue gradient declared #fefefe, so every pixel
+    outside a card was 34 channels off and no rule downstream could see it —
+    the fill was "correct" by declaration.  The margin of the picture is the
+    only witness that cannot be wrong.
+
+    One rect would flatten the gradient into a step, so the ground is laid down
+    in horizontal bands, each sampling its own margins.  A page that really is
+    one colour produces identical bands and costs nothing.
+    """
+    try:
+        import numpy as np
+        from PIL import Image
+    except Exception:  # pragma: no cover - imaging stack is a hard dependency
+        return False
+    try:
+        image = np.asarray(Image.open(image_path).convert("RGB"), dtype=np.int16)
+    except (OSError, ValueError):
+        return False
+    if image.ndim != 3:
+        return False
+    image = image[:height, :width]
+    edges = [
+        image[0:4].reshape(-1, 3),
+        image[max(0, height - 4) : height].reshape(-1, 3),
+        image[:, 0:4].reshape(-1, 3),
+        image[:, max(0, width - 4) : width].reshape(-1, 3),
+    ]
+    medians = [np.median(edge, axis=0) for edge in edges if edge.size]
+    if not medians:
+        return False
+    # The page is one colour on all four sides.  A sidebar or a dark header owns
+    # one edge, and a page read off that edge paints the whole canvas wrong.
+    agreeing = [
+        median
+        for median in medians
+        if sum(
+            1
+            for other in medians
+            if float(np.abs(median - other).max()) <= 24
+        )
+        >= 3
+    ]
+    if not agreeing:
+        return False
+    colour = tuple(int(value) for value in np.median(agreeing, axis=0))
+    hexed = "#{:02x}{:02x}{:02x}".format(*colour)
+    if background and _same_fill(hexed, background, SOFT_PANEL_MIN_DELTA):
+        return False
+
+    # Bands: each one samples its own left and right margins, which no card is
+    # allowed to reach.
+    strip = max(4, min(24, width // 40))
+    bands: list[tuple[int, int, str]] = []
+    for band in range(PAGE_BANDS):
+        top = height * band // PAGE_BANDS
+        bottom = height * (band + 1) // PAGE_BANDS
+        if bottom - top < 2:
+            continue
+        sample = np.concatenate(
+            [
+                image[top:bottom, 0:strip].reshape(-1, 3),
+                image[top:bottom, max(0, width - strip) : width].reshape(-1, 3),
+            ]
+        )
+        if sample.size == 0:
+            continue
+        band_colour = tuple(int(value) for value in np.median(sample, axis=0))
+        bands.append((top, bottom, "#{:02x}{:02x}{:02x}".format(*band_colour)))
+    if not bands:
+        return False
+    if len({colour for _top, _bottom, colour in bands}) == 1:
+        bands = [(0, height, bands[0][2])]
+    placed = 0
+    for top, bottom, band_colour in bands:
+        digest = hashlib.sha1(
+            f"page:{band_colour}:{top}:{bottom}".encode("utf-8")
+        ).hexdigest()[:16]
+        elements.insert(
+            placed,
+            {
+                "id": f"page:{digest}",
+                "type": "container",
+                "x": 0,
+                "y": top,
+                "width": width,
+                "height": bottom - top,
+                "text": "",
+                "style": {"fillColor": band_colour},
+                "role": "page-ground",
+                "name": "Page ground",
+                "contentRef": f"page:{digest}",
+                "sceneOwnerId": f"page:{digest}",
+                "zIndex": -2,
+                "imageMVP": {
+                    "source": "pixel-recovery",
+                    "role": "page-ground",
+                    "grouping_status": "recovered",
+                },
+            },
+        )
+        placed += 1
+    return True
+
+
+def _recover_soft_panels(
+    elements: list[dict[str, Any]],
+    image_path: str,
+    width: int,
+    height: int,
+    background: str,
+) -> int:
+    """Recover the cards and input boxes that differ from the page only slightly.
+
+    A card three channels away from its page is invisible to a threshold built
+    for badges: marketplace's #161618 cards on #0d0d0f, AtomGit's #fdf6f5 cards
+    on white, a 1px #ececec outline around an empty field.  Without them the
+    render looks flat and scattered — text floating on the page instead of
+    sitting in a panel.
+
+    Two shapes qualify, and both are cheap to tell apart from text:
+
+    * a solid panel fills its own box (>=90% of it), while a line of words
+      covers half of its box at most;
+    * an empty outline fills nothing but draws its whole perimeter, so the
+      bbox edge share is what identifies it.
+    """
+    try:
+        import numpy as np
+        from PIL import Image
+    except Exception:  # pragma: no cover - imaging stack is a hard dependency
+        return 0
+    try:
+        import cv2
+    except Exception:  # pragma: no cover - opencv is a pipeline dependency
+        return 0
+    if not background:
+        return 0
+    try:
+        image = np.asarray(Image.open(image_path).convert("RGB"), dtype=np.int16)
+    except (OSError, ValueError):
+        return 0
+    if image.ndim != 3:
+        return 0
+    image = image[:height, :width]
+    page = np.asarray(_hex_rgb(background), dtype=np.int16)
+    mask = (np.abs(image - page).max(axis=2) >= SOFT_PANEL_MIN_DELTA).astype(np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((3, 3), dtype=np.uint8))
+
+    covered: list[tuple[tuple[int, int, int, int], str]] = []
+    for element in elements:
+        box = _layout_rect(element)
+        if box is None:
+            continue
+        if str(element.get("type")) == "container" and _solid_fill(element):
+            covered.append((box, _solid_fill(element)))
+        elif element.get("imageBase64"):
+            covered.append((box, ""))
+
+    count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(mask, 8)
+    canvas_area = max(1, width * height)
+    candidates: list[tuple[int, tuple[int, int, int, int], str]] = []
+    for index in range(1, count):
+        x, y, box_width, box_height, area = (
+            int(value) for value in stats[index, :5]
+        )
+        if box_width < SOFT_PANEL_MIN_WIDTH or box_height < SOFT_PANEL_MIN_HEIGHT:
+            continue
+        if area < SOFT_PANEL_MIN_AREA:
+            continue
+        if box_width * box_height > canvas_area * SOFT_PANEL_MAX_SHARE:
+            continue
+        box = (x, y, box_width, box_height)
+        patch = image[y : y + box_height, x : x + box_width]
+        share = area / max(1, box_width * box_height)
+        if share >= SOFT_PANEL_MIN_FILL:
+            # The fill is the colour most of the box actually is.
+            fill = _dominant_colour(patch)
+            if fill is None:
+                continue
+            if max(abs(one - two) for one, two in zip(fill, tuple(page))) < SOFT_PANEL_MIN_DELTA:
+                continue
+            candidates.append(
+                (area, box, "#{:02x}{:02x}{:02x}".format(*fill))
+            )
+            continue
+        # Outline-only: only worth it when the ring closes.
+        if _panel_edge_share(mask, box) < SOFT_PANEL_MIN_EDGE:
+            continue
+        inner = patch[2:-2, 2:-2] if box_width > 6 and box_height > 6 else patch
+        if inner.size == 0:
+            continue
+        fill = _dominant_colour(inner)
+        ring = _dominant_colour(
+            np.concatenate(
+                [
+                    patch[0:1].reshape(-1, 3),
+                    patch[-1:].reshape(-1, 3),
+                    patch[:, 0:1].reshape(-1, 3),
+                    patch[:, -1:].reshape(-1, 3),
+                ]
+            )
+        )
+        if fill is None or ring is None:
+            continue
+        if max(abs(one - two) for one, two in zip(fill, tuple(page))) >= SOFT_PANEL_MIN_DELTA:
+            # The interior is another colour, so this is a filled box with a
+            # border, not an empty field; the solid branch above owns it.
+            continue
+        if max(abs(one - two) for one, two in zip(fill, ring)) < 18:
+            continue
+        candidates.append(
+            (
+                area,
+                box,
+                "#{:02x}{:02x}{:02x}".format(*fill),
+                "#{:02x}{:02x}{:02x}".format(*ring),
+            )
+        )
+    if not candidates:
+        return 0
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    added = 0
+    for candidate in candidates[:SOFT_PANEL_MAX_REGIONS]:
+        if len(candidate) == 3:
+            _area, box, fill_hex = candidate
+            border_hex = ""
+        else:
+            _area, box, fill_hex, border_hex = candidate
+        if _already_painted(box, fill_hex, covered):
+            continue
+        digest = hashlib.sha1(
+            f"{box[0]}:{box[1]}:{box[2]}:{box[3]}:{fill_hex}".encode("utf-8")
+        ).hexdigest()[:16]
+        style: dict[str, Any] = {"fillColor": fill_hex}
+        if border_hex:
+            style["borderColor"] = border_hex
+            style["borderWidth"] = 1
+        elements.append(
+            {
+                "id": f"panel:{digest}",
+                "type": "container",
+                "x": box[0],
+                "y": box[1],
+                "width": box[2],
+                "height": box[3],
+                "text": "",
+                "style": style,
+                "role": "panel",
+                "name": "Panel",
+                "contentRef": f"panel:{digest}",
+                "sceneOwnerId": f"panel:{digest}",
+                "imageMVP": {
+                    "source": "pixel-recovery",
+                    "role": "panel",
+                    "grouping_status": "recovered",
+                },
+            }
+        )
+        covered.append((box, fill_hex))
+        added += 1
+    return added
+
+
+def _dominant_colour(patch) -> tuple[int, int, int] | None:
+    """Median of the most common 16-level colour bin in a patch."""
+    import numpy as np
+
+    if patch is None or patch.size == 0:
+        return None
+    flat = patch.reshape(-1, 3)
+    if flat.shape[0] < 4:
+        return None
+    quantised = (flat // 16).astype(np.int32)
+    keys = quantised[:, 0] * 4096 + quantised[:, 1] * 64 + quantised[:, 2]
+    values, counts = np.unique(keys, return_counts=True)
+    if values.size == 0:
+        return None
+    chosen = values[int(counts.argmax())]
+    sample = flat[keys == chosen]
+    return tuple(int(value) for value in np.median(sample, axis=0))
 
 
 def _recover_visual_regions(
@@ -4913,7 +5699,7 @@ def _plane_children(
     rects: Sequence[tuple[int, int, int, int] | None],
 ) -> dict[int, list[int]]:
     """Geometric containment tree, recovered roles excluded as parents."""
-    recovered = {"text-backdrop", "mark", "progress"}
+    recovered = {"text-backdrop", "mark", "progress", "page-ground"}
     containers = {
         index
         for index, element in enumerate(elements)
@@ -5270,6 +6056,76 @@ def _trim_to_fill_boundary(
     return trimmed
 
 
+#: A patch is the last resort: the region's own pixels, cut out of the picture,
+#: when nothing else can draw it.  Above everything, because it replaces the
+#: drawing that is wrong.
+PATCH_Z_INDEX = 5
+
+
+def _apply_residual_patches(
+    elements: list[dict[str, Any]],
+    image_path: str,
+    canvas: tuple[int, int] | None,
+    regions: Sequence[Sequence[int]] | None,
+) -> int:
+    """Paint the last few percent with the picture itself.
+
+    Logos, tilted discount badges, product thumbnails, the stray glyph nobody
+    modelled: a region that is still badly wrong after every rule has run, is
+    small (a badge, not a panel) and is not mostly a line of text, is cut out of
+    the screenshot and placed on top.  It is the honest option — the alternative
+    is leaving a hole — and it is bounded so it can never become "return the
+    screenshot".
+    """
+    if not regions or not canvas:
+        return 0
+    width, height = canvas
+    added = 0
+    for region in regions:
+        if len(region) != 4:
+            continue
+        try:
+            x, y, box_width, box_height = (int(value) for value in region)
+        except (TypeError, ValueError):
+            continue
+        x = max(0, x)
+        y = max(0, y)
+        box_width = min(box_width, width - x)
+        box_height = min(box_height, height - y)
+        if box_width < 2 or box_height < 2:
+            continue
+        payload = crop_image_b64(image_path, x, y, box_width, box_height, width, height)
+        if not payload:
+            continue
+        digest = hashlib.sha1(
+            f"patch:{x}:{y}:{box_width}:{box_height}".encode("utf-8")
+        ).hexdigest()[:16]
+        elements.append(
+            {
+                "id": f"patch:{digest}",
+                "type": "image",
+                "x": x,
+                "y": y,
+                "width": box_width,
+                "height": box_height,
+                "text": "",
+                "imageBase64": payload,
+                "role": "patch",
+                "name": "Residual patch",
+                "contentRef": f"patch:{digest}",
+                "sceneOwnerId": f"patch:{digest}",
+                "zIndex": PATCH_Z_INDEX,
+                "imageMVP": {
+                    "source": "residual-patch",
+                    "role": "patch",
+                    "grouping_status": "recovered",
+                },
+            }
+        )
+        added += 1
+    return added
+
+
 def attach_layout_frames(elements: list[dict[str, Any]]) -> int:
     """Group elements into Auto Layout frames along the strict containment tree.
 
@@ -5285,7 +6141,7 @@ def attach_layout_frames(elements: list[dict[str, Any]]) -> int:
     ]
     # Recovered pixels are paint, never structure: a crop that happened to fall
     # inside a card must not turn into a layer group or change its layout.
-    recovered_roles = {"text-backdrop", "mark", "progress"}
+    recovered_roles = {"text-backdrop", "mark", "progress", "page-ground"}
     containers = {
         index
         for index, element in enumerate(elements)
@@ -5384,6 +6240,7 @@ def compile_scene_plan_to_design(
     background: str,
     sample_id: str,
     ocr_observations: Sequence[Mapping[str, Any]] | None = None,
+    residual_regions: Sequence[Sequence[int]] | None = None,
 ) -> dict[str, Any]:
     """Compile one fixed-canvas plan without post-hoc owner appenders."""
     if not isinstance(plan, Mapping):
@@ -5486,6 +6343,9 @@ def compile_scene_plan_to_design(
     _avoid_coloured_neighbours(containers, background)
     _trim_under_top_band(containers, leaves, width)
     elements = [*containers, *decorations, *leaves]
+    # A box measured a few pixels wide samples the shadow, the border or the
+    # page, and paints its own colour wrong.  The interior knows better.
+    _calibrate_container_fills(elements, image_path, width, height, background)
     _trim_overshoot_into_conflicts(
         elements, image_path, (width, height), background
     )
@@ -5515,6 +6375,8 @@ def compile_scene_plan_to_design(
     )
     # A sentence measured from the wrong origin prints through its own border.
     _snap_text_to_ocr(elements, ocr_observations)
+    # Words the plan never carried: OCR read them, so they are on the page.
+    _promote_ocr_text(elements, image_path, (width, height), ocr_observations)
     # Pixel recovery needs the words.  Without OCR lines there is no way to
     # tell an unmodelled line of text from a logo, and guessing adds a crop of
     # words that are already on the canvas as vectors.
@@ -5524,6 +6386,11 @@ def compile_scene_plan_to_design(
         _recover_saturated_bars(elements, image_path, width, height)
         # Words arrive without the chip behind them; the pixels still have it.
         _recover_text_backdrops(elements, image_path, width, height)
+        # Cards and empty fields three channels off the page: invisible to the
+        # badge threshold, and the difference between a layout and a pile.
+        _recover_page_fill(elements, image_path, width, height, background)
+        _recover_soft_panels(elements, image_path, width, height, background)
+        _recover_colour_regions(elements, image_path, width, height, background)
         # Logos and oversized glyphs are the marks no stage reports.
         _recover_visual_regions(elements, image_path, width, height, ocr_observations)
     _drop_page_coloured_shells(elements, background)
@@ -5560,6 +6427,10 @@ def compile_scene_plan_to_design(
     # under.  Check the final order, not the one the boxes were authored in.
     _audit_filled_occluders(elements, background)
     layout_frames = _keep_renderable_frames(elements, written_frames)
+    # Last, and outside every frame: a patch is an overlay on the drawing, not a
+    # member of it.  Joining a frame would change that frame's member list and,
+    # with it, the paint order of everything the frame contains.
+    _apply_residual_patches(elements, image_path, (width, height), residual_regions)
     text_count = sum(
         element.get("type") == "text" and bool(element.get("text"))
         for element in elements

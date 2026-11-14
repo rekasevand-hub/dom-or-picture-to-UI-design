@@ -54,7 +54,21 @@ def _read(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def replay(tag: str, out_prefix: str, out_dir: Path | None = None) -> dict:
+def _render(design: dict, out: Path, name: str = "render.png") -> Path:
+    adapter = build_adapter("svg", replace(load_config(), output_dir=out))
+    adapter.render_design(design)
+    svg = out / "prototype.svg"
+    if svg.is_file():
+        rasterize_svg(svg, out / name, device_scale_factor=1)
+    return out / name
+
+
+def replay(
+    tag: str,
+    out_prefix: str,
+    out_dir: Path | None = None,
+    patches: bool = True,
+) -> dict:
     source = ROOT / SAMPLES[tag] / "pipeline"
     reference = _read(source / "image_reference.json")
     graph = _read(source / "10_pagegraph.json")
@@ -64,22 +78,52 @@ def replay(tag: str, out_prefix: str, out_dir: Path | None = None) -> dict:
     if not graph.get("scenePlan"):
         raise SystemExit(f"{tag}: pagegraph carries no scene plan")
 
-    design = build_image_design(
-        graph,
-        reference,
-        sample_id=sample_id,
-        ocr_observations=ocr.get("observations") or [],
-    )
     out = (out_dir or (ROOT / "output" / f"{out_prefix}_{tag}")) / "pipeline"
     out.mkdir(parents=True, exist_ok=True)
-    (out / "12_design.json").write_text(
-        json.dumps(design, ensure_ascii=False, indent=1), encoding="utf-8"
-    )
-    adapter = build_adapter("svg", replace(load_config(), output_dir=out))
-    adapter.render_design(design)
-    svg = out / "prototype.svg"
-    if svg.is_file():
-        rasterize_svg(svg, out / "render.png", device_scale_factor=1)
+
+    def build(regions=None) -> dict:
+        design = build_image_design(
+            graph,
+            reference,
+            sample_id=sample_id,
+            ocr_observations=ocr.get("observations") or [],
+            residual_regions=regions,
+        )
+        (out / "12_design.json").write_text(
+            json.dumps(design, ensure_ascii=False, indent=1), encoding="utf-8"
+        )
+        return design
+
+    design = build()
+    _render(design, out)
+
+    if patches:
+        # Pass two: look at what the render got wrong and give the worst small
+        # blocks back as pictures.  Everything else already had its chance.
+        import numpy as np
+        from PIL import Image
+
+        sys.path.insert(0, str(ROOT / "scripts"))
+        from visual_alignment import residual_regions  # noqa: PLC0415
+
+        truth = np.asarray(Image.open(reference["input"]["path"]).convert("RGB"), dtype=np.int16)
+        drawn = np.asarray(Image.open(out / "render.png").convert("RGB"), dtype=np.int16)
+        if drawn.shape == truth.shape:
+            texts = [
+                (int(e["x"]), int(e["y"]), int(e["width"]), int(e["height"]))
+                for e in design.get("elements") or []
+                if e.get("type") == "text" and e.get("text")
+            ]
+            pictures = [
+                (int(e["x"]), int(e["y"]), int(e["width"]), int(e["height"]))
+                for e in design.get("elements") or []
+                if e.get("imageBase64")
+            ]
+            regions = residual_regions(truth, drawn, texts, pictures)
+            if regions:
+                design = build(regions)
+                _render(design, out)
+
     elements = design.get("elements") or []
     return {
         "tag": tag,
@@ -90,6 +134,9 @@ def replay(tag: str, out_prefix: str, out_dir: Path | None = None) -> dict:
             for element in elements
             if element.get("type") == "text" and element.get("text")
         ),
+        "patches": sum(
+            1 for element in elements if str(element.get("role") or "") == "patch"
+        ),
     }
 
 
@@ -97,9 +144,14 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("tags", nargs="*", help="sample names; default all seven")
     parser.add_argument("--out-suffix", default="_replay", help="output/<suffix>_<tag>")
+    parser.add_argument(
+        "--no-patches",
+        action="store_true",
+        help="skip the residual-patch pass",
+    )
     args = parser.parse_args()
     for tag in args.tags or sorted(SAMPLES):
-        print(replay(tag, args.out_suffix), flush=True)
+        print(replay(tag, args.out_suffix, patches=not args.no_patches), flush=True)
     return 0
 
 

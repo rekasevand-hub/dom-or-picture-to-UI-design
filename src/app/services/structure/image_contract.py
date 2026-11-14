@@ -669,6 +669,7 @@ def build_image_design(
     *,
     sample_id: str = "image-mvp",
     ocr_observations: Sequence[Mapping[str, Any]] | None = None,
+    residual_regions: Sequence[Sequence[int]] | None = None,
 ) -> dict[str, Any]:
     """Turn candidate geometry into a deterministic fixed-coordinate design.
 
@@ -697,6 +698,7 @@ def build_image_design(
             background=background,
             sample_id=sample_id,
             ocr_observations=ocr_observations,
+            residual_regions=residual_regions,
         )
     elements: list[dict[str, Any]] = []
     route = str(graph.get("route") or "grounding")
