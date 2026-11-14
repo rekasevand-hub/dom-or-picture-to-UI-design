@@ -181,6 +181,10 @@ def _text_element(
         "fontFamily": style["fontFamily"],
         "textAlign": style["textAlign"],
     }
+    # The numeric weight is what the renderer actually applies; the keyword is
+    # kept for the output ends that only understand "bold".
+    if style.get("fontWeightValue") is not None:
+        style_payload["fontWeightValue"] = style["fontWeightValue"]
     # Only multi-line owners carry a measured line height; single-line text
     # keeps the renderer's default rhythm (the adapter strips it anyway).
     if style.get("lineHeight"):
@@ -274,7 +278,8 @@ def _control_element(
         "borderWidth": 0 if group_fill is not None else 1,
         "textColor": style["textColor"],
         "fontSize": style["fontSize"],
-        "fontWeight": "normal",
+        "fontWeight": style.get("fontWeight") or "normal",
+        "fontWeightValue": style.get("fontWeightValue"),
         "fontFamily": style["fontFamily"],
         "textAlign": "left",
         "borderRadius": (
@@ -3277,6 +3282,15 @@ DUPLICATE_LINE_SIMILARITY = 0.85
 #: Share of the shorter label one unbroken run of the longer has to cover
 #: before the two count as one label read twice.
 DUPLICATE_LINE_COVERAGE = 0.72
+#: Two prints of one label that miss each other by a few pixels: row overlap
+#: and wording are enough, and the gap between them is what separates a ghost
+#: from two real labels that happen to read the same (a Star button per card).
+DUPLICATE_GHOST_Y_OVERLAP = 0.5
+DUPLICATE_GHOST_SIMILARITY = 0.80
+DUPLICATE_GHOST_REACH = 24
+#: ... and their widths have to agree.  Two labels 20px apart with one three
+#: times the width of the other are a title and its subtitle, not a ghost.
+DUPLICATE_GHOST_WIDTH_RATIO = 0.4
 #: Channel distance under which text colour and surface are the same colour.
 INK_MIN_CONTRAST = 30
 
@@ -3333,6 +3347,14 @@ OCR_HOMOGLYPHS = str.maketrans(
 def _fold_homoglyphs(text: str) -> str:
     """Collapse letter/digit pairs OCR cannot tell apart, for matching only."""
     return text.translate(OCR_HOMOGLYPHS)
+
+
+def _ghost_gap(
+    left: tuple[int, int, int, int],
+    right: tuple[int, int, int, int],
+) -> int:
+    """Horizontal distance between two boxes, zero when they overlap."""
+    return max(0, max(left[0], right[0]) - min(left[0] + left[2], right[0] + right[2]))
 
 
 def _shared_affix(left: str, right: str) -> int:
@@ -3513,7 +3535,31 @@ def _drop_coincident_texts(
             first_left, first_right = _rendered_span(elements[first])
             second_left, second_right = _rendered_span(elements[second])
             overlap_w = min(first_right, second_right) - max(first_left, second_left)
+            same_line = overlap_h / max(1, min(first_rect[3], second_rect[3]))
             if overlap_w <= 0:
+                # Two prints of one label can miss each other by a few pixels:
+                # the box was measured a little to the left and the copy a
+                # little to the right, so nothing overlaps even though both
+                # paint the same sentence.  Same row, same words, within
+                # reading distance — one of them is a ghost.
+                one_ghost = str(elements[first].get("text") or "")
+                two_ghost = str(elements[second].get("text") or "")
+                widths_agree = abs(first_rect[2] - second_rect[2]) <= max(
+                    first_rect[2], second_rect[2]
+                ) * DUPLICATE_GHOST_WIDTH_RATIO
+                if (
+                    same_line >= DUPLICATE_GHOST_Y_OVERLAP
+                    and widths_agree
+                    and owner_text_similarity(one_ghost, two_ghost)
+                    >= DUPLICATE_GHOST_SIMILARITY
+                    and _ghost_gap(first_rect, second_rect) <= DUPLICATE_GHOST_REACH
+                ):
+                    keep = _preferred_copy(first, second, elements, background)
+                    if keep == first:
+                        doomed.add(second)
+                        continue
+                    doomed.add(first)
+                    break
                 continue
             coverage = (box_overlap_w * overlap_h) / max(
                 1, min(first_rect[2] * first_rect[3], second_rect[2] * second_rect[3])
@@ -3522,7 +3568,6 @@ def _drop_coincident_texts(
             # whole row while another reported a single field of it.  The long
             # one already prints every word, so the short copy is redundant —
             # no need for the coverage threshold, the y agreement carries it.
-            same_line = overlap_h / max(1, min(first_rect[3], second_rect[3]))
             if same_line >= DUPLICATE_LINE_Y_OVERLAP:
                 one = str(elements[first].get("text") or "").strip()
                 two = str(elements[second].get("text") or "").strip()
@@ -3836,6 +3881,20 @@ OCR_PROMOTE_SIMILARITY = 0.6
 OCR_PROMOTE_MOVE_SIMILARITY = 0.9
 
 
+def _rows_share(
+    left: tuple[int, int, int, int],
+    right: tuple[int, int, int, int],
+    share: float = 0.5,
+    reach: int = 160,
+) -> bool:
+    """Whether two boxes sit on one visual row, within reading distance."""
+    rows = min(left[1] + left[3], right[1] + right[3]) - max(left[1], right[1])
+    if rows < min(left[3], right[3]) * share:
+        return False
+    gap = max(left[0], right[0]) - min(left[0] + left[2], right[0] + right[2])
+    return gap <= reach
+
+
 def _promote_ocr_text(
     elements: list[dict[str, Any]],
     image_path: str,
@@ -3885,7 +3944,7 @@ def _promote_ocr_text(
         if confidence < OCR_PROMOTE_CONFIDENCE:
             continue
         text = str(observation.get("text") or "").strip()
-        if len(text) < 2 or text.isdigit():
+        if not text or text.isdigit():
             continue
         if not any(character.isalnum() for character in text):
             continue
@@ -3905,6 +3964,14 @@ def _promote_ocr_text(
         if box_width < 6 or box_height < 8:
             continue
         rect = (left, top, box_width, box_height)
+        # A single glyph is only worth a node when it sits on a row that other
+        # words already describe: the 起 beside a price, the 折 inside a badge.
+        # A stray mark on its own is not a label.
+        if len(text) < 2 and not any(
+            _rows_share(rect, other_rect)
+            for other_rect, _key in existing
+        ):
+            continue
         key = normalize_match_text(text)
         moved = False
         blocked = False
@@ -4001,6 +4068,7 @@ def _promote_ocr_text(
         elements.append(element)
         existing.append((rect, key))
         added += 1
+
     return added
 
 
@@ -4738,10 +4806,14 @@ def _recover_text_backdrops(
     return added
 
 
-#: Recovered marks: a logo is wider than an icon but still a mark, not a panel.
-VISUAL_MIN_SIDE = 14
-VISUAL_MAX_WIDTH = 180
-VISUAL_MAX_HEIGHT = 96
+#: Recovered marks: a logo is wider than an icon but still a mark, not a panel,
+#: and a stamp around a price is wider still.
+VISUAL_MIN_SIDE = 12
+VISUAL_MAX_WIDTH = 260
+VISUAL_MAX_HEIGHT = 120
+#: How far a glyph's antialiased edge may sit from the label's own colour and
+#: still be that label's ink.
+VISUAL_INK_TOLERANCE = 60
 VISUAL_MIN_FILL = 0.25
 VISUAL_MAX_FILL = 0.97
 VISUAL_MIN_CONTRAST = 24
@@ -5263,17 +5335,20 @@ def _recover_visual_regions(
     width: int,
     height: int,
     observations: Sequence[Mapping[str, Any]] | None = None,
+    background: str = "",
 ) -> int:
-    """Cut out the marks nothing in the plan explains: logos, big glyphs.
+    """Cut out the marks nothing in the plan explains: icons, logos, stamps.
 
     Grounding reliably reports photos and avatars and just as reliably drops
-    the brand mark in the corner and the 90px check badge — they are neither
-    text nor "image" in its vocabulary.  Erase every box that is already
-    accounted for, then whatever still stands out as a compact, high-contrast
-    blob is a mark, and the screenshot still has its pixels.
+    the brand mark in the corner, the 90px check badge and the tilted discount
+    stamp around a price — they are neither text nor "image" in its vocabulary.
 
-    Widths reach 180 so a wordmark fits, heights stop at 64 so a card, a chart
-    or a photo never does.
+    The old rule was "never touch a word box", which also threw away every icon
+    that stands next to a label: AtomCode's mark, the blue check in review.  The
+    rule now is finer: erase the *ink* of known text — the pixels that carry the
+    label's own colour, inside its own box — and keep everything else.  A red
+    stamp frame around a price is not the price's ink, so the whole stamp
+    survives; an icon beside a word is outside the glyphs, so it survives too.
     """
     import numpy as np
     from PIL import Image
@@ -5289,49 +5364,76 @@ def _recover_visual_regions(
     if image.ndim != 3:
         return 0
     image = image[:height, :width]
+    page = np.asarray(_hex_rgb(background), dtype=np.int16) if background else None
 
+    # Whole boxes that are already drawn as something else: a picture, a
+    # control with its own fill, a chip, a recovered panel.
     explained: list[tuple[int, int, int, int]] = []
     for element in elements:
-        if str(element.get("type")) not in {"text", "image", "button", "input"}:
+        kind = str(element.get("type") or "")
+        role = str(element.get("role") or "")
+        box = _layout_rect(element)
+        if box is None:
+            continue
+        if kind in {"image", "button", "input"} or role in {
+            "text-backdrop",
+            "mark",
+            "progress",
+            "panel",
+            "block",
+            "page-ground",
+            "patch",
+        }:
+            explained.append(box)
+
+    # The ink of known text, pixel by pixel: the label's own colour, inside the
+    # label's own box, dilated a little for antialiasing.  Everything the words
+    # actually paint is erased; the icon standing next to them is not.
+    ink = np.zeros(image.shape[:2], dtype=bool)
+    for element in elements:
+        if str(element.get("type")) != "text" or not element.get("text"):
             continue
         box = _layout_rect(element)
-        if box is not None:
-            explained.append(box)
-    # Words OCR read are words, whatever the plan did with them.  Without this
-    # every mis-measured text box leaves its ink behind and comes back as a
-    # "logo" — a pixel copy printed under the vector text.
-    words = [line_box for _text, line_box in _ocr_lines(observations)]
-    explained.extend(words)
-    # Text boxes themselves, not only the OCR lines: a paragraph whose box is
-    # ten pixels off still has its ink standing in the open.
-    text_boxes = [
-        box
-        for element in elements
-        if str(element.get("type")) == "text"
-        for box in [_layout_rect(element)]
-        if box is not None
-    ]
-    for element in elements:
-        if str(element.get("role") or "") in {"progress", "text-backdrop"}:
-            box = _layout_rect(element)
-            if box is not None:
-                explained.append(box)
+        if box is None:
+            continue
+        style = element.get("style") if isinstance(element.get("style"), dict) else {}
+        colour = str(style.get("textColor") or "")
+        left, top = max(0, box[0]), max(0, box[1])
+        right = min(width, box[0] + box[2])
+        bottom = min(height, box[1] + box[3])
+        if right - left < 2 or bottom - top < 2:
+            continue
+        if _hex_rgb(colour) != (0, 0, 0) or colour.strip("#").lower() == "000000":
+            distance = np.abs(
+                image[top:bottom, left:right] - np.asarray(_hex_rgb(colour), dtype=np.int16)
+            ).max(axis=2)
+            ink[top:bottom, left:right] |= distance <= VISUAL_INK_TOLERANCE
+        else:
+            ink[top:bottom, left:right] = True
+    if ink.any():
+        ink = cv2.dilate(ink.astype(np.uint8), np.ones((3, 3), dtype=np.uint8)).astype(bool)
 
-    border = np.concatenate(
-        [
-            image[0:2].reshape(-1, 3),
-            image[max(0, height - 2) : height].reshape(-1, 3),
-            image[:, 0:2].reshape(-1, 3),
-            image[:, max(0, width - 2) : width].reshape(-1, 3),
-        ]
-    )
-    outside = np.median(border, axis=0)
-    mask = (np.abs(image - outside).max(axis=2) >= VISUAL_MIN_CONTRAST).astype(np.uint8)
+    reference = page
+    if reference is None:
+        border = np.concatenate(
+            [
+                image[0:2].reshape(-1, 3),
+                image[max(0, height - 2) : height].reshape(-1, 3),
+                image[:, 0:2].reshape(-1, 3),
+                image[:, max(0, width - 2) : width].reshape(-1, 3),
+            ]
+        )
+        reference = np.median(border, axis=0)
+    mask = (
+        np.abs(image - np.asarray(reference, dtype=np.int16)).max(axis=2)
+        >= VISUAL_MIN_CONTRAST
+    ).astype(np.uint8)
     for x, y, box_width, box_height in explained:
         mask[
             max(0, y - 1) : min(height, y + box_height + 1),
             max(0, x - 1) : min(width, x + box_width + 1),
         ] = 0
+    mask[ink] = 0
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((3, 3), dtype=np.uint8))
     count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(mask, 8)
 
@@ -5343,30 +5445,17 @@ def _recover_visual_regions(
         if box_width > VISUAL_MAX_WIDTH or box_height > VISUAL_MAX_HEIGHT:
             continue
         ratio = box_width / max(1, box_height)
-        if ratio < 0.2 or ratio > 8.0:
+        if ratio < 0.12 or ratio > 10.0:
             continue
-        # A short wide sliver is a line of text the plan missed, not a mark:
-        # recovering it would print the same words twice, once as pixels.
+        # A short wide sliver with almost no ink in it is a leftover of a text
+        # line the plan missed, not a mark.
         if box_height <= 18 and ratio >= 2.2:
             continue
         fill = area / max(1, box_width * box_height)
-        if fill < VISUAL_MIN_FILL or fill > VISUAL_MAX_FILL:
+        if fill < VISUAL_MIN_FILL:
             continue
         box = (x, y, box_width, box_height)
         if any(_iou(box, other) >= 0.3 for other in explained):
-            continue
-        # Any touch of a word box at all: a leftover of a mis-measured text
-        # line sits within a pixel or two of the line OCR read it from.
-        if any(
-            _rects_overlap(
-                box, (word[0] - 3, word[1] - 3, word[2] + 6, word[3] + 6)
-            )
-            for word in words
-        ):
-            continue
-        if any(
-            _overlap_share(box, other) > 0.15 for other in text_boxes
-        ):
             continue
         candidates.append((area, [x, y, box_width, box_height]))
 
@@ -5832,6 +5921,140 @@ def _filled_edge(
     return None
 
 
+#: A child may be clipped by its parent, but not to nothing.
+CONTAIN_MIN_SIZE = 8
+#: ... and a label may be narrowed by its neighbour, but never below a word.
+CONTAIN_MIN_TEXT = 24
+#: Keep this far clear of the neighbour a label is running into.
+CONTAIN_TEXT_GAP = 4
+#: Beyond this the child is right and the parent is wrong.
+CONTAIN_MAX_OVERFLOW = 24
+
+
+def _constrain_children(
+    elements: list[dict[str, Any]],
+    background: str = "",
+) -> int:
+    """Keep every child inside its parent, and every label inside its row.
+
+    Two overflows, one cause: a box measured a little wider than the thing it
+    describes.  A container whose members reach past it leaves a strip of its
+    fill outside the panel — the white patches crossing the inventory sidebar —
+    and a label whose text is wider than its box prints over the note beside it,
+    because the renderer lays the string out from the box and does not know a
+    neighbour is there.
+
+    So: the rectangle is clipped to the parent's rectangle (the parent is the
+    authority on where its own world ends), and a label's width is capped at
+    whatever is left before the next sibling on its row.
+    """
+    rects = [_layout_rect(element) for element in elements]
+    recovered = {"text-backdrop", "mark", "progress", "page-ground", "block"}
+    containers = {
+        index
+        for index, element in enumerate(elements)
+        if str(element.get("type")) == "container" and rects[index] is not None
+        and str(element.get("role") or "") not in recovered
+    }
+    clipped = 0
+    for kid, box in enumerate(rects):
+        if box is None:
+            continue
+        # Labels have their own rule below (a text box that is clipped wraps
+        # for no reason), and a planned container is the model's reading of a
+        # group — clipping it deletes structure.  What is left is exactly the
+        # case that produced the white patches: pixel-recovered blocks and
+        # controls, drawn from a threshold and measured a little too wide.
+        kind = str(elements[kid].get("type") or "")
+        role = str(elements[kid].get("role") or "")
+        if kind == "text":
+            continue
+        if kind == "container" and role not in {"block", "panel"}:
+            continue
+        # The parent is the smallest container that *mostly* holds this box.
+        # Strict containment cannot find it: the whole point is that the child
+        # sticks out, so it is never fully inside anything.
+        centre_x = box[0] + box[2] / 2
+        centre_y = box[1] + box[3] / 2
+        parent: int | None = None
+        best_area: int | None = None
+        for candidate in containers:
+            outer = rects[candidate]
+            if outer is None or outer[2] * outer[3] <= box[2] * box[3]:
+                continue
+            if not (
+                outer[0] <= centre_x <= outer[0] + outer[2]
+                and outer[1] <= centre_y <= outer[1] + outer[3]
+            ):
+                continue
+            if _overlap_share(box, outer) < 0.6:
+                continue
+            area = outer[2] * outer[3]
+            if best_area is None or area < best_area:
+                parent, best_area = candidate, area
+        if parent is None:
+            continue
+        parent_box = rects[parent]
+        # Only a panel with its own paint is an authority on where its world
+        # ends.  A page-coloured wrapper measures the same as the page, and
+        # clipping to it just shortens cards that were right.
+        panel_fill = _solid_fill(elements[parent])
+        if not panel_fill or (background and _same_fill(panel_fill, background, SOFT_PANEL_MIN_DELTA)):
+            continue
+        if True:
+            right = min(box[0] + box[2], parent_box[0] + parent_box[2])
+            bottom = min(box[1] + box[3], parent_box[1] + parent_box[3])
+            width = right - box[0]
+            height = bottom - box[1]
+            if width < CONTAIN_MIN_SIZE or height < CONTAIN_MIN_SIZE:
+                continue
+            if width == box[2] and height == box[3]:
+                continue
+            # A small overshoot is a measurement slip and is clipped.  A large
+            # one is the parent that is wrong — a highlight bar that runs the
+            # full width of a sidebar is not the thing to cut.
+            if max(box[2] - width, box[3] - height) > CONTAIN_MAX_OVERFLOW:
+                continue
+            element = elements[kid]
+            element["width"] = width
+            element["height"] = height
+            rects[kid] = (box[0], box[1], width, height)
+            clipped += 1
+
+    # A label that would print past the next thing on its row is capped at the
+    # room that is actually there.
+    for index, element in enumerate(elements):
+        if str(element.get("type")) != "text" or not element.get("text"):
+            continue
+        box = rects[index]
+        if box is None:
+            continue
+        span_left, span_right = _rendered_span(element)
+        if span_right - span_left <= box[2] + 2:
+            continue
+        limit: int | None = None
+        for other, other_box in enumerate(rects):
+            if other == index or other_box is None:
+                continue
+            if other_box[0] < box[0] + box[2] - 2:
+                continue
+            rows = min(box[1] + box[3], other_box[1] + other_box[3]) - max(
+                box[1], other_box[1]
+            )
+            if rows < min(box[3], other_box[3]) * 0.5:
+                continue
+            candidate = other_box[0] - CONTAIN_TEXT_GAP - box[0]
+            if candidate < CONTAIN_MIN_TEXT:
+                continue
+            limit = candidate if limit is None else min(limit, candidate)
+        if limit is None or limit >= box[2]:
+            continue
+        element["width"] = limit
+        rects[index] = (box[0], box[1], limit, box[3])
+        clipped += 1
+    return clipped
+
+
 def _evict_cross_plane_members(
     elements: list[dict[str, Any]],
     image_path: str,
@@ -6082,10 +6305,11 @@ def _apply_residual_patches(
     width, height = canvas
     added = 0
     for region in regions:
-        if len(region) != 4:
+        if len(region) not in (4, 5):
             continue
         try:
-            x, y, box_width, box_height = (int(value) for value in region)
+            x, y, box_width, box_height = (int(value) for value in region[:4])
+            layer = int(region[4]) if len(region) == 5 else PATCH_Z_INDEX
         except (TypeError, ValueError):
             continue
         x = max(0, x)
@@ -6114,7 +6338,7 @@ def _apply_residual_patches(
                 "name": "Residual patch",
                 "contentRef": f"patch:{digest}",
                 "sceneOwnerId": f"patch:{digest}",
-                "zIndex": PATCH_Z_INDEX,
+                "zIndex": layer,
                 "imageMVP": {
                     "source": "residual-patch",
                     "role": "patch",
@@ -6141,7 +6365,16 @@ def attach_layout_frames(elements: list[dict[str, Any]]) -> int:
     ]
     # Recovered pixels are paint, never structure: a crop that happened to fall
     # inside a card must not turn into a layer group or change its layout.
-    recovered_roles = {"text-backdrop", "mark", "progress", "page-ground"}
+    # Recovered colour blocks are paint: a flat rectangle found by thresholding
+    # is a background, not a group, and making it a frame parent only holds its
+    # container back.
+    recovered_roles = {
+        "text-backdrop",
+        "mark",
+        "progress",
+        "page-ground",
+        "block",
+    }
     containers = {
         index
         for index, element in enumerate(elements)
@@ -6177,6 +6410,18 @@ def attach_layout_frames(elements: list[dict[str, Any]]) -> int:
         rects,
         members,
     )
+    # Recovered pixels are paint: a container holding nothing but a mark or a
+    # chip does not need a frame of its own, and counting it as "still waiting"
+    # held its parent back for nothing.
+    paint_only = {"mark", "patch", "text-backdrop", "progress"}
+    structural = {
+        owner: [
+            child
+            for child in kids
+            if str(elements[child].get("role") or "") not in paint_only
+        ]
+        for owner, kids in members.items()
+    }
     for owner in order:
         if owner in duplicates:
             continue
@@ -6199,7 +6444,7 @@ def attach_layout_frames(elements: list[dict[str, Any]]) -> int:
             fallback = _xy_cut_layout(parent_box, children, rects)
             if fallback is not None:
                 spec, ordered_children = fallback
-        if _has_nested_container(children, elements, members):
+        if _has_nested_container(children, elements, structural):
             continue
         if spec is None and len(children) < 2:
             # A plain frame still needs two members for the renderer to treat
@@ -6392,7 +6637,9 @@ def compile_scene_plan_to_design(
         _recover_soft_panels(elements, image_path, width, height, background)
         _recover_colour_regions(elements, image_path, width, height, background)
         # Logos and oversized glyphs are the marks no stage reports.
-        _recover_visual_regions(elements, image_path, width, height, ocr_observations)
+        _recover_visual_regions(
+            elements, image_path, width, height, ocr_observations, background
+        )
     _drop_page_coloured_shells(elements, background)
     # Icon captions the model invented have to go before the duplicate pass:
     # "search" over a magnifier looks like a label that a real one duplicates.
@@ -6405,6 +6652,8 @@ def compile_scene_plan_to_design(
     # A control measured over a table belongs to the words OCR read for it,
     # which are somewhere else entirely.
     _resolve_misfiled_controls(elements, ocr_observations, image_path)
+    # Nothing may stick out of the box that owns it.
+    _constrain_children(elements, background)
     # A member standing on the page's own surface was never inside the dialog
     # that claims it: give it back, then cut the dialog down to its own paint.
     _evict_cross_plane_members(

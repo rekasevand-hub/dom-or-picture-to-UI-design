@@ -906,3 +906,122 @@ def test_a_residual_region_is_cut_out_of_the_screenshot(tmp_path: Path) -> None:
     assert (patch["x"], patch["y"], patch["width"], patch["height"]) == (30, 30, 120, 60)
     assert patch.get("imageBase64")
     assert int(patch["zIndex"]) > 0
+
+
+# -- font weight from stroke width ----------------------------------------
+
+
+def test_weight_comes_from_the_stroke_not_from_the_size() -> None:
+    """A 14px card title is bold; a 40px light heading is not."""
+    from src.app.services.structure.fidelity.style_resolver import _weight_for
+
+    assert _weight_for(2.4, 14.0, "")[1] == 700
+    assert _weight_for(2.0, 14.0, "")[1] == 400
+    # Same absolute stroke, but far too light for a 40px face.
+    assert _weight_for(2.6, 40.0, "")[1] == 400
+    assert _weight_for(6.0, 40.0, "")[1] == 900
+
+
+def test_the_stroke_of_a_thick_bar_is_its_width() -> None:
+    from src.app.services.structure.fidelity.style_resolver import _stroke_thickness
+    import numpy as np
+
+    mask = np.zeros((40, 80), dtype=bool)
+    mask[10:14, 10:70] = True  # a 4px bar
+    assert 3.5 <= _stroke_thickness(mask) <= 4.5
+    thin = np.zeros((40, 80), dtype=bool)
+    thin[10:12, 10:70] = True  # a 2px bar
+    assert 1.5 <= _stroke_thickness(thin) <= 2.5
+
+
+# -- marks next to their label --------------------------------------------
+
+
+def test_an_icon_beside_its_label_is_recovered(tmp_path: Path) -> None:
+    """AtomCode's mark sits two pixels from the word and used to be dropped."""
+    from PIL import Image
+
+    from src.app.services.structure.fidelity.fixed_canvas_compiler import (
+        _recover_visual_regions,
+    )
+
+    image = Image.new("RGB", (400, 120), (255, 255, 255))
+    for x in range(60, 140):  # a word, glyph-shaped
+        for glyph in range(5):
+            left = 60 + glyph * 16
+            for gx in range(left, left + 3):
+                for y in range(50, 64):
+                    image.putpixel((gx, y), (30, 30, 30))
+    for x in range(30, 52):  # the icon, right beside it
+        for y in range(46, 70):
+            image.putpixel((x, y), (40, 120, 250))
+    path = tmp_path / "icon.png"
+    image.save(path)
+    elements = [_text(0, 60, 50, 80, 14, "AtomCode")]
+    assert _recover_visual_regions(elements, str(path), 400, 120, None, "#ffffff") >= 1
+    marks = [element for element in elements if element.get("role") == "mark"]
+    assert marks and marks[0]["x"] <= 52
+
+
+# -- one row, one label ---------------------------------------------------
+
+
+def test_a_ghost_copy_on_the_same_row_is_merged() -> None:
+    from src.app.services.structure.fidelity.fixed_canvas_compiler import (
+        _drop_coincident_texts,
+    )
+
+    elements = [
+        _text(0, 100, 40, 200, 24, "安全检查进行中"),
+        _text(1, 118, 41, 200, 24, "安全检查进行中"),
+    ]
+    assert _drop_coincident_texts(elements, "#ffffff") == 1
+    assert len(elements) == 1
+
+
+def test_two_real_labels_on_one_row_are_kept() -> None:
+    """A Star button per card is two labels, not one printed twice."""
+    from src.app.services.structure.fidelity.fixed_canvas_compiler import (
+        _drop_coincident_texts,
+    )
+
+    elements = [
+        _text(0, 100, 40, 60, 24, "Star"),
+        _text(1, 400, 40, 60, 24, "Star"),
+    ]
+    assert _drop_coincident_texts(elements, "#ffffff") == 0
+    assert len(elements) == 2
+
+
+# -- children stay inside their parent ------------------------------------
+
+
+def test_a_child_is_clipped_to_its_parent() -> None:
+    """The white patches that crossed the inventory sidebar."""
+    from src.app.services.structure.fidelity.fixed_canvas_compiler import (
+        _constrain_children,
+    )
+
+    parent = _box(0, 0, 0, 200, 300, "#364150")
+    child = _box(1, 20, 20, 200, 40, "#ffffff")
+    # The patches that crossed the sidebar were pixel-recovered blocks, not
+    # planned containers: those are the ones the clip is allowed to touch.
+    child["role"] = "block"
+    elements = [parent, child]
+    assert _constrain_children(elements, "#ffffff") == 1
+    assert elements[1]["width"] == 180
+
+
+def test_a_label_is_capped_before_its_neighbour() -> None:
+    from src.app.services.structure.fidelity.fixed_canvas_compiler import (
+        _constrain_children,
+    )
+
+    elements = [
+        _box(0, 0, 0, 600, 200, "#ffffff"),
+        _text(1, 20, 20, 200, 24, "本期好价本期好价本期好价本期好价"),
+        _text(2, 240, 20, 120, 24, "说明"),
+    ]
+    _constrain_children(elements)
+    assert elements[1]["width"] <= 216
+    assert elements[2]["width"] == 120

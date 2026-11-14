@@ -70,6 +70,75 @@ def _supports_multiline(text: str, bands: list[tuple[int, int]]) -> bool:
     return max(heights) / min(heights) <= 1.6
 
 
+#: A stroke this thick is a bold face, whatever the size.  Measured as
+#: area / half-perimeter, which is the width of the stroke that would produce
+#: that much ink for that much outline.
+STROKE_BOLD_MIN = 2.2
+#: A display heading carries more: past this the face is Black, not Bold.
+STROKE_BLACK_MIN = 3.2
+STROKE_BLACK_SIZE = 28.0
+#: Stroke thickness relative to type size.  A regular face measures 0.07-0.09,
+#: a bold one 0.12-0.16; the floor here is what keeps a large light heading out
+#: of the bold branch.
+STROKE_BOLD_RATIO = 0.115
+STROKE_BLACK_RATIO = 0.14
+
+
+def _stroke_thickness(mask) -> float:
+    """Mean stroke width of an ink mask, in pixels.
+
+    ``area / (perimeter / 2)``: a bar of length L and width t has area L*t and
+    outline 2*(L+t), so the ratio is t.  It needs no skeleton and no thinning,
+    and it is scale-free — a 14px label and a 40px heading are measured the
+    same way.
+    """
+    try:
+        import cv2
+    except Exception:  # pragma: no cover - opencv is a pipeline dependency
+        return 0.0
+    import numpy as np
+
+    if mask is None:
+        return 0.0
+    area = float(np.asarray(mask, dtype=bool).sum())
+    if area < 4:
+        return 0.0
+    contours, _hierarchy = cv2.findContours(
+        np.asarray(mask, dtype=np.uint8), cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE
+    )
+    perimeter = sum(float(cv2.arcLength(contour, True)) for contour in contours)
+    if perimeter <= 1.0:
+        return 0.0
+    return 2.0 * area / perimeter
+
+
+def _weight_for(thickness: float, size: float, role: str) -> tuple[str, int]:
+    """Font weight from the ink, not from the type size.
+
+    A 14px card title is set in a bold face and a 40px light heading is not;
+    size says nothing about stroke.  The mask does.
+
+    Both tests are needed.  Absolute thickness alone marks every large heading
+    bold — a 96px light face has an 8px stem — so the stroke is also compared
+    with the type it belongs to.  A regular face sits at 0.07-0.09 of its size,
+    a bold one at 0.12-0.16.
+    """
+    ratio = thickness / max(1.0, size)
+    if role == "table-header" and thickness < STROKE_BOLD_MIN:
+        return "bold", 700
+    if (
+        size >= STROKE_BLACK_SIZE
+        and thickness >= STROKE_BLACK_MIN
+        and ratio >= STROKE_BLACK_RATIO
+    ):
+        return "bold", 900
+    if thickness >= STROKE_BOLD_MIN and ratio >= STROKE_BOLD_RATIO:
+        return "bold", 700
+    if role == "table-header":
+        return "bold", 700
+    return "normal", 400
+
+
 def resolve_text_style(
     image_path: str | Path,
     text: str,
@@ -202,7 +271,17 @@ def resolve_text_style(
         if estimated_size * 1.02 <= pitch <= estimated_size * 3.0:
             line_height = round(pitch * 4) / 4
             line_height_policy = "observed"
-    weight = "bold" if role == "table-header" else "normal"
+    # Half-max, not the soft threshold: the soft mask carries the antialias
+    # halo and inflates every stroke by about a pixel a side, which marks a
+    # whole page bold.  Where the ink is half as strong as its core is where
+    # the glyph actually ends.
+    stroke_mask = mask
+    if mask.any():
+        strength = distance[mask]
+        cut = max(32.0, float(strength.max()) * 0.5)
+        stroke_mask = distance >= cut
+    thickness = _stroke_thickness(stroke_mask)
+    weight, weight_value = _weight_for(thickness, estimated_size, role)
     confidence = min(0.95, 0.6 + min(0.25, contrast / 255))
     if low_contrast:
         confidence = min(confidence, 0.65)
@@ -215,6 +294,7 @@ def resolve_text_style(
         ],
         "fontSize": estimated_size,
         "fontWeight": weight,
+        "fontWeightValue": weight_value,
         "textColor": _hex_color(foreground_rgb),
         "textAlign": align,
         "lineHeightPolicy": line_height_policy,
@@ -227,6 +307,7 @@ def resolve_text_style(
             "foreground": _hex_color(foreground_rgb),
             "contrast_delta": round(contrast, 3),
             "ink_pixel_count": ink_count,
+            "stroke_width": round(thickness, 2),
             "script": "cjk" if cjk else "latin",
             "parent_center_delta": center_delta,
             "line_count": line_count,

@@ -136,6 +136,36 @@ def residual_regions(
         failing = int((diff[y : y + box_height, x : x + box_width] > RESIDUAL_ERROR).sum())
         if failing < 80:
             continue
+        # A label that only partly falls inside the block cannot be patched:
+        # painting the block would print the words a second time, and cropping
+        # them away would lose the node.  A label that sits *entirely* inside is
+        # different — the block is its chip or stamp, and the patch goes under
+        # the vector text so only the missing frame is filled in.
+        # A chip or a stamp is a small block that exists *for* its label: the
+        # patch goes under the vector text and nothing is printed twice.  A
+        # larger block that merely contains a label is not that — its patch
+        # would lay a second copy of the words behind the real one, which is
+        # exactly the ghost this round is supposed to remove.  Such a block is
+        # cut down to the part that has no text in it.
+        mode = "over"
+        chip = False
+        for text in text_boxes:
+            overlap = _intersection(box, text)
+            if overlap <= 0:
+                continue
+            if box_width * box_height <= (text[2] * text[3]) * RESIDUAL_CHIP_AREA:
+                chip = True
+                continue
+            shrunk = _avoid_text(box, text_boxes)
+            if shrunk is None:
+                box = None
+                break
+            box = shrunk
+            box_width, box_height = box[2], box[3]
+        if box is None:
+            continue
+        if chip:
+            mode = "under"
         covered = 0
         for text in text_boxes:
             covered += _intersection(box, text)
@@ -143,16 +173,53 @@ def residual_regions(
             continue
         if any(_iou(box, picture) >= 0.4 for picture in picture_boxes):
             continue
-        candidates.append((failing, [x, y, box_width, box_height]))
+        candidates.append((failing, [x, y, box_width, box_height, 5 if mode == "over" else 1]))
     candidates.sort(key=lambda item: item[0], reverse=True)
     chosen: list[list[int]] = []
     for _failing, box in candidates:
         if len(chosen) >= RESIDUAL_MAX_REGIONS:
             break
-        if any(_iou(tuple(box), tuple(other)) > 0.25 for other in chosen):
+        if any(_iou(tuple(box[:4]), tuple(other[:4])) > 0.25 for other in chosen):
             continue
         chosen.append(box)
     return chosen
+
+
+#: A block this close in area to its own label is that label's chip or stamp.
+RESIDUAL_CHIP_AREA = 2.5
+
+
+def _avoid_text(box: tuple[int, int, int, int], texts: list[tuple[int, int, int, int]]):
+    """Largest sub-rectangle of ``box`` that no text box touches."""
+    pieces = [box]
+    for text in texts:
+        nxt = []
+        for piece in pieces:
+            if _intersection(piece, text) == 0:
+                nxt.append(piece)
+                continue
+            left, top, right, bottom = (
+                piece[0],
+                piece[1],
+                piece[0] + piece[2],
+                piece[1] + piece[3],
+            )
+            if text[0] > left:
+                nxt.append((left, top, text[0] - left, bottom - top))
+            if text[0] + text[2] < right:
+                nxt.append((text[0] + text[2], top, right - (text[0] + text[2]), bottom - top))
+            if text[1] > top:
+                nxt.append((left, top, right - left, text[1] - top))
+            if text[1] + text[3] < bottom:
+                nxt.append((left, text[1] + text[3], right - left, bottom - (text[1] + text[3])))
+            pieces = nxt or pieces
+        pieces = nxt or pieces
+    if not pieces:
+        return None
+    best = max(pieces, key=lambda piece: piece[2] * piece[3])
+    if best[2] < RESIDUAL_MIN_SIDE or best[3] < RESIDUAL_MIN_SIDE:
+        return None
+    return best
 
 
 def _intersection(
