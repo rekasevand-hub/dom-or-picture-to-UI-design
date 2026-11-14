@@ -794,11 +794,20 @@ async function createText(params) {
   const boundedText = !!params.boundedText && !singleLine;
   if (boundedText) {
     try {
-      text.textAutoResize = "NONE";
+      // HEIGHT keeps the measured width and lets Figma grow the box downward.
+      // A paragraph measured against the source font cannot hold the same
+      // string in a wider Figma font: NONE clips it, auto width overshoots the
+      // card. HEIGHT wraps and extends instead.
+      text.textAutoResize = params.boundedHeight ? "HEIGHT" : "NONE";
       text.resize(
         Math.max(1, Number(params.width) || text.width),
         Math.max(1, Number(params.height) || text.height),
       );
+      if (params.boundedHeight) {
+        // resize() in HEIGHT mode re-measures the height; force the width back
+        // in case the plugin adjusted it to fit the longest word.
+        text.resize(Math.max(1, Number(params.width) || text.width), text.height);
+      }
     } catch (err) {}
   } else if (singleLine) {
     try {

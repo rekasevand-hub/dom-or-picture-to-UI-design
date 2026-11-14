@@ -238,6 +238,49 @@ def _nms_victims(owners: Sequence[Mapping[str, Any]]) -> set[int]:
     return victims
 
 
+def _contained_fragments(owners: Sequence[Mapping[str, Any]]) -> set[int]:
+    """Indices of owners whose text is a fragment of a longer owner above it.
+
+    OCR reads a wrapped paragraph one line at a time while the model returns
+    the whole string.  Both survive: the full paragraph renders, then the
+    second OCR line renders on top of it.  A shorter text whose box sits inside
+    a longer text's box is that fragment, and the complete copy wins.
+    """
+    boxes = [_bbox_of(owner) for owner in owners]
+    texts = [normalize_match_text(owner.get("text")) for owner in owners]
+    doomed: set[int] = set()
+    for index, box in enumerate(boxes):
+        if box is None or not texts[index]:
+            continue
+        for other_index, other_box in enumerate(boxes):
+            if other_index == index or other_index in doomed or other_box is None:
+                continue
+            other_text = texts[other_index]
+            if len(other_text) <= len(texts[index]):
+                continue
+            # Substring matching is too strict: OCR reads "AI" as "Al" and the
+            # fragment then looks unrelated.  Compare character coverage.
+            mine = set(texts[index])
+            theirs = set(other_text)
+            if not mine:
+                continue
+            if len(mine & theirs) / len(mine) < 0.85:
+                continue
+            overlap_w = min(
+                box[0] + box[2], other_box[0] + other_box[2]
+            ) - max(box[0], other_box[0])
+            overlap_h = min(
+                box[1] + box[3], other_box[1] + other_box[3]
+            ) - max(box[1], other_box[1])
+            if overlap_w <= 0 or overlap_h <= 0:
+                continue
+            covered = (overlap_w * overlap_h) / max(1, box[2] * box[3])
+            if covered >= 0.6:
+                doomed.add(index)
+                break
+    return doomed
+
+
 def apply_text_geometry_authority(
     graph: Mapping[str, Any],
     observations: Iterable[Mapping[str, Any]],
@@ -294,16 +337,29 @@ def apply_text_geometry_authority(
 
     # Recompute owners: the snap above changed boxes, not membership.
     owners = _text_owners(elements)
-    swallow = _swallowing_blocks(owners)
-    nms = _nms_victims([owner for index, owner in enumerate(owners) if index not in swallow])
+    fragments = _contained_fragments(owners)
+    swallow = _swallowing_blocks(
+        [owner for index, owner in enumerate(owners) if index not in fragments]
+    )
+    surviving = [
+        owner
+        for index, owner in enumerate(owners)
+        if index not in fragments and index not in swallow
+    ]
+    # ``_swallowing_blocks`` indexes the filtered list; map back to real owners.
+    swallowed_owners = [
+        owner for index, owner in enumerate(owners) if index not in fragments
+    ]
+    nms = _nms_victims(surviving)
 
-    doomed: list[int] = [id(owners[index]) for index in swallow]
-    surviving = [owner for index, owner in enumerate(owners) if index not in swallow]
-    doomed.extend(id(surviving[index]) for index in nms)
-    doomed_ids = set(doomed)
+    doomed_ids: set[int] = {id(owners[index]) for index in fragments}
+    doomed_ids.update(
+        id(swallowed_owners[index]) for index in swallow
+    )
+    doomed_ids.update(id(surviving[index]) for index in nms)
 
     dropped_blocks = len(swallow)
-    nms_dropped = len(nms)
+    nms_dropped = len(nms) + len(fragments)
     if doomed_ids:
         resolved["elements"] = [
             element for element in elements if id(element) not in doomed_ids
@@ -317,6 +373,7 @@ def apply_text_geometry_authority(
         "rewritten": rewritten,
         "dropped_blocks": dropped_blocks,
         "nms_dropped": nms_dropped,
+        "dropped_fragments": len(fragments),
         "matched_lines_used": len(used),
         "policy": {
             "match_similarity": MATCH_SIMILARITY,

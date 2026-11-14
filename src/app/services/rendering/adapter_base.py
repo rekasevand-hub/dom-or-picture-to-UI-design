@@ -96,6 +96,30 @@ def _control_text_anchor(
     return "start" if has_text_box or has_run_box or has_measured_box else "middle"
 
 
+def _estimated_run_width(text: str, font_size: float) -> float:
+    """Rough advance width: CJK is one em, Latin is about 0.55 em."""
+    cjk = sum(1 for char in text if ord(char) > 0x2E80)
+    other = len(text) - cjk
+    return cjk * font_size + other * font_size * 0.55
+
+
+def _text_overflows_box(spec: dict[str, Any], style: dict[str, Any]) -> bool:
+    """Whether this string needs more width than the measured box provides.
+
+    Measured against the source font, the box can be too narrow for Figma's
+    wider face.  Such text must wrap and grow downward; text that fits must
+    keep auto width, or a one-line label breaks into two.
+    """
+    text = str(spec.get("text") or "")
+    if not text.strip():
+        return False
+    box_width = float(spec.get("width") or 0)
+    if box_width <= 0:
+        return False
+    font_size = float(style.get("fontSize") or 0) or 14.0
+    return _estimated_run_width(text, font_size) > box_width * 1.15
+
+
 def _single_line_text(spec: dict[str, Any]) -> bool:
     """Whether Figma should keep this text on one auto-width line."""
     if spec.get("singleLine"):
@@ -412,6 +436,19 @@ class PrototypeAdapter(ABC):
                     or spec.get("clipToBounds")
                 ):
                     text_spec["boundedText"] = True
+                else:
+                    # Image-route text carries a measured box but no browser
+                    # line breaks.  Figma's font is wider than the one the box
+                    # was measured against, so the same string needs more room.
+                    # Compare the estimated run length with the box: only a
+                    # string that cannot fit should wrap and grow downward
+                    # (HEIGHT); a label that fits keeps auto width so it stays
+                    # on one line.
+                    if _text_overflows_box(spec, style):
+                        text_spec["boundedText"] = True
+                        text_spec["boundedHeight"] = True
+                    else:
+                        text_spec["singleLine"] = True
                 self.create_text(
                     self._wrap_text_spec(text_spec),
                     parent_id=parent_id,
