@@ -1131,6 +1131,7 @@ _LAYOUT_MEMBER_TYPES = {
     "input",
     "circle",
     "rectangle",
+    "divider",
     "container",
 }
 
@@ -1173,26 +1174,35 @@ def _owner_index(
     containers qualify: without it a large image behind the copy swallowed the
     text nodes, so they never became members of the card frame that contained
     them and the frame was rejected for covering a stranger.
+
+    Strict containment is tried before the one-pixel tolerance.  A grid line
+    drawn on a panel's bottom edge touches that panel but does not lie inside
+    it; claiming it makes the line a member, and the next row's cells — which
+    start exactly where the line ends — then overlap a member and the frame is
+    rejected.  Falling back to the parent panel puts the line where it belongs.
     """
     inner = rects[index]
     if inner is None:
         return None
     inner_area = inner[2] * inner[3]
-    best: int | None = None
-    best_area: int | None = None
-    for other, outer in enumerate(rects):
-        if other == index or outer is None:
-            continue
-        if parent_candidates is not None and other not in parent_candidates:
-            continue
-        if outer[2] * outer[3] <= inner_area:
-            continue
-        if not _rect_contains(outer, inner):
-            continue
-        area = outer[2] * outer[3]
-        if best_area is None or area < best_area:
-            best, best_area = other, area
-    return best
+    for tolerance in (0, 1):
+        best: int | None = None
+        best_area: int | None = None
+        for other, outer in enumerate(rects):
+            if other == index or outer is None:
+                continue
+            if parent_candidates is not None and other not in parent_candidates:
+                continue
+            if outer[2] * outer[3] <= inner_area:
+                continue
+            if not _rect_contains(outer, inner, tolerance=tolerance):
+                continue
+            area = outer[2] * outer[3]
+            if best_area is None or area < best_area:
+                best, best_area = other, area
+        if best is not None:
+            return best
+    return None
 
 
 def _rows(
@@ -1332,6 +1342,7 @@ def _stack_layout(
 def _has_nested_container(
     children: list[int],
     elements: list[dict[str, Any]],
+    members: dict[int, list[int]] | None = None,
 ) -> bool:
     """Whether a member container is still waiting to become a frame.
 
@@ -1341,12 +1352,21 @@ def _has_nested_container(
     parent for covering them.  Processing innermost-first and holding a parent
     back until its child containers are framed yields a real frame tree instead
     of a flat pile.
+
+    A container that owns nothing is exempt.  Two containers can measure out
+    nearly identically (one is a duplicate rectangle); the poorer one keeps
+    zero members and is dropped as a frame candidate, and counting it here
+    would block its parent forever with no orphan to protect.
     """
-    return any(
-        str(elements[index].get("type")) == "container"
-        and not elements[index].get("layoutChildren")
-        for index in children
-    )
+    for index in children:
+        if str(elements[index].get("type")) != "container":
+            continue
+        if elements[index].get("layoutChildren"):
+            continue
+        if members is not None and not members.get(index):
+            continue
+        return True
+    return False
 
 
 def _overlap_over_smaller(
@@ -1952,151 +1972,220 @@ def _trim_overshoot_into_conflicts(
     return trimmed
 
 
-def _grid_row_band_layout(
+_XY_TOLERANCE = 2
+
+
+def _union_rect(
+    indexes: list[int],
+    rects: list[tuple[int, int, int, int] | None],
+) -> tuple[int, int, int, int] | None:
+    """Bounding box of a set of members."""
+    boxes = [rects[index] for index in indexes if rects[index] is not None]
+    if not boxes:
+        return None
+    left = min(box[0] for box in boxes)
+    top = min(box[1] for box in boxes)
+    right = max(box[0] + box[2] for box in boxes)
+    bottom = max(box[1] + box[3] for box in boxes)
+    return (left, top, right - left, bottom - top)
+
+
+def _axis_bands(
+    items: list[int],
+    rects: list[tuple[int, int, int, int] | None],
+    axis: str,
+) -> list[list[int]]:
+    """Split items into bands wherever a gutter separates them on ``axis``.
+
+    A gutter is any positive distance between one box's end and the next
+    box's start; two pixels of overlap still count as touching, because a
+    measured border or a shared cell edge routinely overshoots by that much.
+    """
+    start_i, size_i = (0, 2) if axis == "x" else (1, 3)
+    cross_i = 1 if axis == "x" else 0
+    ordered = sorted(
+        items, key=lambda index: (rects[index][start_i], rects[index][cross_i])
+    )
+    bands: list[list[int]] = []
+    edge: int | None = None
+    for index in ordered:
+        rect = rects[index]
+        start = rect[start_i]
+        stop = start + rect[size_i]
+        if edge is None or start >= edge - _XY_TOLERANCE:
+            bands.append([index])
+            edge = stop
+        else:
+            bands[-1].append(index)
+            edge = max(edge, stop)
+    return bands
+
+
+def _cut_axis(
+    items: list[int],
+    rects: list[tuple[int, int, int, int] | None],
+    axis: str,
+) -> tuple[list[list[int]], list[int]] | None:
+    """Try to cut along one axis.
+
+    Returns the bands plus the elements skipped because they span the whole
+    extent — a section background or a rule running edge to edge belongs to no
+    single band, and leaving it in the projection makes every band overlap so
+    the axis looks uncuttable.
+    """
+    union = _union_rect(items, rects)
+    if union is None:
+        return None
+    span = union[2] if axis == "x" else union[3]
+    size_i = 2 if axis == "x" else 3
+    spanning = [index for index in items if rects[index][size_i] >= span * 0.92]
+    skipped = set(spanning)
+    body = [index for index in items if index not in skipped]
+    if len(body) < 2:
+        return None
+    bands = _axis_bands(body, rects, axis)
+    if len(bands) < 2:
+        return None
+    return bands, spanning
+
+
+def _xy_cut(
+    items: list[int],
+    rects: list[tuple[int, int, int, int] | None],
+    prefer: str = "y",
+) -> tuple[list[int], str] | None:
+    """Recursive XY-cut: reading order plus the axis of the first cut.
+
+    Rows first, then columns, then recurse into every band on the other axis.
+    A band that will not cut either way is a free collage and keeps its
+    reading order — it still belongs to the frame, it just has no Auto Layout
+    story to tell.
+    """
+    if len(items) <= 1:
+        return (list(items), "") if items else None
+    axes = ("y", "x") if prefer == "y" else ("x", "y")
+    for axis in axes:
+        cut = _cut_axis(items, rects, axis)
+        if cut is None:
+            continue
+        bands, spanning = cut
+        other = "x" if axis == "y" else "y"
+        ordered: list[int] = sorted(
+            spanning, key=lambda index: (rects[index][1], rects[index][0])
+        )
+        for band in bands:
+            deeper = _xy_cut(band, rects, other)
+            if deeper is None:
+                ordered.extend(
+                    sorted(band, key=lambda index: (rects[index][1], rects[index][0]))
+                )
+            else:
+                ordered.extend(deeper[0])
+        return ordered, axis
+    return None
+
+
+def _xy_cut_layout(
     parent: tuple[int, int, int, int],
     children: list[int],
     rects: list[tuple[int, int, int, int] | None],
 ) -> tuple[dict[str, Any], list[int]] | None:
-    """Pass 2: a two-axis grid, expressed as row bands.
+    """General layout candidate: recursive orthogonal splitting.
 
-    Only called when the single-row / single-column candidates both fail, so
-    nothing that worked before can regress.  A form of four label/input columns
-    and a data table are both "bands of cells": the bands stack on y, the cells
-    inside a band lay out on x, and each band must not cross its neighbours on
-    either axis.
-
-    A background image covering most of the container, or a rule spanning
-    several rows, is excluded from *band clustering* — it would merge every row
-    into one — but it stays a child of the frame.  Dropping it would leave it
-    inside the frame's rectangle as a non-member, and the renderer rejects the
-    frame for covering a stranger.
-
-    Returns the spec and the children in row-major order.
+    Replaces the row-band recogniser, which needed every row to be a clean
+    grid of non-crossing cells — a table with a merged header or a banner with
+    a badge would fail it.  XY-cut only asks for a gutter somewhere, so those
+    fall out of the same recursion with no special case.
     """
-    if len(children) < 3:
+    usable = [index for index in children if rects[index] is not None]
+    if len(usable) < 2:
         return None
     parent_area = max(1, parent[2] * parent[3])
-    cell_rects = [rects[index] for index in children if rects[index] is not None]
-    if not cell_rects:
-        return None
-
-    # A single row that Pass 1 rejected only because two icon cuts overlap by
-    # just over half.  Pass 1's gap rule is strict on purpose; here the slots
-    # absorb those cuts and the row reads as one line.
-    tops = [rect[1] for rect in cell_rects]
-    band = max(tops) - min(tops)
-    if band <= max(8, int(max(rect[3] for rect in cell_rects) * 0.8)):
-        row_slots = _merge_slots(cell_rects, "x", threshold=0.45)
-        row_gaps = [
-            row_slots[spot + 1][0] - row_slots[spot][1]
-            for spot in range(len(row_slots) - 1)
-        ]
-        if len(row_slots) >= 2 and all(gap >= -4 for gap in row_gaps):
-            ordered = sorted(
-                children, key=lambda index: (rects[index][0], rects[index][1])
-            )
-            padding = {
-                "paddingTop": min(rect[1] for rect in cell_rects) - parent[1],
-                "paddingBottom": (parent[1] + parent[3])
-                - max(rect[1] + rect[3] for rect in cell_rects),
-                "paddingLeft": min(rect[0] for rect in cell_rects) - parent[0],
-                "paddingRight": (parent[0] + parent[2])
-                - max(rect[0] + rect[2] for rect in cell_rects),
-            }
-            if all(value >= 0 for value in padding.values()):
-                spec: dict[str, Any] = {
-                    "mode": "HORIZONTAL",
-                    "itemSpacing": max(
-                        0, int(round(sum(row_gaps) / len(row_gaps)))
-                    ),
-                    "primaryAlign": "MIN",
-                    "counterAlign": "MIN",
-                    **padding,
-                    "source": "geometry-row-band",
-                }
-                return spec, ordered
-
-    spanning: list[int] = []
-    cells: list[int] = []
-    for index in children:
-        rect = rects[index]
-        if rect is None:
-            continue
-        if rect[2] * rect[3] >= parent_area * 0.5:
-            spanning.append(index)
-        else:
-            cells.append(index)
-    if len(cells) < 3:
-        return None
-
-    order = sorted(cells, key=lambda index: (rects[index][1], rects[index][0]))
-    bands: list[dict[str, Any]] = []
-    for index in order:
-        box = rects[index]
-        for band in bands:
-            if box[1] < band["bottom"] - 4:
-                band["members"].append(index)
-                band["bottom"] = max(band["bottom"], box[1] + box[3])
-                break
-        else:
-            bands.append(
-                {"top": box[1], "bottom": box[1] + box[3], "members": [index]}
-            )
-    if len(bands) < 2:
-        return None
-    if not any(len(band["members"]) >= 2 for band in bands):
-        return None
-
-    band_boxes: list[tuple[int, int, int, int]] = []
-    for band in bands:
-        band_rects = [rects[index] for index in band["members"]]
-        left = min(rect[0] for rect in band_rects)
-        right = max(rect[0] + rect[2] for rect in band_rects)
-        band_boxes.append((left, band["top"], right - left, band["bottom"] - band["top"]))
-    gaps_y = [
-        band_boxes[spot + 1][1] - (band_boxes[spot][1] + band_boxes[spot][3])
-        for spot in range(len(band_boxes) - 1)
+    body = [
+        index
+        for index in usable
+        if rects[index][2] * rects[index][3] < parent_area * 0.5
     ]
-    if any(gap < -4 for gap in gaps_y):
+    if len(body) < 2:
         return None
-    for band in bands:
-        band_rects = [rects[index] for index in band["members"]]
-        slots = _merge_slots(band_rects, "x")
-        if any(
-            slots[spot + 1][0] - slots[spot][1] < -4
-            for spot in range(len(slots) - 1)
-        ):
-            return None
-
-    ordered: list[int] = list(spanning)
-    for band in bands:
-        ordered.extend(sorted(band["members"], key=lambda index: rects[index][0]))
-    seen = set(ordered)
-    for index in children:
-        if index not in seen:
-            ordered.append(index)
-
-    padding = {
-        "paddingTop": min(rects[index][1] for index in cells) - parent[1],
-        "paddingBottom": (parent[1] + parent[3])
-        - max(rects[index][1] + rects[index][3] for index in cells),
-        "paddingLeft": min(rects[index][0] for index in cells) - parent[0],
-        "paddingRight": (parent[0] + parent[2])
-        - max(rects[index][0] + rects[index][2] for index in cells),
-    }
-    if any(value < 0 for value in padding.values()):
+    cut = _xy_cut(body, rects)
+    if cut is None:
         return None
-    spacing = int(round(sum(gaps_y) / len(gaps_y))) if gaps_y else 0
+    ordered, axis = cut
+    if not axis:
+        return None
+    bands = _cut_axis(body, rects, axis)
+    if bands is None:
+        return None
+    union = _union_rect(body, rects) or parent
+    gaps: list[int] = []
+    previous_end: int | None = None
+    for band in bands[0]:
+        band_union = _union_rect(band, rects)
+        if band_union is None:
+            continue
+        start = band_union[0] if axis == "x" else band_union[1]
+        size = band_union[2] if axis == "x" else band_union[3]
+        if previous_end is not None:
+            gaps.append(max(0, start - previous_end))
+        previous_end = start + size
+    spacing = int(round(sorted(gaps)[len(gaps) // 2])) if gaps else 0
     spec: dict[str, Any] = {
-        "mode": "VERTICAL",
-        "itemSpacing": max(0, spacing),
+        "mode": "VERTICAL" if axis == "y" else "HORIZONTAL",
+        "itemSpacing": spacing,
         "primaryAlign": "MIN",
         "counterAlign": "MIN",
-        **padding,
-        "source": "geometry-row-band",
-        "bandCount": len(bands),
+        "paddingTop": max(0, union[1] - parent[1]),
+        "paddingBottom": max(0, (parent[1] + parent[3]) - (union[1] + union[3])),
+        "paddingLeft": max(0, union[0] - parent[0]),
+        "paddingRight": max(0, (parent[0] + parent[2]) - (union[0] + union[2])),
+        "source": "geometry-xy-cut",
+        "bandCount": len(bands[0]),
     }
-    return spec, ordered
+    ordered_all = list(ordered)
+    seen = set(ordered_all)
+    for index in children:
+        if index not in seen:
+            ordered_all.append(index)
+    return spec, ordered_all
+
+
+def _widen_to_members(
+    owner: int,
+    children: list[int],
+    elements: list[dict[str, Any]],
+    rects: list[tuple[int, int, int, int] | None],
+) -> tuple[int, int, int, int] | None:
+    """Make a frame's rectangle cover what it owns.
+
+    Ownership is decided with a one-pixel tolerance, so a grid line can belong
+    to a container it only touches.  One pixel of that is absorbed by the
+    renderer's own edge slack; anything more means the frame is measurably
+    smaller than its contents, and a child outside its frame gets clipped away.
+    Growing the frame is the least invasive repair, and nothing moves.
+
+    Beyond a few pixels this is not slack but a real mismatch, and is left to
+    the renderer's gates.
+    """
+    base = rects[owner]
+    union = _union_rect([owner, *children], rects)
+    if base is None or union is None:
+        return base
+    if _rect_contains(base, union, tolerance=0):
+        return base
+    growth = max(
+        base[0] - union[0],
+        base[1] - union[1],
+        (union[0] + union[2]) - (base[0] + base[2]),
+        (union[1] + union[3]) - (base[1] + base[3]),
+    )
+    if growth <= 1 or growth > 8:
+        return base
+    element = elements[owner]
+    element["x"], element["y"] = union[0], union[1]
+    element["width"], element["height"] = union[2], union[3]
+    rects[owner] = union
+    return union
 
 
 def attach_layout_frames(elements: list[dict[str, Any]]) -> int:
@@ -2151,28 +2240,42 @@ def attach_layout_frames(elements: list[dict[str, Any]]) -> int:
             continue
         if container.get("imageBase64") or container.get("text"):
             continue
+        parent_box = _widen_to_members(owner, children, elements, rects)
         boxes = [rects[child] for child in children if rects[child]]
-        parent_box = rects[owner]
         if not boxes or parent_box is None:
             continue
-        spec = _stack_layout(parent_box, boxes)  # type: ignore[arg-type]
+        spec: dict[str, Any] | None = _stack_layout(parent_box, boxes)  # type: ignore[arg-type]
         ordered_children = list(children)
         if spec is None:
-            # Pass 2 only.  Pass 1 is untouched, so anything that formed a
-            # frame before still forms one; grids are a fallback candidate,
-            # never a replacement.
-            fallback = _grid_row_band_layout(parent_box, children, rects)
-            if fallback is None:
-                continue
-            spec, ordered_children = fallback
-        if _has_nested_container(children, elements):
+            # General candidate.  Pass 1 stays first because it is stricter
+            # and cheaper, but nothing depends on it any more: XY-cut covers
+            # every layout that has a gutter on some axis.
+            fallback = _xy_cut_layout(parent_box, children, rects)
+            if fallback is not None:
+                spec, ordered_children = fallback
+        if _has_nested_container(children, elements, members):
+            continue
+        if spec is None and len(children) < 2:
+            # A plain frame still needs two members for the renderer to treat
+            # it as a grouping boundary rather than a stray duplicate.
             continue
         # No straddling veto here.  An overlay that covers this container is
         # lifted during the paint-order pass that follows, and only then does
         # the renderer have the final say.  Vetoing earlier deadlocked the two:
         # the overlay blocked the frame, and without the frame the overlay was
         # never lifted.
-        container["layout"] = spec
+        # Auto Layout is progressive enhancement, not the price of admission.
+        # A container that no formula can describe — a merged-cell table, a
+        # banner with a badge, a free collage — still becomes a frame, just
+        # one whose children keep their absolute coordinates.  Wrapping it
+        # costs nothing: the renderer pins every child to its measured
+        # position, so the export is pixel-identical, and the layer tree keeps
+        # the grouping a designer expects.  Only the renderer's Z-order gates
+        # can reject it, and it does so safely.
+        if spec is not None:
+            container["layout"] = spec
+        else:
+            container.pop("layout", None)
         container["layoutChildren"] = [
             {"id": str(elements[child].get("id") or "")} for child in ordered_children
         ]

@@ -187,6 +187,10 @@ def assign_ids(graph: dict) -> None:
     for i, e in enumerate(graph["elements"], 1):
         e["id"] = i
     for e in graph["elements"]:
+        # Default to None: an element can sit outside every container (a stray
+        # icon, an overlay escaped the page frame) and the reading pass below
+        # indexes this key unconditionally.
+        e.setdefault("container", None)
         cands = [c for c in graph["containers"]
                  if contains(c, e) and c["bbox"][2] * c["bbox"][3] > 0]
         if cands:

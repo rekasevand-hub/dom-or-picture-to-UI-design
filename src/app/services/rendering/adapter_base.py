@@ -1095,6 +1095,25 @@ def _intersects(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> b
     )
 
 
+def _touches(
+    inner: tuple[int, int, int, int],
+    outer: tuple[int, int, int, int],
+    slack: int = 1,
+) -> bool:
+    """``inner`` 落在 ``outer`` 内，允许一个像素的贴边误差。
+
+    A measured grid line sits exactly on its container's edge, so it touches
+    but never overlaps: framing it would clip one pixel of a one-pixel line.
+    成员落在帧的边上算帧内，只有真跑到外面才算越界。
+    """
+    return (
+        outer[0] - slack <= inner[0]
+        and outer[1] - slack <= inner[1]
+        and inner[0] + inner[2] <= outer[0] + outer[2] + slack
+        and inner[1] + inner[3] <= outer[1] + outer[3] + slack
+    )
+
+
 def resolve_frames(
     elements: list[dict],
     ordered: list[tuple[int, dict]],
@@ -1250,19 +1269,23 @@ def resolve_frames(
         elif any(pos_of[member] < pos_of[i] for member, _item in paint_members):
             why = "member-before-frame"
         elif any(
-            not _intersects(rect_of[member], rect_of[i])
+            not _touches(rect_of[member], rect_of[i])
             for member, _item in paint_members
         ):
             why = "member-outside-frame"
         else:
             why = None
+            member_rects = [rect_of[member] for member, _item in paint_members]
             for k in seq[pos_of[i] + 1 : end + 1]:
                 rect = rect_of[k]
-                if (
-                    rect is not None
-                    and k not in closure
-                    and _intersects(rect, rect_of[i])
-                ):
+                if rect is None or k in closure:
+                    continue
+                # Only an overlap with a member can change a pixel.  A
+                # stranger inside the frame's rectangle that touches no member
+                # is painted after the whole group either way, which is the
+                # same picture.  Testing the frame rectangle alone rejected
+                # every grouping that happened to span a larger backdrop.
+                if any(_intersects(rect, other) for other in member_rects):
                     why = "covers-other-element"
                     break
             if why is None:
