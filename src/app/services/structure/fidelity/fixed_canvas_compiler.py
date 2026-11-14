@@ -1124,8 +1124,6 @@ def _table_decorations(
     return decorations
 
 
-OVERLAY_TIER = 1000
-
 _LAYOUT_MEMBER_TYPES = {
     "text",
     "image",
@@ -1524,10 +1522,6 @@ def _lift_frame_overlays(
         return 0
     from src.app.services.rendering.adapter_base import paint_order
 
-    # Overlays go to a tier nothing else reaches.  A "max + 1" value is shared
-    # by every frame in this pass, so an overlay lifted for one frame could end
-    # up level with another frame's members and stay inside its interval.
-    overlay_z = OVERLAY_TIER
     lifted: set[int] = set()
     lifted_count = 0
     closures = {frame: _frame_closure(frame, elements) for frame in frames}
@@ -1590,7 +1584,15 @@ def _lift_frame_overlays(
             # separator — chrome drawn for the frame, not an overlay on it.
             if _iou(frame_box, box) > 0.9:
                 continue
-            elements[index]["zIndex"] = overlay_z
+            # Relative tier, not a constant: an overlay is one level above the
+            # frame it covers.  Walking largest-first chains the levels, so a
+            # dropdown over a modal over a page lands at depth 3 on its own,
+            # without any per-role constant.
+            frame_z = int(elements[frame].get("zIndex") or 0)
+            target_z = frame_z + 1
+            elements[index]["zIndex"] = max(
+                int(elements[index].get("zIndex") or 0), target_z
+            )
             # Its children ride one tier higher, so they stay above their own
             # background and above the frame they cover.
             for other, element in enumerate(elements):
@@ -1598,7 +1600,9 @@ def _lift_frame_overlays(
                     continue
                 child = _layout_rect(element)
                 if child is not None and _rect_contains(box, child, tolerance=4):
-                    element["zIndex"] = overlay_z + 1
+                    element["zIndex"] = max(
+                        int(element.get("zIndex") or 0), target_z + 1
+                    )
                     lifted.add(other)
             lifted.add(index)
             lifted_count += 1
@@ -1607,48 +1611,96 @@ def _lift_frame_overlays(
 
 def _trim_under_top_band(
     containers: list[dict[str, Any]],
+    elements: list[dict[str, Any]],
     width: int,
 ) -> int:
-    """Give the top band its strip back.
+    """Resolve a corner overlap between a horizontal band and a vertical rail.
 
-    The header spans the page and is painted last, so it covers the sidebar's
-    first 72px.  That overlap is meaningless — it is a measuring artefact, not
-    a design — and it makes ``resolve_frames`` treat the header as a later
-    outsider inside the sidebar's rectangle, which blocks the sidebar frame.
-    Trimming the sidebar's top edge to the band's bottom removes the overlap
-    without moving anything visible: the header already hides that strip.
+    Two containers with no containment relation may still clip at a corner —
+    a full-width header and a full-height sidebar meeting at the top-left.  It
+    is a measuring artefact, not a design, and it makes the later-painted band
+    an outsider inside the rail's rectangle, which blocks the rail's frame.
+
+    Which side gives way is decided by geometry, not by role:
+
+    * If leaves inside the intersection belong to one side, that side owns the
+      corner and the other retreats.
+    * Otherwise the container spanning the main axis keeps its strip and the
+      crossing one is trimmed, which is what a header-over-sidebar layout
+      means.
+
+    Only corner-sized overlaps qualify (0 < IoU < 0.25); anything larger is a
+    real nesting problem, not a measurement slip.
     """
-    trunks: list[tuple[int, int, int, int]] = []
+    del width
+    rectangles: list[tuple[int, dict[str, Any], tuple[int, int, int, int]]] = []
     for container in containers:
         rect = _layout_rect(container)
-        if rect is None:
-            continue
-        if rect[1] <= 2 and rect[3] < 120 and rect[2] >= width * 0.8:
-            trunks.append(rect)
-    if not trunks:
-        return 0
+        if rect is not None:
+            rectangles.append((containers.index(container), container, rect))
     trimmed = 0
-    for container in containers:
-        rect = _layout_rect(container)
-        if rect is None or rect[1] > 2:
-            continue
-        for trunk in trunks:
-            if rect == trunk:
-                continue
-            overlap_w = min(rect[0] + rect[2], trunk[0] + trunk[2]) - max(rect[0], trunk[0])
-            if overlap_w <= 2:
-                continue
-            if _rect_contains(rect, trunk, tolerance=2) or _rect_contains(
-                trunk, rect, tolerance=2
+    for position, (index_a, first, rect_a) in enumerate(rectangles):
+        for index_b, second, rect_b in rectangles[position + 1 :]:
+            if _rect_contains(rect_a, rect_b, tolerance=2) or _rect_contains(
+                rect_b, rect_a, tolerance=2
             ):
                 continue
-            band_bottom = trunk[1] + trunk[3]
-            if band_bottom >= rect[1] + rect[3] - 4:
+            overlap = _iou(rect_a, rect_b)
+            if not 0 < overlap < 0.25:
                 continue
-            container["y"] = band_bottom
-            container["height"] = rect[3] - (band_bottom - rect[1])
-            trimmed += 1
-            break
+            first_wide = rect_a[2] >= rect_a[3]
+            second_wide = rect_b[2] >= rect_b[3]
+            if first_wide == second_wide:
+                continue  # parallel strips, not a crossing
+            inter_left = max(rect_a[0], rect_b[0])
+            inter_top = max(rect_a[1], rect_b[1])
+            inter_right = min(rect_a[0] + rect_a[2], rect_b[0] + rect_b[2])
+            inter_bottom = min(rect_a[1] + rect_a[3], rect_b[1] + rect_b[3])
+            if inter_right <= inter_left or inter_bottom <= inter_top:
+                continue
+            inside_a = inside_b = 0
+            for element in elements:
+                if str(element.get("type")) not in _LAYOUT_MEMBER_TYPES:
+                    continue
+                rect = _layout_rect(element)
+                if rect is None:
+                    continue
+                centre_x = rect[0] + rect[2] / 2
+                centre_y = rect[1] + rect[3] / 2
+                if not (
+                    inter_left <= centre_x <= inter_right
+                    and inter_top <= centre_y <= inter_bottom
+                ):
+                    continue
+                if _rect_contains(rect_a, rect, tolerance=2):
+                    inside_a += 1
+                elif _rect_contains(rect_b, rect, tolerance=2):
+                    inside_b += 1
+            if inside_a and not inside_b:
+                victim, keeper = second, first
+                victim_rect, keeper_rect = rect_b, rect_a
+            elif inside_b and not inside_a:
+                victim, keeper = first, second
+                victim_rect, keeper_rect = rect_a, rect_b
+            else:
+                # Empty or contested corner: the band that spans the page keeps
+                # its strip, the crossing rail is trimmed away from it.
+                victim, keeper = (second, first) if first_wide else (first, second)
+                victim_rect, keeper_rect = (
+                    (rect_b, rect_a) if first_wide else (rect_a, rect_b)
+                )
+            if keeper_rect[1] <= 2 and victim_rect[1] <= 2:
+                band_bottom = keeper_rect[1] + keeper_rect[3]
+                if band_bottom < victim_rect[1] + victim_rect[3] - 4:
+                    victim["y"] = band_bottom
+                    victim["height"] = victim_rect[3] - (band_bottom - victim_rect[1])
+                    trimmed += 1
+            elif keeper_rect[0] <= 2 and victim_rect[0] <= 2:
+                band_right = keeper_rect[0] + keeper_rect[2]
+                if band_right < victim_rect[0] + victim_rect[2] - 4:
+                    victim["x"] = band_right
+                    victim["width"] = victim_rect[2] - (band_right - victim_rect[0])
+                    trimmed += 1
     return trimmed
 
 
@@ -1861,7 +1913,7 @@ def compile_scene_plan_to_design(
     containers.extend(control_groups)
     decorations.extend(control_group_decorations)
     _avoid_coloured_neighbours(containers, background)
-    _trim_under_top_band(containers, width)
+    _trim_under_top_band(containers, leaves, width)
     elements = [*containers, *decorations, *leaves]
     _apply_group_decoration_depths(elements, control_groups)
     form_background = _source_form_background(
