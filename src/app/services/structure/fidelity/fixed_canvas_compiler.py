@@ -1777,6 +1777,328 @@ def _keep_renderable_frames(
     return kept
 
 
+def _merge_slots(
+    boxes: list[tuple[int, int, int, int]],
+    axis: str,
+    threshold: float = 0.6,
+) -> list[tuple[int, int]]:
+    """Collapse boxes stacked at one position into single slots.
+
+    A toolbar can carry three overlapping icon cuts at the same x — a glyph, a
+    badge and its background.  Measuring gaps between them yields negative
+    values and the row is rejected, although visually it is one slot.  Boxes
+    overlapping more than 60% of the smaller one become one slot.
+
+    This only shapes the gap measurement.  Every original box still belongs to
+    the frame; dropping the overlapping cuts would leave them inside the frame
+    rectangle as non-members.
+    """
+    if axis == "x":
+        ordered = sorted(boxes, key=lambda box: (box[0], box[1]))
+        offset, span = 0, 2
+    else:
+        ordered = sorted(boxes, key=lambda box: (box[1], box[0]))
+        offset, span = 1, 3
+    slots: list[tuple[int, int]] = []
+    for box in ordered:
+        start = box[offset]
+        end = start + box[span]
+        if slots:
+            previous_start, previous_end = slots[-1]
+            overlap = min(previous_end, end) - max(previous_start, start)
+            smaller = min(previous_end - previous_start, end - start)
+            if overlap > 0 and overlap / max(1, smaller) > threshold:
+                slots[-1] = (min(previous_start, start), max(previous_end, end))
+                continue
+        slots.append((start, end))
+    return slots
+
+
+def _trim_overshoot_into_conflicts(
+    elements: list[dict[str, Any]],
+) -> int:
+    """Shrink a container edge only where its padding actually collides.
+
+    A container's measured box can be a little larger than its own content —
+    that is padding, and it is often exactly right: a card's inner margin, a
+    sidebar's blank strip at the bottom.  Trimming every container to its
+    members would erase that.
+
+    The problem only appears when the padding band overlaps something that is
+    not part of the container: ``form-section`` measures down to y=608 while
+    its last field ends at 544, and the 64px band runs into the table header at
+    y=549.  That stranger is painted inside the frame rectangle but can never be
+    its member, so the frame is rejected.
+
+    Hence: walk each of the four bands, and pull that edge in only if a foreign
+    element sits in it.  No collision, no change.
+    """
+    rects = [_layout_rect(element) for element in elements]
+    containers = [
+        index
+        for index, element in enumerate(elements)
+        if str(element.get("type")) == "container" and rects[index] is not None
+    ]
+    if not containers:
+        return 0
+    owners = [
+        _owner_index(rects, index, parent_candidates=set(containers))
+        if rects[index] is not None and index not in containers
+        else None
+        for index in range(len(elements))
+    ]
+
+    def belongs_to(index: int, container: int) -> bool:
+        """Whether ``index`` is inside ``container``'s own tree."""
+        seen: set[int] = set()
+        current = owners[index]
+        while current is not None and current not in seen:
+            if current == container:
+                return True
+            seen.add(current)
+            current = owners[current] if current < len(owners) else None
+        return False
+
+    trimmed = 0
+    for container in containers:
+        own = rects[container]
+        members = [
+            index
+            for index in range(len(elements))
+            if index != container
+            and rects[index] is not None
+            and belongs_to(index, container)
+        ]
+        # Two-member containers are badges, chips and floating panels.  Their
+        # padding is the whole point and tightening it only shifts how they
+        # stack against neighbours.
+        if len(members) < 3:
+            continue
+        left = min(rects[index][0] for index in members)
+        top = min(rects[index][1] for index in members)
+        right = max(rects[index][0] + rects[index][2] for index in members)
+        bottom = max(rects[index][1] + rects[index][3] for index in members)
+
+        outsiders: list[int] = []
+        for index in range(len(elements)):
+            if index == container or rects[index] is None:
+                continue
+            if belongs_to(index, container):
+                continue
+            # An ancestor is the layer underneath, not an intruder.
+            if _rect_contains(rects[index], own, tolerance=2):
+                continue
+            outsiders.append(index)
+        if not outsiders:
+            continue
+
+        bands = {
+            "bottom": (own[1] + own[3] - bottom, bottom, own[1] + own[3]),
+            "top": (top - own[1], own[1], top),
+            "left": (left - own[0], own[0], left),
+            "right": (own[0] + own[2] - right, right, own[0] + own[2]),
+        }
+        for edge, (slack, start, end) in bands.items():
+            if slack <= 2:
+                continue
+            limit: int | None = None
+            for index in outsiders:
+                other = rects[index]
+                if edge in ("top", "bottom"):
+                    centre = other[1] + other[3] / 2
+                    if not start <= centre <= end:
+                        continue
+                    if min(own[0] + own[2], other[0] + other[2]) - max(
+                        own[0], other[0]
+                    ) <= 0:
+                        continue
+                    candidate = other[1] if edge == "bottom" else other[1] + other[3]
+                else:
+                    centre = other[0] + other[2] / 2
+                    if not start <= centre <= end:
+                        continue
+                    if min(own[1] + own[3], other[1] + other[3]) - max(
+                        own[1], other[1]
+                    ) <= 0:
+                        continue
+                    candidate = other[0] if edge == "right" else other[0] + other[2]
+                limit = candidate if limit is None else (
+                    min(limit, candidate) if edge in ("bottom", "right") else max(limit, candidate)
+                )
+            if limit is None:
+                continue
+            if edge == "bottom":
+                new_end = min(own[1] + own[3], max(bottom, limit))
+                if new_end < own[1] + own[3]:
+                    elements[container]["height"] = new_end - own[1]
+                    trimmed += 1
+            elif edge == "top":
+                new_start = max(own[1], min(top, limit))
+                if new_start > own[1]:
+                    elements[container]["y"] = new_start
+                    elements[container]["height"] = own[1] + own[3] - new_start
+                    trimmed += 1
+            elif edge == "right":
+                new_end = min(own[0] + own[2], max(right, limit))
+                if new_end < own[0] + own[2]:
+                    elements[container]["width"] = new_end - own[0]
+                    trimmed += 1
+            else:
+                new_start = max(own[0], min(left, limit))
+                if new_start > own[0]:
+                    elements[container]["x"] = new_start
+                    elements[container]["width"] = own[0] + own[2] - new_start
+                    trimmed += 1
+    return trimmed
+
+
+def _grid_row_band_layout(
+    parent: tuple[int, int, int, int],
+    children: list[int],
+    rects: list[tuple[int, int, int, int] | None],
+) -> tuple[dict[str, Any], list[int]] | None:
+    """Pass 2: a two-axis grid, expressed as row bands.
+
+    Only called when the single-row / single-column candidates both fail, so
+    nothing that worked before can regress.  A form of four label/input columns
+    and a data table are both "bands of cells": the bands stack on y, the cells
+    inside a band lay out on x, and each band must not cross its neighbours on
+    either axis.
+
+    A background image covering most of the container, or a rule spanning
+    several rows, is excluded from *band clustering* — it would merge every row
+    into one — but it stays a child of the frame.  Dropping it would leave it
+    inside the frame's rectangle as a non-member, and the renderer rejects the
+    frame for covering a stranger.
+
+    Returns the spec and the children in row-major order.
+    """
+    if len(children) < 3:
+        return None
+    parent_area = max(1, parent[2] * parent[3])
+    cell_rects = [rects[index] for index in children if rects[index] is not None]
+    if not cell_rects:
+        return None
+
+    # A single row that Pass 1 rejected only because two icon cuts overlap by
+    # just over half.  Pass 1's gap rule is strict on purpose; here the slots
+    # absorb those cuts and the row reads as one line.
+    tops = [rect[1] for rect in cell_rects]
+    band = max(tops) - min(tops)
+    if band <= max(8, int(max(rect[3] for rect in cell_rects) * 0.8)):
+        row_slots = _merge_slots(cell_rects, "x", threshold=0.45)
+        row_gaps = [
+            row_slots[spot + 1][0] - row_slots[spot][1]
+            for spot in range(len(row_slots) - 1)
+        ]
+        if len(row_slots) >= 2 and all(gap >= -4 for gap in row_gaps):
+            ordered = sorted(
+                children, key=lambda index: (rects[index][0], rects[index][1])
+            )
+            padding = {
+                "paddingTop": min(rect[1] for rect in cell_rects) - parent[1],
+                "paddingBottom": (parent[1] + parent[3])
+                - max(rect[1] + rect[3] for rect in cell_rects),
+                "paddingLeft": min(rect[0] for rect in cell_rects) - parent[0],
+                "paddingRight": (parent[0] + parent[2])
+                - max(rect[0] + rect[2] for rect in cell_rects),
+            }
+            if all(value >= 0 for value in padding.values()):
+                spec: dict[str, Any] = {
+                    "mode": "HORIZONTAL",
+                    "itemSpacing": max(
+                        0, int(round(sum(row_gaps) / len(row_gaps)))
+                    ),
+                    "primaryAlign": "MIN",
+                    "counterAlign": "MIN",
+                    **padding,
+                    "source": "geometry-row-band",
+                }
+                return spec, ordered
+
+    spanning: list[int] = []
+    cells: list[int] = []
+    for index in children:
+        rect = rects[index]
+        if rect is None:
+            continue
+        if rect[2] * rect[3] >= parent_area * 0.5:
+            spanning.append(index)
+        else:
+            cells.append(index)
+    if len(cells) < 3:
+        return None
+
+    order = sorted(cells, key=lambda index: (rects[index][1], rects[index][0]))
+    bands: list[dict[str, Any]] = []
+    for index in order:
+        box = rects[index]
+        for band in bands:
+            if box[1] < band["bottom"] - 4:
+                band["members"].append(index)
+                band["bottom"] = max(band["bottom"], box[1] + box[3])
+                break
+        else:
+            bands.append(
+                {"top": box[1], "bottom": box[1] + box[3], "members": [index]}
+            )
+    if len(bands) < 2:
+        return None
+    if not any(len(band["members"]) >= 2 for band in bands):
+        return None
+
+    band_boxes: list[tuple[int, int, int, int]] = []
+    for band in bands:
+        band_rects = [rects[index] for index in band["members"]]
+        left = min(rect[0] for rect in band_rects)
+        right = max(rect[0] + rect[2] for rect in band_rects)
+        band_boxes.append((left, band["top"], right - left, band["bottom"] - band["top"]))
+    gaps_y = [
+        band_boxes[spot + 1][1] - (band_boxes[spot][1] + band_boxes[spot][3])
+        for spot in range(len(band_boxes) - 1)
+    ]
+    if any(gap < -4 for gap in gaps_y):
+        return None
+    for band in bands:
+        band_rects = [rects[index] for index in band["members"]]
+        slots = _merge_slots(band_rects, "x")
+        if any(
+            slots[spot + 1][0] - slots[spot][1] < -4
+            for spot in range(len(slots) - 1)
+        ):
+            return None
+
+    ordered: list[int] = list(spanning)
+    for band in bands:
+        ordered.extend(sorted(band["members"], key=lambda index: rects[index][0]))
+    seen = set(ordered)
+    for index in children:
+        if index not in seen:
+            ordered.append(index)
+
+    padding = {
+        "paddingTop": min(rects[index][1] for index in cells) - parent[1],
+        "paddingBottom": (parent[1] + parent[3])
+        - max(rects[index][1] + rects[index][3] for index in cells),
+        "paddingLeft": min(rects[index][0] for index in cells) - parent[0],
+        "paddingRight": (parent[0] + parent[2])
+        - max(rects[index][0] + rects[index][2] for index in cells),
+    }
+    if any(value < 0 for value in padding.values()):
+        return None
+    spacing = int(round(sum(gaps_y) / len(gaps_y))) if gaps_y else 0
+    spec: dict[str, Any] = {
+        "mode": "VERTICAL",
+        "itemSpacing": max(0, spacing),
+        "primaryAlign": "MIN",
+        "counterAlign": "MIN",
+        **padding,
+        "source": "geometry-row-band",
+        "bandCount": len(bands),
+    }
+    return spec, ordered
+
+
 def attach_layout_frames(elements: list[dict[str, Any]]) -> int:
     """Group elements into Auto Layout frames along the strict containment tree.
 
@@ -1834,8 +2156,15 @@ def attach_layout_frames(elements: list[dict[str, Any]]) -> int:
         if not boxes or parent_box is None:
             continue
         spec = _stack_layout(parent_box, boxes)  # type: ignore[arg-type]
+        ordered_children = list(children)
         if spec is None:
-            continue
+            # Pass 2 only.  Pass 1 is untouched, so anything that formed a
+            # frame before still forms one; grids are a fallback candidate,
+            # never a replacement.
+            fallback = _grid_row_band_layout(parent_box, children, rects)
+            if fallback is None:
+                continue
+            spec, ordered_children = fallback
         if _has_nested_container(children, elements):
             continue
         # No straddling veto here.  An overlay that covers this container is
@@ -1845,7 +2174,7 @@ def attach_layout_frames(elements: list[dict[str, Any]]) -> int:
         # never lifted.
         container["layout"] = spec
         container["layoutChildren"] = [
-            {"id": str(elements[child].get("id") or "")} for child in children
+            {"id": str(elements[child].get("id") or "")} for child in ordered_children
         ]
         built += 1
     return built
@@ -1963,6 +2292,7 @@ def compile_scene_plan_to_design(
     _avoid_coloured_neighbours(containers, background)
     _trim_under_top_band(containers, leaves, width)
     elements = [*containers, *decorations, *leaves]
+    _trim_overshoot_into_conflicts(elements)
     _apply_group_decoration_depths(elements, control_groups)
     form_background = _source_form_background(
         image_path,
