@@ -30,6 +30,7 @@ import pytest
 
 from src.app.services.rendering.adapter_base import paint_order, resolve_frames
 from src.app.services.structure.fidelity.fixed_canvas_compiler import (
+    _anchor_table_text,
     _drop_coincident_texts,
     _drop_page_coloured_shells,
     _keep_renderable_frames,
@@ -70,6 +71,9 @@ def _build(tag: str) -> tuple[list[dict], list[int], dict]:
     design = _load(tag)
     elements = copy.deepcopy(design["elements"])
     background = str((design.get("canvas") or {}).get("background") or "")
+    # The fixture is the design as compiled: table cells already sit on the
+    # rows their OCR lines were read at, and the frame fields are stripped so
+    # the assembly has to be redone from geometry alone.
     _drop_page_coloured_shells(elements, background)
     _drop_coincident_texts(elements)
     written = attach_layout_frames(elements)
@@ -153,3 +157,108 @@ def test_no_double_printed_text(tag: str) -> None:
             ):
                 clashes.append(f"{one!r} over {two!r} ({coverage:.2f})")
     assert not clashes, f"{tag}: same words printed twice: {clashes[:3]}"
+
+
+def _text(index: int, x: int, y: int, width: int, height: int, text: str) -> dict:
+    return {
+        "id": f"table-cell:{index}",
+        "contentRef": f"table-cell:{index}",
+        "type": "text",
+        "x": x,
+        "y": y,
+        "width": width,
+        "height": height,
+        "text": text,
+        "style": {"fontSize": 14, "textAlign": "center"},
+    }
+
+
+def _container(index: int, x: int, y: int, width: int, height: int) -> dict:
+    return {
+        "id": f"table-section:{index}",
+        "type": "container",
+        "x": x,
+        "y": y,
+        "width": width,
+        "height": height,
+        "style": {"fillColor": "#ffffff"},
+    }
+
+
+def test_table_text_follows_ocr_when_a_whole_row_is_displaced() -> None:
+    """Three cells that agree on a displacement move; the grid is the guess."""
+    elements = [
+        _container(0, 100, 100, 900, 500),
+        _text(1, 120, 110, 200, 40, "单位"),
+        _text(2, 340, 110, 200, 40, "生产日期"),
+        _text(3, 560, 110, 200, 40, "失效日期"),
+    ]
+    ocr = [
+        {"text": "单位", "bbox": [130, 380, 52, 30]},
+        {"text": "生产日期", "bbox": [360, 380, 96, 30]},
+        {"text": "失效日期", "bbox": [600, 380, 98, 30]},
+    ]
+    moved = _anchor_table_text(elements, ocr)
+    assert moved == 3
+    assert [element["y"] for element in elements[1:]] == [380, 380, 380]
+    assert elements[1]["x"] == 130
+
+
+def test_a_lone_far_match_is_left_alone() -> None:
+    """One cell matching elsewhere is a repeated label, not a bad grid."""
+    elements = [
+        _container(0, 100, 100, 900, 500),
+        _text(1, 120, 110, 200, 40, "数量"),
+        _text(2, 340, 110, 200, 40, "单位"),
+        _text(3, 560, 110, 200, 40, "批次"),
+    ]
+    ocr = [
+        {"text": "数量", "bbox": [120, 420, 60, 30]},
+        {"text": "单位", "bbox": [360, 116, 52, 30]},
+        {"text": "批次", "bbox": [580, 114, 52, 30]},
+    ]
+    moved = _anchor_table_text(elements, ocr)
+    assert moved == 0
+    assert [element["y"] for element in elements[1:]] == [110, 110, 110]
+
+
+def test_a_cell_is_not_moved_out_of_its_container() -> None:
+    """A target outside the owning box would leave a member outside its frame."""
+    elements = [
+        _container(0, 100, 100, 400, 300),
+        _text(1, 120, 110, 200, 40, "单位"),
+        _text(2, 340, 110, 120, 40, "生产日期"),
+        _text(3, 120, 200, 120, 40, "失效日期"),
+    ]
+    ocr = [
+        {"text": "单位", "bbox": [130, 600, 52, 30]},
+        {"text": "生产日期", "bbox": [600, 600, 96, 30]},
+        {"text": "失效日期", "bbox": [640, 600, 98, 30]},
+    ]
+    assert _anchor_table_text(elements, ocr) == 0
+
+
+def test_inventory_table_headers_sit_on_their_ocr_lines() -> None:
+    """No header cell may drift from its own words.
+
+    The threshold is the one that defines the defect: a cell within a line's
+    height of its OCR line reads as aligned, and the header row that used to
+    print 272px above its words is the case this guards.
+    """
+    design = _load("inventory")
+    ocr = {
+        str(line["text"]).strip(): line["bbox"]
+        for line in design.get("ocr") or []
+        if str(line.get("text") or "").strip()
+    }
+    checked = 0
+    for element in design["elements"]:
+        text = str(element.get("text") or "").strip()
+        if not str(element.get("id", "")).startswith("table-header:") or text not in ocr:
+            continue
+        left, top, width, height = ocr[text]
+        assert abs(element["y"] - top) <= 30, (
+            f"{text!r} prints at y={element['y']}, OCR read it at y={top}"
+        )
+        checked += 1
+    assert checked >= 3, f"only {checked} header cells matched an OCR line"

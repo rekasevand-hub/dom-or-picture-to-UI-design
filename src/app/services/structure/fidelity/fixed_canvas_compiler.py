@@ -6,7 +6,7 @@ import base64
 import copy
 import hashlib
 import io
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from src.app.services.som.design_crops import crop_image_b64
@@ -2312,6 +2312,133 @@ def _widen_to_members(
     return union
 
 
+TABLE_TEXT_PREFIXES = ("table-header:", "table-cell:")
+#: Below this the grid is roughly right and moving cells only risks tearing a
+#: table that already frames; above it the grid origin is plainly wrong.  The
+#: inventory block is out by 272px, the tables that already work by 20-90px.
+TABLE_ANCHOR_MIN_SHIFT = 100
+TABLE_ANCHOR_MAX_SHIFT = 300
+TABLE_ANCHOR_MIN_X_OVERLAP = 0.3
+
+
+def _anchor_table_text(
+    elements: list[dict[str, Any]],
+    observations: Sequence[Mapping[str, Any]] | None,
+) -> int:
+    """Move synthesized table text onto the OCR line that reads the same words.
+
+    Table cells come out of a detected grid, so their box is the cell rather
+    than the ink.  When the grid's origin is wrong, the words print one or two
+    hundred pixels away from where the picture has them — in the inventory
+    screenshot straight over the card rows above.  OCR already read those words
+    at their real position and the grid has no authority over it.
+
+    Only a displacement several cells agree on counts.  One cell that matches
+    far away is usually the same label in another table, and following it tears
+    a correct table apart; a shared offset is the signature of a bad grid
+    origin, which is what this repairs.
+    """
+    if not observations:
+        return 0
+    from src.app.services.structure.fidelity.contracts import (
+        normalize_match_text,
+        owner_text_similarity,
+    )
+
+    lines: list[tuple[str, tuple[int, int, int, int]]] = []
+    for observation in observations:
+        if not isinstance(observation, Mapping):
+            continue
+        text = str(observation.get("text") or "").strip()
+        box = observation.get("bbox")
+        if not text or not isinstance(box, (list, tuple)) or len(box) != 4:
+            continue
+        try:
+            left, top, width, height = (int(round(float(value))) for value in box)
+        except (TypeError, ValueError):
+            continue
+        if width <= 0 or height <= 0:
+            continue
+        lines.append((normalize_match_text(text), (left, top, width, height)))
+    if not lines:
+        return 0
+
+    rects = [
+        _layout_rect(element) if str(element.get("type")) in _LAYOUT_MEMBER_TYPES else None
+        for element in elements
+    ]
+    containers = {
+        index
+        for index, element in enumerate(elements)
+        if str(element.get("type")) == "container"
+    }
+    owners = [
+        _owner_index(rects, index, parent_candidates=containers) if rects[index] else None
+        for index in range(len(elements))
+    ]
+
+    matches: list[tuple[dict[str, Any], tuple[int, int, int, int], int]] = []
+    for position, element in enumerate(elements):
+        reference = str(element.get("contentRef") or element.get("id") or "")
+        if not reference.startswith(TABLE_TEXT_PREFIXES):
+            continue
+        text = normalize_match_text(element.get("text"))
+        box = _layout_rect(element)
+        if not text or box is None:
+            continue
+        best: tuple[float, tuple[int, int, int, int]] | None = None
+        for line_text, line_box in lines:
+            if line_text != text and owner_text_similarity(line_text, text) < 0.9:
+                continue
+            # Both axes, weighted towards y: a wrong grid origin shifts a whole
+            # block at once, so requiring x overlap would hide the very cells
+            # that need moving.
+            distance = abs(
+                (box[1] + box[3] / 2) - (line_box[1] + line_box[3] / 2)
+            ) + 0.25 * abs((box[0] + box[2] / 2) - (line_box[0] + line_box[2] / 2))
+            if best is None or distance < best[0]:
+                best = (distance, line_box)
+        if best is None:
+            continue
+        line_box = best[1]
+        vertical = line_box[1] - box[1]
+        horizontal = abs((box[0] + box[2] / 2) - (line_box[0] + line_box[2] / 2))
+        if max(abs(vertical), horizontal) > TABLE_ANCHOR_MAX_SHIFT:
+            continue
+        if abs(vertical) <= TABLE_ANCHOR_MIN_SHIFT and horizontal <= TABLE_ANCHOR_MIN_SHIFT:
+            continue
+        owner = owners[position]
+        if owner is None or rects[owner] is None:
+            continue
+        # The cell may only move inside the box that owns it.  A target outside
+        # means the container is wrong as well, and moving the text alone would
+        # leave a member outside its frame — the renderer rejects the whole
+        # frame for that.
+        if not _rect_contains(rects[owner], line_box, tolerance=8):
+            continue
+        matches.append((element, line_box, vertical))
+
+    if not matches:
+        return 0
+    buckets: dict[int, list[tuple[dict[str, Any], tuple[int, int, int, int]]]] = {}
+    for element, line_box, vertical in matches:
+        buckets.setdefault(int(round(vertical / 6.0)), []).append((element, line_box))
+    dominant = max(buckets.values(), key=len)
+    if len(dominant) < 2:
+        return 0
+
+    moved = 0
+    for element, (left, top, width, height) in dominant:
+        element["x"] = left
+        element["y"] = top
+        element["width"] = max(1, width)
+        element["height"] = max(18, height)
+        style = element.get("style")
+        if isinstance(style, dict):
+            style["textAlign"] = "start"
+        moved += 1
+    return moved
+
 def _drop_page_coloured_shells(
     elements: list[dict[str, Any]],
     background: str,
@@ -2565,6 +2692,7 @@ def compile_scene_plan_to_design(
     height: int,
     background: str,
     sample_id: str,
+    ocr_observations: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Compile one fixed-canvas plan without post-hoc owner appenders."""
     if not isinstance(plan, Mapping):
@@ -2687,6 +2815,7 @@ def compile_scene_plan_to_design(
     )
     if right_rail is not None:
         elements.append(right_rail)
+    _anchor_table_text(elements, ocr_observations)
     _drop_page_coloured_shells(elements, background)
     _drop_coincident_texts(elements)
     written_frames = attach_layout_frames(elements)

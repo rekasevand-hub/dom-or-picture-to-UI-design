@@ -723,6 +723,11 @@ class PreciseAgent:
             route=graph["route"],
             fallbacks=fallbacks,
             title=page_title,
+            ocr_observations=(
+                ocr_supplement.get("observations")
+                if isinstance(ocr_supplement, dict)
+                else None
+            ),
             extra_manifest={
                 "requested_route": requested_route,
                 "effective_route": effective_route,
@@ -1137,6 +1142,7 @@ class PreciseAgent:
         title: str | None = None,
         extra_manifest: dict | None = None,
         delivery_acceptance: DeliveryAcceptance | None = None,
+        ocr_observations: list[dict] | None = None,
         image_contract: dict | None = None,
     ) -> dict:
         """设计 → 贴像素底 → 回填像素 → 渲染 → 写 manifest（采集与重渲染共用）。返回 DesignSpec。"""
@@ -1205,6 +1211,7 @@ class PreciseAgent:
                 som_json,
                 image_contract["reference"],
                 sample_id=str((image_contract["reference"].get("reference_id") or "")),
+                ocr_observations=ocr_observations,
             )
             image_ir = build_image_ir(
                 som_json,

@@ -9,7 +9,7 @@ import hashlib
 import html
 import re
 import unicodedata
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -668,8 +668,15 @@ def build_image_design(
     reference: Mapping[str, Any],
     *,
     sample_id: str = "image-mvp",
+    ocr_observations: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Turn candidate geometry into a deterministic fixed-coordinate design."""
+    """Turn candidate geometry into a deterministic fixed-coordinate design.
+
+    ``ocr_observations`` is the only authority on where words actually are.
+    The scene-plan route needs it to put grid-synthesised table cells back on
+    their real rows; without it they stay wherever the detected grid placed
+    them.
+    """
     image_path = str(graph.get("image") or reference["input"]["path"])
     width, height = (int(value) for value in reference["input"]["size"])
     screenshot_sha = str(reference["input"]["sha256"])
@@ -689,6 +696,7 @@ def build_image_design(
             height=height,
             background=background,
             sample_id=sample_id,
+            ocr_observations=ocr_observations,
         )
     elements: list[dict[str, Any]] = []
     route = str(graph.get("route") or "grounding")
