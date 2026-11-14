@@ -1586,6 +1586,10 @@ def _lift_frame_overlays(
                 continue
             if box[2] * box[3] >= frame_area:
                 continue
+            # A box that nearly coincides with the frame is its own outline or
+            # separator — chrome drawn for the frame, not an overlay on it.
+            if _iou(frame_box, box) > 0.9:
+                continue
             elements[index]["zIndex"] = overlay_z
             # Its children ride one tier higher, so they stay above their own
             # background and above the frame they cover.

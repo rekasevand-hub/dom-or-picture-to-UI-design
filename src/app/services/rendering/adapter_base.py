@@ -7,7 +7,7 @@ import math
 from collections.abc import Mapping
 
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, Callable
 
 from src.app import tuning
 from src.app.services.rendering.text_layout import layout_text
@@ -888,13 +888,28 @@ class PrototypeAdapter(ABC):
 # ── 绘制序 / Auto Layout 施工图的复核（输出端共用，纯函数） ──────────────────
 
 
-def paint_order(elements: list[dict]) -> list[tuple[int, dict]]:
-    """全局绘制序：返回 [(原下标, 元素)]；所有输出端共用（规则见 render_design）。
+def _paint_sort_key(
+    index: int,
+    element: dict,
+    depth_of: Callable[[int, dict], int],
+) -> tuple[int, int, int, int, int]:
+    """The single ordering rule shared by flat and batched painting.
 
-    显式落笔深度优先（共线分隔线合并后几何推不出原深度，见 direct_design）：`_depth`
-    只由几何决定，合并成一整条后「被谁完整覆盖」变少、深度就变小、落笔提前，会被本该
-    在它下面的底色擦掉；合并那一趟知道每个分段的真实深度，取最大值写进 `paintDepth`。
+    ``zIndex`` comes first: an overlay lifted above a frame must really follow
+    that frame's contents.  It used to sit below the overlay flag, which let a
+    lifted container sort before plain text.
     """
+    return (
+        int(element.get("zIndex") or 0),
+        1 if element.get("overlay") else 0,
+        1 if element.get("cropBackdrop") else 0,
+        depth_of(index, element),
+        index,
+    )
+
+
+def _flat_paint_order(elements: list[dict]) -> list[tuple[int, dict]]:
+    """Element-by-element paint order, geometry only.  No frame awareness."""
     rects = [PrototypeAdapter._element_rect(e) for e in elements]
     # 重复矩形（同节点被多次采集成容器）会互相抬高深度，导致本应铺底的白底工具栏排到
     # 彩色按钮之后。按唯一几何矩形统计「被谁覆盖」，消除该膨胀。
@@ -922,17 +937,109 @@ def paint_order(elements: list[dict]) -> list[tuple[int, dict]]:
 
     return sorted(
         enumerate(elements),
-        key=lambda pair: (
-            # zIndex first.  An overlay lifted above a frame must actually come
-            # after that frame's members; when zIndex sat below the overlay
-            # flag, a lifted container could still be ordered before plain text.
-            int(pair[1].get("zIndex") or 0),
-            1 if pair[1].get("overlay") else 0,
-            1 if pair[1].get("cropBackdrop") else 0,
-            _paint_depth(pair[0], pair[1]),
-            pair[0],
-        ),
+        key=lambda pair: _paint_sort_key(pair[0], pair[1], _paint_depth),
     )
+
+
+def _frame_batches(elements: list[dict]) -> dict[int, int]:
+    """Map every element to the frame that owns it, from ``layoutChildren``."""
+    by_id = {
+        str(element.get("id")): index
+        for index, element in enumerate(elements)
+        if element.get("id") is not None
+    }
+    parent: dict[int, int] = {}
+    for index, element in enumerate(elements):
+        children = element.get("layoutChildren")
+        if not children:
+            continue
+        for child in children:
+            if not isinstance(child, dict):
+                continue
+            child_index = by_id.get(str(child.get("id")))
+            if child_index is not None and child_index != index:
+                parent.setdefault(child_index, index)
+    return parent
+
+
+def paint_order(elements: list[dict]) -> list[tuple[int, dict]]:
+    """全局绘制序：返回 [(原下标, 元素)]；所有输出端共用。
+
+    有 ``layoutChildren`` 时按**帧批次**排序：一个帧的完整闭包（自身 + 全部后代）
+    成为一段连续区间，子帧作为父帧批次内的连续子批次。扁平排序会让成员散落在整个
+    列表里，帧的成员区间必然跨过别的元素，渲染器就只能拒绝这个帧。
+
+    没有帧时走 ``_flat_paint_order``，与原行为逐字一致。
+    """
+    parent = _frame_batches(elements)
+    if not parent:
+        return _flat_paint_order(elements)
+
+    flat = _flat_paint_order(elements)
+    rank = {index: spot for spot, (index, _item) in enumerate(flat)}
+
+    children_of: dict[int, list[int]] = {}
+    for child, owner in parent.items():
+        children_of.setdefault(owner, []).append(child)
+
+    def batch(root: int) -> list[int]:
+        """A frame's whole closure as one contiguous run, inner batches included.
+
+        Chrome counts as closure too.  A group outline, a separator, a focus
+        ring — they are drawn for the frame but are not layout members.  Left
+        out, the gathered run shoves them past its own contents, and a border
+        lands on top of the buttons it was drawn around.  Anything that sits
+        inside the run's span and overlaps the frame joins it.
+        """
+        members = sorted(children_of.get(root, ()), key=lambda index: rank[index])
+        seq: list[int] = []
+        for member in members:
+            seq.extend(batch(member))
+        root_rect = PrototypeAdapter._element_rect(elements[root])
+        if root_rect is not None and seq:
+            low = min(rank[index] for index in seq)
+            high = max(rank[index] for index in seq)
+            for index, _item in flat:
+                position = rank[index]
+                if not low < position < high or index == root or index in seq:
+                    continue
+                if index in parent:
+                    continue  # belongs to some other frame
+                rect = PrototypeAdapter._element_rect(elements[index])
+                if rect is None:
+                    continue
+                overlap_w = min(root_rect[0] + root_rect[2], rect[0] + rect[2]) - max(
+                    root_rect[0], rect[0]
+                )
+                overlap_h = min(root_rect[1] + root_rect[3], rect[1] + rect[3]) - max(
+                    root_rect[1], rect[1]
+                )
+                if overlap_w > 0 and overlap_h > 0:
+                    seq.append(index)
+        seq.sort(key=lambda index: rank[index])
+        return [root, *seq]
+
+    # Batch assembly only gathers each closure; it never re-orders anything.
+    # The relative order stays exactly what _flat_paint_order decided, so every
+    # existing output keeps its behaviour.  Overlay lifting happens earlier, by
+    # writing zIndex, which the flat pass already honours.
+    roots = [index for index in range(len(elements)) if index not in parent]
+    roots.sort(key=lambda index: rank.get(index, index))
+
+    ordered: list[int] = []
+    placed: set[int] = set()
+    for root in roots:
+        for index in batch(root):
+            if index not in placed:
+                placed.add(index)
+                ordered.append(index)
+    # Anything unreachable (an id that appears twice, a cycle) keeps the flat
+    # order rather than disappearing.
+    for index, _item in flat:
+        if index not in placed:
+            placed.add(index)
+            ordered.append(index)
+    return [(index, elements[index]) for index in ordered]
 
 
 def _single_node(spec: dict) -> bool:
