@@ -1402,6 +1402,72 @@ def _has_straddling_block(
     return False
 
 
+def _rects_overlap(
+    left: tuple[int, int, int, int],
+    right: tuple[int, int, int, int],
+) -> bool:
+    return (
+        min(left[0] + left[2], right[0] + right[2]) - max(left[0], right[0]) > 0
+        and min(left[1] + left[3], right[1] + right[3]) - max(left[1], right[1]) > 0
+    )
+
+
+def _avoid_coloured_neighbours(
+    containers: list[dict[str, Any]],
+    background: str,
+) -> int:
+    """Push a neutral container off a coloured one it overlaps.
+
+    ``main-content`` starts at x=180 while the sidebar ends at x=346, so its
+    white fill painted over 166px of the sidebar's ``#f9f9fb``.  Dropping the
+    fill is the wrong fix — that white is also hiding the layer underneath.
+    Moving the left edge to the sidebar's right edge keeps both: the sidebar
+    stays grey and the content area still has its backing.
+
+    Only the left edge moves, and only when the trim is a small fraction of the
+    width, so a container that merely touches a coloured block is left alone.
+    """
+    page = str(background or "").strip().lower()
+    coloured: list[dict[str, Any]] = []
+    for container in containers:
+        fill = str((container.get("style") or {}).get("fillColor") or "").strip().lower()
+        rect = _layout_rect(container)
+        if fill and fill != page and rect is not None:
+            coloured.append(container)
+    if not coloured:
+        return 0
+    moved = 0
+    for container in containers:
+        rect = _layout_rect(container)
+        if rect is None:
+            continue
+        fill = str((container.get("style") or {}).get("fillColor") or "").strip().lower()
+        if container in coloured:
+            continue
+        for blocker in coloured:
+            other = _layout_rect(blocker)
+            if other is None or not _rects_overlap(rect, other):
+                continue
+            # A coloured block *inside* this container is a child, not an
+            # intruder: the cards live inside main-content.  Only a block that
+            # starts to the left of us can push our edge.
+            if _rect_contains(rect, other, tolerance=2) or other[0] >= rect[0]:
+                continue
+            # A full-width band pinned to the top is the header strip; it is
+            # meant to cross the page and hide what is behind it.  Trimming it
+            # exposes that layer as a grey band across the canvas.
+            if rect[1] <= 2 and rect[3] < 120:
+                continue
+            trim = (other[0] + other[2]) - rect[0]
+            if trim <= 2 or trim >= rect[2] * 0.5:
+                continue
+            container["x"] = rect[0] + trim
+            container["width"] = rect[2] - trim
+            rect = _layout_rect(container) or rect
+            moved += 1
+    return moved
+
+
 def attach_layout_frames(elements: list[dict[str, Any]]) -> int:
     """Group elements into Auto Layout frames along the strict containment tree.
 
@@ -1568,6 +1634,7 @@ def compile_scene_plan_to_design(
             )
     containers.extend(control_groups)
     decorations.extend(control_group_decorations)
+    _avoid_coloured_neighbours(containers, background)
     elements = [*containers, *decorations, *leaves]
     _apply_group_decoration_depths(elements, control_groups)
     form_background = _source_form_background(
