@@ -1164,8 +1164,16 @@ def _rect_contains(
 def _owner_index(
     rects: list[tuple[int, int, int, int] | None],
     index: int,
+    *,
+    parent_candidates: set[int] | None = None,
 ) -> int | None:
-    """Smallest container that fully contains ``index``."""
+    """Smallest container that fully contains ``index``.
+
+    ``parent_candidates`` restricts which elements may act as a parent.  Only
+    containers qualify: without it a large image behind the copy swallowed the
+    text nodes, so they never became members of the card frame that contained
+    them and the frame was rejected for covering a stranger.
+    """
     inner = rects[index]
     if inner is None:
         return None
@@ -1174,6 +1182,8 @@ def _owner_index(
     best_area: int | None = None
     for other, outer in enumerate(rects):
         if other == index or outer is None:
+            continue
+        if parent_candidates is not None and other not in parent_candidates:
             continue
         if outer[2] * outer[3] <= inner_area:
             continue
@@ -1364,7 +1374,17 @@ def attach_layout_frames(elements: list[dict[str, Any]]) -> int:
         _layout_rect(element) if str(element.get("type")) in _LAYOUT_MEMBER_TYPES else None
         for element in elements
     ]
-    owners = [_owner_index(rects, index) if rects[index] else None for index in range(len(elements))]
+    containers = {
+        index
+        for index, element in enumerate(elements)
+        if str(element.get("type")) == "container"
+    }
+    owners = [
+        _owner_index(rects, index, parent_candidates=containers)
+        if rects[index]
+        else None
+        for index in range(len(elements))
+    ]
 
     members: dict[int, list[int]] = {}
     for index, owner in enumerate(owners):
