@@ -601,3 +601,28 @@ marketplace 同轮真机重导出 96.46/95.42：卡片标题仍是单份、Hero 
 24px 圆角。图像测试 173 条全绿（新增 4 条：回读判定、Python 补偿、单次重试、显式摆位）。
 
 **合并**：`feat/visual-fidelity-pass` → `feat/image-to-figma-v2` 快进合并，见下一节记录。
+
+---
+
+## 21. 合并记录：`feat/visual-fidelity-pass` → `feat/image-to-figma-v2`
+
+```
+git checkout feat/image-to-figma-v2 && git merge --ff-only feat/visual-fidelity-pass
+git checkout feat/visual-fidelity-pass && git push origin feat/image-to-figma-v2
+```
+
+快进合并，无冲突、无额外合并提交：`21a62c2..0895285`，共 28 个提交（含本文档最后一节）。
+两个分支与各自的远端引用此后指向同一提交，工作区干净。
+
+合并时的验收状态：
+
+- 真机旋转 `scripts/figma_rotation_probe.py` **PASS 4/4**（6° / −4.6° / 30° / −90°），
+  中心漂移 0.00px，方向逆时针；
+- marketplace 真机导出 96.46/95.42，卡片标题单份、Hero 无假黑框、卡片 24px 圆角；
+- 图像测试 **173 条全绿**；`tests/v2` 1519 passed / 8 个既有失败（Axure 资产与 p5 探针，
+  与本分支无关，合入前后数量一致）；
+- 七样本帧数 13/6/10/14/9/3/6，全部不低于下限，`kept == accepted`。
+
+**已知遗留**（都带数据，不是猜测）：Hero 原图是宋体、当前按无衬线输出（衬线判据分不开
+宋体与粗黑体，已放弃）；四张主卡片的 1px 描边未画出，因为方案里两张卡片盒互相重叠 61px，
+外扩守卫必然拒绝；"2.0 Mini"等无填充胶囊未恢复，其 1px 线与既有控件不可区分。
