@@ -1015,14 +1015,38 @@ class FigmaBridgeAdapter(PrototypeAdapter):
         if not node_id or not angle:
             return
         centre = element_centre(spec)
-        self._send(
-            "set_rotation",
-            {
-                "nodeId": node_id,
-                "angle": angle,
-                "centre": [round(centre[0], 3), round(centre[1], 3)],
-            },
-        )
+        payload = {
+            "nodeId": node_id,
+            "angle": angle,
+            "centre": [round(centre[0], 3), round(centre[1], 3)],
+        }
+        answer = self._send("set_rotation", payload) or {}
+        # The bridge's sign convention is the one thing here that can differ
+        # between builds, and getting it wrong mirrors the shape.  Rather than
+        # trusting a constant, read the centre back: a rotated node's bounding
+        # box is centred on the shape, so an offset of more than a pixel means
+        # the convention is inverted.  One retry settles it, and the next design
+        # pays nothing because the first attempt already succeeded.
+        if not _rotation_landed(answer, centre):
+            answer = self._send("set_rotation", {**payload, "angle": -angle}) or {}
+        if not _rotation_landed(answer, centre):
+            # Last resort: place the box ourselves.  A bridge whose rotation sign
+            # and whose compensation disagree moves the centre by a rotation of
+            # the half-extent that nothing in the payload can cancel, so the
+            # position is written directly instead of asked for.
+            width = float(spec.get("width") or 0)
+            height = float(spec.get("height") or 0)
+            if width > 0 and height > 0:
+                self._send(
+                    "set_bounds",
+                    {
+                        "nodeId": node_id,
+                        "x": _compensated_origin(centre, width, height, angle)[0],
+                        "y": _compensated_origin(centre, width, height, angle)[1],
+                        "width": width,
+                        "height": height,
+                    },
+                )
 
     def resolve_font(
         self,
@@ -1272,6 +1296,39 @@ def _single_visual_line(spec: dict[str, Any]) -> bool:
     if size <= 0 or height <= 0:
         return False
     return height <= size * 1.7
+
+
+def _compensated_origin(
+    centre: tuple[float, float], width: float, height: float, angle: float
+) -> tuple[float, float]:
+    """Where the unrotated box must start so that its centre holds after turning.
+
+    ``R_cw(-angle)`` because the design's positive direction is anticlockwise.
+    """
+    import math
+
+    theta = math.radians(-float(angle))
+    cos = math.cos(theta)
+    sin = math.sin(theta)
+    half_w, half_h = float(width) / 2.0, float(height) / 2.0
+    return (
+        round(float(centre[0]) - (half_w * cos - half_h * sin), 3),
+        round(float(centre[1]) - (half_w * sin + half_h * cos), 3),
+    )
+
+
+def _rotation_landed(answer: dict, centre: tuple[float, float], tolerance: float = 1.0) -> bool:
+    """Whether the bridge put the rotated node's centre where the design asked."""
+    absolute = answer.get("absolute") if isinstance(answer, dict) else None
+    if not isinstance(absolute, (list, tuple)) or len(absolute) != 2:
+        return True  # nothing to check against; do not retry blindly
+    try:
+        return (
+            abs(float(absolute[0]) - float(centre[0])) <= tolerance
+            and abs(float(absolute[1]) - float(centre[1])) <= tolerance
+        )
+    except (TypeError, ValueError):
+        return True
 
 
 def _with_parent(

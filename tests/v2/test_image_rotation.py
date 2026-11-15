@@ -228,3 +228,73 @@ def test_a_level_element_never_asks(monkeypatch) -> None:
     adapter = Fake()
     adapter.create_rectangle({"x": 10, "y": 10, "width": 40, "height": 20})
     assert "set_rotation" not in sent
+
+
+# --- 桥接约定不一致时的自适应 ------------------------------------------------
+
+
+def test_the_reported_centre_decides_whether_it_landed() -> None:
+    from src.app.services.rendering.figma_adapter import _rotation_landed
+
+    assert _rotation_landed({"absolute": [400.0, 350.0]}, (400.0, 350.0))
+    assert not _rotation_landed({"absolute": [408.0, 334.0]}, (400.0, 350.0))
+    # No centre to judge by: do not retry blindly.
+    assert _rotation_landed({}, (400.0, 350.0))
+
+
+def test_the_python_compensation_agrees_with_the_documented_algebra() -> None:
+    from src.app.services.rendering.figma_adapter import _compensated_origin
+
+    centre = (400.0, 350.0)
+    for angle in (6.0, -4.6, 30.0, -90.0):
+        origin = _compensated_origin(centre, 200.0, 100.0, angle)
+        landed = _centre_after(origin, (200.0, 100.0), angle)
+        assert landed[0] == pytest.approx(centre[0], abs=0.01)
+        assert landed[1] == pytest.approx(centre[1], abs=0.01)
+
+
+def _adapter(sent: list):
+    from src.app.services.rendering.figma_adapter import FigmaBridgeAdapter
+
+    class Fake(FigmaBridgeAdapter):
+        def __init__(self) -> None:  # noqa: D107
+            pass
+
+        def _send(self, action, params=None, **kwargs):  # noqa: ANN001
+            sent.append((action, dict(params or {})))
+            return self.answers.pop(0) if self.answers else {}
+
+    Fake.answers = []
+    return Fake()
+
+
+def test_a_bridge_that_mirrors_the_angle_is_retried_once() -> None:
+    """The first answer lands the shape away from the centre: negate and repeat."""
+    sent: list = []
+    adapter = _adapter(sent)
+    adapter.answers = [
+        {"absolute": [410.45, 329.09]},   # missed
+        {"absolute": [400.0, 350.0]},     # landed after the retry
+    ]
+
+    adapter._apply_rotation("1:2", {"x": 300, "y": 300, "width": 200, "height": 100, "rotation": 6})
+
+    calls = [params for action, params in sent if action == "set_rotation"]
+    assert [call["angle"] for call in calls] == [6, -6]
+    assert not any(action == "set_bounds" for action, _params in sent)
+
+
+def test_a_bridge_that_cannot_hold_the_centre_is_placed_by_hand() -> None:
+    sent: list = []
+    adapter = _adapter(sent)
+    adapter.answers = [{"absolute": [410.0, 329.0]}, {"absolute": [391.0, 366.0]}]
+
+    adapter._apply_rotation("1:2", {"x": 300, "y": 300, "width": 200, "height": 100, "rotation": 30})
+
+    bounds = [params for action, params in sent if action == "set_bounds"]
+    assert bounds, "a bridge that misses twice must be placed explicitly"
+    landed = _centre_after(
+        (bounds[0]["x"], bounds[0]["y"]), (bounds[0]["width"], bounds[0]["height"]), 30
+    )
+    assert landed[0] == pytest.approx(400.0, abs=0.5)
+    assert landed[1] == pytest.approx(350.0, abs=0.5)

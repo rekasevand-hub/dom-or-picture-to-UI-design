@@ -1951,10 +1951,13 @@ async function componentizeSemanticGroups(params) {
 
 // 给节点加倾角，并把"旋转后的中心"钉回设计给的中心。
 //
-// 两个坑都在这里一次性处理：
-// 1) 设计说逆时针为正，Figma 的 rotation 是顺时针为正 —— 取负；
-// 2) Figma 的 rotation 绕节点自己的原点转，转完中心会跑。设完 rotation 后再按
-//    旋转矩阵把 x/y 反向偏移，让 (x,y) 满足 origin + R(θ)·(w/2,h/2) = 设计中心。
+// 两个约定都用真机实测钉住，不靠文档记忆：
+// 1) **符号**：设计说逆时针为正，Figma 的 node.rotation 也是逆时针为正（实测
+//    rotation=-4.6 出来的位移等于顺时针 4.6°）。所以原样写入，不取负。
+//    早先按"顺时针"写，倾斜方向整个镜像。
+// 2) **原点**：Figma 绕节点自己的原点（x,y）转，转完中心会跑。实测
+//    centre = origin + R_cw(rotation)·(w/2,h/2)，所以设完 rotation 后按
+//    origin = centre − R_cw(angle)·(w/2,h/2) 反向偏移。
 //    宽度/高度取节点**实际**尺寸（文本框会自适应），不用入参。
 //
 // 单独做成命令而不是塞进 create_*：文本要等 characters/换行/autoResize 全部落定
@@ -1972,16 +1975,15 @@ async function setRotation(params) {
     ? [Number(params.centre[0]), Number(params.centre[1])]
     : null;
   if (!centre || !Number.isFinite(centre[0]) || !Number.isFinite(centre[1])) {
-    node.rotation = -angle;
+    node.rotation = angle;
     return { nodeId: node.id, applied: true, rotation: node.rotation };
   }
-  // 逆时针为正 → Figma 的顺时针角度取负。
   const theta = (-angle) * Math.PI / 180;
   const cos = Math.cos(theta);
   const sin = Math.sin(theta);
   const halfW = width / 2;
   const halfH = height / 2;
-  node.rotation = -angle;
+  node.rotation = angle;
   node.x = centre[0] - (halfW * cos - halfH * sin);
   node.y = centre[1] - (halfW * sin + halfH * cos);
   const box = node.absoluteBoundingBox;
