@@ -3303,6 +3303,19 @@ PATCH_TEXT_COVER = 0.55
 #: 小框被大框包含到这个比例，且用词对得上，就判为重影。
 CONTAINED_TEXT_IOA = 0.55
 CONTAINED_TEXT_SIMILARITY = 0.45
+#: 小框被更大的文本框盖住这么多、且处在同一条基线带里，只可能是第二遍印刷。
+NESTED_TEXT_SHARE = 0.6
+NESTED_TEXT_LINE_TOLERANCE = 0.5
+NESTED_TEXT_HEIGHT_RATIO = 2.5
+#: OCR 观测与盒子的重叠达到这个比例，才算"这条线在说这个盒子"。
+OCR_SUPPORT_OVERLAP = 0.3
+#: 且这条线要复现节点自身这么多字符，才算它真的在说这句话。
+OCR_SUPPORT_CHARS = 0.7
+#: 文字压在与自己面积相当（不超过这个倍数）的图片上：那是芯片/图标，不是照片。
+NESTED_IMAGE_AREA_RATIO = 3.0
+#: 大号展示标题：字号下限，以及判定为展示字重所需的最小笔宽比。
+DISPLAY_MIN_SIZE = 40.0
+DISPLAY_STROKE_MIN = 0.075
 #: Rebuilding a paragraph from its OCR lines: the seed has to sit on the node's
 #: own first line, the chain grows downwards in the same column, and the joined
 #: text has to agree with the model's wording this well before anything moves.
@@ -4288,7 +4301,13 @@ def _drop_text_under_patches(elements: list[dict[str, Any]]) -> int:
     A patch is cut from the screenshot, so any vector node inside it is a second
     print of the same words — the discount stamps were exactly that: a bitmap of
     "5.8 折" with a text node on top of it.  The patch wins because it carries the
-   真实像素; the node only adds a ghost.
+    真实像素; the node only adds a ghost.
+
+    `mark` crops are deliberately *not* included: a mark is often a bitmap of a
+    label that is also modelled as text (AtomGit's 智能体开发), and there the text
+    is the better asset — it stays editable.  Words with no OCR support sitting on
+    a chip-sized mark are handled by `_drop_nested_texts`, which asks the picture
+    first.
 
     Frame members are referenced by id, so removing an element is safe once the
     id is also removed from any frame that lists it.
@@ -4411,6 +4430,204 @@ def _drop_contained_texts(elements: list[dict[str, Any]]) -> int:
                 member for member in members if str(member.get("id") or "") not in doomed
             ]
     return len(doomed)
+
+
+def _ocr_carries(
+    text: str,
+    box: tuple[int, int, int, int],
+    ocr_observations: Sequence[Mapping[str, Any]] | None,
+) -> bool:
+    """Does an OCR line *at this box* actually spell these words?
+
+    Containment, not character overlap.  "¥4.64" shares two characters with
+    "DeepSeek V4.1 Flash", and counting that as support is how a phantom price
+    gets to sit on top of a title: every box test passes because the title's box
+    covers it.
+    """
+    key = "".join(_fold_homoglyphs(str(text or "")).split()).lower()
+    if not key:
+        return False
+    wanted = set(key)
+    for observation in ocr_observations or []:
+        line = "".join(
+            _fold_homoglyphs(str(observation.get("text") or "")).split()
+        ).lower()
+        if not line:
+            continue
+        raw_box = observation.get("bbox") or []
+        if len(raw_box) != 4:
+            continue
+        other = tuple(int(value) for value in raw_box)
+        if (
+            _overlap_share(box, other) < OCR_SUPPORT_OVERLAP
+            and _overlap_share(other, box) < OCR_SUPPORT_OVERLAP
+        ):
+            continue
+        # Characters, not containment: OCR spells "输入 · 峰时" as "输入 .峰时"
+        # and "谷时 ¥0.58" as "谷时半0.58", and a legit line must not be thrown
+        # away because the engine guessed one glyph wrong.
+        if len(wanted & set(line)) / len(wanted) >= OCR_SUPPORT_CHARS:
+            return True
+    return False
+
+
+def _drop_nested_texts(
+    elements: list[dict[str, Any]],
+    ocr_observations: Sequence[Mapping[str, Any]] | None,
+) -> int:
+    """Delete a text node that prints where a bigger text node already prints.
+
+    Two lines of type never share the same pixels; when they appear to, one of
+    them is not describing the picture.  marketplace's DeepSeek card had four of
+    these — "¥4.64", "¥8.00", "¥2.00" and "起 ¥23.00" all mapped onto the card's
+    title band, so the export looked like a title with small type smudged into it.
+
+    Wording cannot decide this: those strings are not variants of the title, they
+    are different words in the wrong place.  What decides it is support — the
+    picture's own OCR at that box.  A table cell where "冻结库存" sits inside a
+    wide value box *is* supported by OCR, and is left alone.
+    """
+    texts = [
+        element
+        for element in elements
+        if element.get("type") == "text" and str(element.get("text") or "").strip()
+    ]
+    # Pictures about the size of the words they sit under are chips and icons — a
+    # crop the compiler already committed to.  A full-bleed photo is not: words
+    # over a photo are normal, so only comparable areas count here.
+    chips = [
+        (_layout_rect(element), int(element.get("width") or 0) * int(element.get("height") or 0))
+        for element in elements
+        if element.get("imageBase64")
+    ]
+    chips = [(box, area) for box, area in chips if box]
+    doomed: set[str] = set()
+    for small in texts:
+        small_key = str(small.get("id") or "")
+        if not small_key or small_key in doomed:
+            continue
+        small_box = _layout_rect(small)
+        if small_box is None:
+            continue
+        if _ocr_carries(str(small.get("text") or ""), small_box, ocr_observations):
+            continue
+        small_area = small_box[2] * small_box[3]
+        small_centre = small_box[1] + small_box[3] / 2.0
+        for big in texts:
+            if big is small or str(big.get("id") or "") in doomed:
+                continue
+            big_box = _layout_rect(big)
+            if big_box is None:
+                continue
+            if big_box[2] * big_box[3] <= small_area:
+                continue
+            if _overlap_share(small_box, big_box) < NESTED_TEXT_SHARE:
+                continue
+            # Same line: a value printed under a heading lives one line lower and
+            # keeps its own vertical band.  These occupy the same band.
+            if abs(small_centre - (big_box[1] + big_box[3] / 2.0)) > max(
+                3.0, small_box[3] * NESTED_TEXT_LINE_TOLERANCE
+            ):
+                continue
+            if big_box[3] > small_box[3] * NESTED_TEXT_HEIGHT_RATIO:
+                continue
+            doomed.add(small_key)
+            break
+        if small_key in doomed:
+            continue
+        for picture_box, picture_area in chips:
+            if picture_area > small_area * NESTED_IMAGE_AREA_RATIO:
+                continue
+            if _overlap_share(small_box, picture_box) >= PATCH_TEXT_COVER:
+                doomed.add(small_key)
+                break
+    if not doomed:
+        return 0
+    elements[:] = [
+        element
+        for element in elements
+        if str(element.get("id") or element.get("contentRef") or "") not in doomed
+    ]
+    for element in elements:
+        members = element.get("layoutChildren")
+        if isinstance(members, list):
+            element["layoutChildren"] = [
+                member for member in members if str(member.get("id") or "") not in doomed
+            ]
+    return len(doomed)
+
+
+def _restore_display_weight(
+    elements: list[dict[str, Any]],
+    image_path: str | Path,
+    width: int,
+    height: int,
+) -> int:
+    """Give the page's biggest line the weight a display title is set in.
+
+    The stroke test in `style_resolver` measures `2*area/perimeter`, which is the
+    right number for text at reading sizes and the wrong one for a 99px hero: a
+    Song face has 12px verticals and 2px horizontals, so the average lands at
+    0.086em — under the bold threshold — and the title comes out Regular, which
+    is the one thing a page cannot afford.
+
+    So the biggest line is judged by role, not by average: if it measures at
+    least `DISPLAY_STROKE_MIN` of its own em, it is display type and gets 800.
+    """
+    import numpy as np
+    from PIL import Image
+
+    from src.app.services.structure.fidelity.style_resolver import _stroke_thickness
+
+    try:
+        image = np.asarray(Image.open(image_path).convert("RGB"), dtype=np.int16)
+    except (OSError, FileNotFoundError):
+        return 0
+    sized = [
+        element
+        for element in elements
+        if element.get("type") == "text"
+        and str(element.get("text") or "").strip()
+        and float((element.get("style") or {}).get("fontSize") or 0) >= DISPLAY_MIN_SIZE
+    ]
+    if not sized:
+        return 0
+    biggest = max(float((element.get("style") or {}).get("fontSize") or 0) for element in sized)
+    changed = 0
+    for element in sized:
+        style = element.setdefault("style", {})
+        size = float(style.get("fontSize") or 0)
+        if abs(size - biggest) > 1.0:
+            continue
+        if int(style.get("fontWeightValue") or 400) >= 800:
+            continue
+        box = _layout_rect(element)
+        if box is None:
+            continue
+        x, y, w, h = box
+        x0, y0 = max(0, x), max(0, y)
+        x1, y1 = min(width, x + w), min(height, y + h)
+        if x1 - x0 < 8 or y1 - y0 < 8:
+            continue
+        crop = image[y0:y1, x0:x1]
+        luminance = crop.mean(axis=2)
+        if float(luminance.max() - luminance.min()) < 40:
+            continue
+        mask = luminance >= (float(np.percentile(luminance, 5)) + float(luminance.max())) / 2.0
+        if mask.sum() < 60:
+            continue
+        thickness = _stroke_thickness(mask.astype(np.uint8))
+        if thickness / max(1.0, size) < DISPLAY_STROKE_MIN:
+            continue
+        style["fontWeightValue"] = 800
+        style["fontWeight"] = "bold"
+        element["weightEvidence"] = {
+            "method": "display-role",
+            "stroke": round(float(thickness), 2),
+            "size": round(size, 1),
+        }
+        changed += 1
+    return changed
 
 
 def _separate_badge_icon_text(elements: list[dict[str, Any]]) -> int:
@@ -5069,6 +5286,12 @@ SOFT_PANEL_MIN_DELTA = 6
 #: A page can be a gradient.  Eight bands follow it closely enough that the
 #: step between neighbours is under the eye's threshold.
 PAGE_BANDS = 8
+#: 四边中位色相差超过这个值，说明它们属于两个不同的面，不能取平均。
+PAGE_EDGE_SPLIT = 8
+#: 分带底色与声明的页底色差小于这个值时，这条带子什么也没画，只是接缝。
+#: 取 6 而不是 10：wecom 的页底声明 #666666、实到 #5d6064，差 9 个通道——
+#: 在中灰上这已经看得见，按 10 放过它时 within15 掉了 1.4 个点。
+PAGE_BAND_MIN_DELTA = 6
 #: A solid container that stops short of its own paint: how far to follow
 #: colour continuity, and how much of a row has to agree before it counts.
 CONTAINER_GROW_MAX = 32
@@ -5744,7 +5967,40 @@ def _recover_page_fill(
     ]
     if not agreeing:
         return False
-    colour = tuple(int(value) for value in np.median(agreeing, axis=0))
+    declared = tuple(int(value) for value in _hex_rgb(background)) if background else None
+    spread = max(
+        (
+            float(np.abs(left - right).max())
+            for left in agreeing
+            for right in agreeing
+        ),
+        default=0.0,
+    )
+    if spread > PAGE_EDGE_SPLIT:
+        # The four edges are two different surfaces, not one page: marketplace is
+        # #1a1917 at top and bottom and #100f0d down both sides.  Averaging them
+        # produced #151412 — a colour that matches the declared background, so the
+        # whole calibration bailed out and the page kept its wrong base.  Vote
+        # instead, and break a tie towards the side the declaration got wrong.
+        votes = [
+            (
+                sum(
+                    1
+                    for other in agreeing
+                    if float(np.abs(median - other).max()) <= PAGE_EDGE_SPLIT
+                ),
+                0.0
+                if declared is None
+                else float(np.abs(median - np.asarray(declared, dtype=np.float64)).max()),
+                median,
+            )
+            for median in agreeing
+        ]
+        colour = tuple(
+            int(value) for value in max(votes, key=lambda vote: (vote[0], vote[1]))[2]
+        )
+    else:
+        colour = tuple(int(value) for value in np.median(agreeing, axis=0))
     hexed = "#{:02x}{:02x}{:02x}".format(*colour)
     if background and _same_fill(hexed, background, SOFT_PANEL_MIN_DELTA):
         return False
@@ -5816,6 +6072,10 @@ def _recover_page_fill(
             else:
                 band_colour = left_colour
         previous = band_colour
+        if declared is not None and max(
+            abs(band_colour[index] - declared[index]) for index in range(3)
+        ) < PAGE_BAND_MIN_DELTA:
+            continue
         bands.append(
             (top, bottom, "#{:02x}{:02x}{:02x}".format(*band_colour))
         )
@@ -7481,6 +7741,8 @@ def compile_scene_plan_to_design(
         _recover_visual_regions(
             elements, image_path, width, height, ocr_observations, background
         )
+    # 页面最大的那行是展示标题：它按角色定字重，不按平均笔宽。
+    _restore_display_weight(elements, image_path, width, height)
     _drop_page_coloured_shells(elements, background)
     # Icon captions the model invented have to go before the duplicate pass:
     # "search" over a magnifier looks like a label that a real one duplicates.
@@ -7493,6 +7755,9 @@ def compile_scene_plan_to_design(
     _drop_paragraph_tails(elements)
     # 一个框被另一个更大的框包住、用词还对得上：同一行的第二次建模。
     _drop_contained_texts(elements)
+    # 同一带里被更大文本框整个盖住、而原图在它自己的位置没有任何 OCR 支撑的，
+    # 是方案把一句话放错了地方（marketplace 那四个价格就是）。
+    _drop_nested_texts(elements, ocr_observations)
     _separate_badge_icon_text(elements)
     # A chip whose word was absorbed by the row's own line prints empty; OCR
     # read that chip's word at the chip's coordinates.
