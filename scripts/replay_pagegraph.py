@@ -29,9 +29,12 @@ from dataclasses import replace
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+SCRIPTS = Path(__file__).resolve().parent
+for _path in (ROOT, SCRIPTS):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
 
+from sample_sources import MissingScreenshot, bind  # noqa: E402,F401
 from src.app.services.rendering.adapter_factory import build_adapter  # noqa: E402
 from src.app.services.structure.image_contract import build_image_design  # noqa: E402
 from src.app.utils.svg_raster import rasterize_svg  # noqa: E402
@@ -77,6 +80,9 @@ def replay(
     sample_id = str((_read(prepared) if prepared.is_file() else {}).get("sample_id") or tag)
     if not graph.get("scenePlan"):
         raise SystemExit(f"{tag}: pagegraph carries no scene plan")
+    # The screenshot is the only input perception cannot regenerate; resolve it
+    # before anything is compiled so a missing sample says so plainly.
+    _picture, graph, reference = bind(tag, graph, reference)
 
     out = (out_dir or (ROOT / "output" / f"{out_prefix}_{tag}")) / "pipeline"
     out.mkdir(parents=True, exist_ok=True)
@@ -106,7 +112,7 @@ def replay(
         sys.path.insert(0, str(ROOT / "scripts"))
         from visual_alignment import residual_regions  # noqa: PLC0415
 
-        truth = np.asarray(Image.open(reference["input"]["path"]).convert("RGB"), dtype=np.int16)
+        truth = np.asarray(Image.open(_picture).convert("RGB"), dtype=np.int16)
         drawn = np.asarray(Image.open(out / "render.png").convert("RGB"), dtype=np.int16)
         if drawn.shape == truth.shape:
             texts = [
@@ -150,9 +156,16 @@ def main() -> int:
         help="skip the residual-patch pass",
     )
     args = parser.parse_args()
+    missing = 0
     for tag in args.tags or sorted(SAMPLES):
-        print(replay(tag, args.out_suffix, patches=not args.no_patches), flush=True)
-    return 0
+        try:
+            print(replay(tag, args.out_suffix, patches=not args.no_patches), flush=True)
+        except MissingScreenshot as exc:
+            # One gone picture must not stop the other six from replaying, but
+            # the run is incomplete and says so in its exit code.
+            missing += 1
+            print(f"skipped: {exc}", flush=True)
+    return 1 if missing else 0
 
 
 if __name__ == "__main__":

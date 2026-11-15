@@ -23,8 +23,12 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+SCRIPTS = Path(__file__).resolve().parent
+for _path in (ROOT, SCRIPTS):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
+
+from sample_sources import locate  # noqa: E402
 
 SAMPLES = {
     "AtomGit": "output/_v2_fit_AtomGit",
@@ -64,7 +68,7 @@ def measure(tag: str, suffix: str = "_replay") -> dict:
             encoding="utf-8"
         )
     )
-    source = Path(reference["input"]["path"])
+    source = locate(tag, (reference.get("input") or {}).get("path"))
     out = ROOT / "output" / f"{suffix}_{tag}" / "pipeline"
     render = out / "render.png"
     if not render.is_file():
