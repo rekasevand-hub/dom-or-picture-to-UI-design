@@ -62,3 +62,6 @@ Thumbs.db
 
 # SDD scratch (git-ignored)
 .superpowers/
+
+# WorkBuddy workspace scratch (memory logs, hooks, session state)
+.workbuddy/
