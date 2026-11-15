@@ -4933,6 +4933,13 @@ SOFT_PANEL_MIN_DELTA = 6
 #: A page can be a gradient.  Eight bands follow it closely enough that the
 #: step between neighbours is under the eye's threshold.
 PAGE_BANDS = 8
+#: A solid container that stops short of its own paint: how far to follow
+#: colour continuity, and how much of a row has to agree before it counts.
+CONTAINER_GROW_MAX = 32
+CONTAINER_GROW_TOLERANCE = 12
+CONTAINER_GROW_SHARE = 0.9
+#: Consecutive off-colour rows a growth may step over (an antialiased seam).
+CONTAINER_GROW_BRIDGE = 2
 #: A solid panel fills its own box.  A line of text covers half of it at most,
 #: which is what keeps this from recovering every word as a card.
 SOFT_PANEL_MIN_FILL = 0.9
@@ -5710,6 +5717,136 @@ def _recover_page_fill(
         )
         placed += 1
     return True
+
+
+def _extend_solid_edges(
+    elements: list[dict[str, Any]],
+    image_path: str,
+    width: int,
+    height: int,
+    background: str,
+) -> int:
+    """Grow a solid container into the rows that are still its own colour.
+
+    inventory's header is measured 64px tall and painted #2b3643, while the
+    picture keeps that colour down to y=79: sixteen rows of a 2216-wide band
+    rendered as page white, which is 82.8% of that sample's ground failures.  The
+    plan measured the element, not the paint.
+
+    Growth is bounded and colour-tested row by row, so it stops at the first row
+    that is not the container's own colour.  Containers the same colour as the
+    page are skipped: growing those would paint page into page.
+    """
+    try:
+        import numpy as np
+        from PIL import Image
+    except Exception:  # pragma: no cover
+        return 0
+    try:
+        image = np.asarray(Image.open(image_path).convert("RGB"), dtype=np.int16)
+    except (OSError, ValueError):
+        return 0
+    image = image[:height, :width]
+    page = np.asarray(_hex_rgb(background), dtype=np.int16) if background else None
+
+    grown = 0
+    for element in elements:
+        if element.get("type") != "container":
+            continue
+        # Only the page's own chrome: these are the containers whose edges the
+        # picture can contradict.  Growing a card or a dialog edge instead moves a
+        # frame's members out from under it — wecom-modal lost two frames to it.
+        if str(element.get("role") or "") not in ("header", "sidebar", "main-content"):
+            continue
+        fill = _solid_fill(element)
+        if not fill:
+            continue
+        colour = np.asarray(_hex_rgb(fill), dtype=np.int16)
+        if page is not None and int(np.abs(colour - page).max()) < SOFT_PANEL_MIN_DELTA:
+            continue
+        try:
+            x, y, w, h = (int(element[key]) for key in ("x", "y", "width", "height"))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if w < 40 or h < 16:
+            continue
+        x0, y0 = max(0, x), max(0, y)
+        x1, y1 = min(width, x + w), min(height, y + h)
+        inner = image[y0 + 2 : max(y0 + 3, y1 - 2), x0 + 2 : max(x0 + 3, x1 - 2)]
+        if inner.size == 0:
+            continue
+        if float((np.abs(inner - colour).max(axis=2) <= CONTAINER_GROW_TOLERANCE).mean()) < 0.6:
+            continue
+
+        def contiguity(getter, start: int, limit: int, step: int) -> int:
+            """How far the colour continues, bridging a short seam.
+
+            A single antialiased row at y=63 stops a naive walk one row into a
+            sixteen-row band; two rows of slack step over the seam and the whole
+            band comes back.
+            """
+            cursor = start
+            misses = 0
+            furthest = start
+            budget = CONTAINER_GROW_MAX + CONTAINER_GROW_BRIDGE
+            while 0 <= cursor < limit and abs(cursor - start) <= budget:
+                line = getter(cursor)
+                if line.size and float(
+                    (np.abs(line - colour).max(axis=1) <= CONTAINER_GROW_TOLERANCE).mean()
+                ) >= CONTAINER_GROW_SHARE:
+                    furthest = cursor + step
+                    misses = 0
+                else:
+                    misses += 1
+                    if misses > CONTAINER_GROW_BRIDGE:
+                        break
+                cursor += step
+            return furthest
+
+        top = y0
+        for _step in range(CONTAINER_GROW_MAX):
+            if top <= 0:
+                break
+            row = image[top - 1, x0:x1]
+            if float((np.abs(row - colour).max(axis=1) <= CONTAINER_GROW_TOLERANCE).mean()) < CONTAINER_GROW_SHARE:
+                break
+            top -= 1
+        bottom = contiguity(lambda y: image[y, x0:x1], y1, height, 1)
+        right = contiguity(lambda x: image[y0:max(y0 + 1, y1), x], x1, width, 1)
+        left = x0
+        for _step in range(CONTAINER_GROW_MAX):
+            if left <= 0:
+                break
+            column = image[top:bottom, left - 1]
+            if float((np.abs(column - colour).max(axis=1) <= CONTAINER_GROW_TOLERANCE).mean()) < CONTAINER_GROW_SHARE:
+                break
+            left -= 1
+        if (top, bottom, left, right) == (y0, y1, x0, x1):
+            continue
+        # A frame owns its members' paint run: growing into one costs the frame.
+        # wecom-modal lost two frames that way, so any frame that the new edge
+        # would touch makes this container stay where it was measured.
+        touches_frame = False
+        for other in elements:
+            if other is element or not other.get("layoutChildren"):
+                continue
+            ox, oy = int(other.get("x") or 0), int(other.get("y") or 0)
+            ow, oh = int(other.get("width") or 0), int(other.get("height") or 0)
+            if min(right, ox + ow) > max(left, ox) and min(bottom, oy + oh) > max(top, oy):
+                touches_frame = True
+                break
+        if touches_frame:
+            continue
+        element["x"] = left
+        element["y"] = top
+        element["width"] = right - left
+        element["height"] = bottom - top
+        element["edgeEvidence"] = {
+            "method": "colour-continuation",
+            "grew": [top - y0, bottom - y1, left - x0, right - x1],
+        }
+        grown += 1
+    return grown
 
 
 def _recover_soft_panels(
@@ -7233,6 +7370,11 @@ def compile_scene_plan_to_design(
         elements, image_path, (width, height), background, ocr_observations
     )
     _trim_to_fill_boundary(elements, image_path, (width, height), background)
+    # After the trimmers, before the frames: a container measured short of its
+    # own paint leaves a band of page where the picture has colour — inventory's
+    # header, sixteen rows of it.  Run any earlier and the trim passes take the
+    # grown edge straight back.
+    _extend_solid_edges(elements, image_path, width, height, background)
     written_frames = attach_layout_frames(elements)
     # A frame's members must paint as one contiguous unit; an overlay that
     # lands inside that interval belongs on top of it, not in the middle.
