@@ -508,3 +508,69 @@ class TestBackgroundMergeAndOcclusion:
         change = vlm_arbiter._design_missing_text(ticket, elements, truth)
         assert change is not None
         assert change["action"].startswith("uncovered")
+
+
+class TestPhysicalPerception:
+    """三路分权：文本只从 OCR 来、图标只从 OmniParser 来、盒只从 CV 来。"""
+
+    def test_page_colour_is_the_dominant_surface_not_the_border(self, tmp_path: Path) -> None:
+        from PIL import Image
+
+        from src.app.services.structure.physical_perception import page_colour
+
+        # 左边缘是一条深色侧栏：按边框取色会把侧栏当成页面。
+        image = Image.new("RGB", (200, 120), (248, 248, 248))
+        for x in range(30):
+            for y in range(120):
+                image.putpixel((x, y), (54, 65, 80))
+        source = tmp_path / "page.png"
+        image.save(source)
+
+        import numpy as np
+
+        loaded = np.asarray(Image.open(source).convert("RGB"), dtype=np.int16)
+        assert page_colour(loaded) == (248, 248, 248)
+
+    def test_a_duplicate_box_is_not_a_nested_box(self) -> None:
+        from src.app.services.structure.physical_perception import _same_box
+
+        big = (100, 100, 400, 200)
+        inside = (120, 120, 100, 40)
+        same = (104, 98, 402, 202)
+        assert not _same_box(big, inside)
+        assert _same_box(big, same)
+
+    def test_a_line_that_reaches_the_next_column_shrinks_to_fit(self) -> None:
+        from src.app.services.structure.fidelity.fixed_canvas_compiler import (
+            _fit_text_to_box,
+        )
+
+        elements = [
+            {
+                "id": "cell",
+                "type": "text",
+                "x": 100,
+                "y": 100,
+                "width": 100,
+                "height": 24,
+                "text": "广东特拓MOM",
+                "style": {"fontSize": 20},
+            },
+            {
+                "id": "next",
+                "type": "text",
+                "x": 226,
+                "y": 100,
+                "width": 60,
+                "height": 24,
+                "text": "数量",
+                "style": {"fontSize": 20},
+            },
+        ]
+        assert _fit_text_to_box(elements) == 1
+        fitted = elements[0]
+        assert fitted["style"]["fontSize"] < 20
+        assert fitted["style"]["fontSize"] >= 17.0
+        assert fitted.get("fitEvidence")
+        # 邻列不动：规则只碰越界的那一格。
+        assert elements[1]["style"]["fontSize"] == 20

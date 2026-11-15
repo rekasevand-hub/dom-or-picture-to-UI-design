@@ -395,6 +395,9 @@ def _image_element(
         "replacement": copy.deepcopy(record["replacement"]),
         "sourceResolution": fuse_asset_record(record),
         "assetName": str(node.get("role") or node.get("id") or "image"),
+        # 图层的显示名：OmniParser 的语义描述（hamburger / star）只落在这一层，
+        # 它是元数据，不是画布上的字。
+        "name": str(node.get("name") or node.get("caption") or ""),
         "assetKind": str(node.get("role") or "image"),
         "contentRef": str(node.get("content_ref") or ""),
         "sceneOwnerId": str(node.get("id") or ""),
@@ -9480,6 +9483,97 @@ def _drop_unbacked_labels(
     return len(doomed)
 
 
+#: 渲染宽度超出盒子这么多才动手：字体度量差 1~2% 是正常抖动。
+TEXT_FIT_TOLERANCE = 0.03
+#: 缩字下限：小于原字号 85% 就不是同一层级了，宁可收字距。
+TEXT_FIT_MIN_SCALE = 0.85
+#: 负字距最多收到字号的这个比例。
+TEXT_FIT_MAX_TRACKING = -0.04
+
+
+def _estimated_width(text: str, font: float) -> float:
+    """Width the renderer will paint, from the same per-character estimate."""
+    width = 0.0
+    for char in text:
+        width += font * (1.0 if ord(char) > 0x2E80 else 0.55)
+    return width
+
+
+def _fit_text_to_box(elements: list[dict[str, Any]]) -> int:
+    """A line that overruns its measured box far enough to touch the next column.
+
+    The screenshot measured the ink; the output font has different metrics, so a
+    cell that fits in the picture can overprint its neighbour in Figma.  Only an
+    overrun that actually reaches another text node is touched — shrinking every
+    wide line would flatten the type hierarchy for nothing.
+
+    Two knobs, in order: type size down to 85% of the measured size, then a small
+    negative tracking.  Both are recorded on the element so the change is
+    reviewable instead of mysterious.
+    """
+    texts = [
+        index
+        for index, element in enumerate(elements)
+        if element.get("type") == "text" and str(element.get("text") or "").strip()
+    ]
+    if len(texts) < 2:
+        return 0
+    rects = {index: _layout_rect(elements[index]) for index in texts}
+    fitted = 0
+    for index in texts:
+        element = elements[index]
+        box = rects[index]
+        if box is None or box[2] <= 4:
+            continue
+        style = element.setdefault("style", {})
+        try:
+            font = float(style.get("fontSize") or 0.0)
+        except (TypeError, ValueError):
+            font = 0.0
+        if font <= 0:
+            continue
+        text = str(element.get("text") or "")
+        estimated = _estimated_width(text, font)
+        if estimated <= box[2] * (1.0 + TEXT_FIT_TOLERANCE):
+            continue
+        # 可用宽度：自己的盒子，以及同一行右边最近那段文字的左缘。表格里"格子"
+        # 往往没有容器，能防住串列的就是邻列的位置。
+        limit = float(box[2])
+        for other in texts:
+            if other == index:
+                continue
+            other_box = rects[other]
+            if other_box is None:
+                continue
+            if other_box[1] >= box[1] + box[3] or other_box[1] + other_box[3] <= box[1]:
+                continue
+            gap = other_box[0] - box[0]
+            if gap > box[2] - 2:
+                limit = min(limit, float(gap))
+        if estimated <= limit * (1.0 + TEXT_FIT_TOLERANCE):
+            continue
+        scale = max(TEXT_FIT_MIN_SCALE, min(1.0, limit * 0.99 / estimated))
+        new_font = round(font * scale * 2) / 2
+        if new_font >= font:
+            new_font = max(6.0, round(font * TEXT_FIT_MIN_SCALE * 2) / 2)
+        style["fontSize"] = new_font
+        remaining = limit - _estimated_width(text, new_font)
+        if remaining < 0 and text:
+            tracking = max(
+                TEXT_FIT_MAX_TRACKING * new_font,
+                remaining / max(1, len(text)),
+            )
+            style["letterSpacing"] = round(tracking, 2)
+        element.setdefault("fitEvidence", {})["widthFit"] = {
+            "from": round(font, 1),
+            "to": round(new_font, 1),
+            "box": box[2],
+            "estimated": round(estimated, 1),
+        }
+        fitted += 1
+    return fitted
+
+
 def _clamp_table_fonts(elements: list[dict[str, Any]]) -> int:
     """A table's body copy cannot be twice the size of its own rows.
 
@@ -12923,6 +13017,11 @@ def _guard_text_occlusion(
         if element.get("layoutChildren"):
             framed.add(str(element.get("id") or ""))
 
+    from src.app.services.rendering.adapter_base import _frame_batches
+
+    # 成员 -> 所在帧根。字的位置由帧的批次决定，所以要拿帧根的 z 当底线。
+    frame_owner = dict(_frame_batches(elements))
+
     doomed: set[int] = set()
     for _round in range(3):
         ranks = _paint_ranks(elements)
@@ -12966,43 +13065,29 @@ def _guard_text_occlusion(
                         report["deleted"] += 1
                     changed = True
                     continue
-                # 容器/背景：降到它埋住的那颗字下面；帧内元素则反过来把字抬上来。
-                # 但**不许拿帧换可见**：改完若少了一个帧，这次改动回退，如实计入
-                # unresolved。帧数是硬约束，遮挡是软的。
+                # 容器/背景：降到它埋住的那颗字下面。帧内的字只抬自己没用——
+                # 它的位置由所在帧的批次决定，所以要用"帧根 z - 1"当底线。
+                # 改完复核帧数，掉帧就回退：帧数是硬约束，遮挡是软的。
                 word_z = int(elements[text_index].get("zIndex") or 0)
+                floor_z = word_z
+                owner = frame_owner.get(text_index)
+                if owner is not None:
+                    floor_z = min(floor_z, int(elements[owner].get("zIndex") or 0))
                 own_z = int(element.get("zIndex") or 0)
-                if own_z < word_z:
+                if own_z < floor_z:
                     report["unresolved"] += 1
                     continue
-                in_frames = (
-                    element.get("layoutChildren")
-                    or str(element.get("id") or "") in framed
-                    or str(elements[text_index].get("id") or "") in framed
-                )
                 before = _accepted_frames(elements) if framed else 0
-                if in_frames:
-                    elements[text_index]["zIndex"] = own_z + 1
-                    evidence = elements[text_index].setdefault("occlusionEvidence", {})
-                    evidence["liftedAbove"] = str(element.get("id") or "")
-                    key = "lifted"
-                else:
-                    element["zIndex"] = word_z - 1
-                    evidence = element.setdefault("occlusionEvidence", {})
-                    evidence["demotedBelow"] = str(elements[text_index].get("id") or "")
-                    key = "demoted"
+                element["zIndex"] = floor_z - 1
                 if framed and _accepted_frames(elements) < before:
-                    if in_frames:
-                        elements[text_index]["zIndex"] = word_z
-                    else:
-                        element["zIndex"] = own_z
-                    evidence.pop("liftedAbove", None)
-                    evidence.pop("demotedBelow", None)
-                    if not evidence:
-                        elements[text_index].pop("occlusionEvidence", None)
-                        element.pop("occlusionEvidence", None)
+                    element["zIndex"] = own_z
                     report["unresolved"] += 1
                     continue
-                report[key] += 1
+                element.setdefault("occlusionEvidence", {})[
+                    "demotedBelow"
+                ] = str(elements[text_index].get("id") or "")
+                report["demoted"] += 1
+                changed = True
                 changed = True
         if not changed:
             break
@@ -13407,6 +13492,7 @@ def compile_scene_plan_to_design(
     _spatial_text_nms(elements, ocr_observations, background)
     # 表格正文字号不许超过同表行中位数 + 2px：盲测里日工时的 34px 单元格
     # 在 30px 行高里直接印到了邻行上。
+    _fit_text_to_box(elements)
     _clamp_table_fonts(elements)
     # 图片裁片与它旁边的文字：补全被切断的形状 / 把裁片裁到文字开始处，
     # 并清掉落在文字上的冒名控件。
