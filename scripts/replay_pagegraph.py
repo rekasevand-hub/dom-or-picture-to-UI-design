@@ -270,7 +270,16 @@ def _arbitrate(design: dict, picture: str | Path, out: Path, tag: str, render_pa
         return report
 
     floor = FRAME_FLOORS.get(tag, 0)
+    # 基线帧数要和门禁同一口径：先让编译器自己的清理跑一遍，再数。
+    probe = copy.deepcopy(elements)
+    baseline_reasons: dict = {}
+    baseline_written = sum(1 for element in probe if element.get("layoutChildren"))
+    resolve_frames(probe, paint_order(probe), baseline_reasons)
+    # 在副本上数：仲裁器只负责判定，不负责改设计。之前直接在 elements 上跑清理，
+    # 把 AtomGit 从 13 帧减到 12，看上去像是工单造成的。
+    baseline_frames = int(_keep_renderable_frames(probe, baseline_written))
     for ticket in frozen.tickets:
+        frames_before = baseline_frames
         shadow = copy.deepcopy(elements)
         changed = arbiter.execute_design(ticket, elements, truth, canvas)
         if not changed:
@@ -285,19 +294,28 @@ def _arbitrate(design: dict, picture: str | Path, out: Path, tag: str, render_pa
         # the tests hold is kept == accepted, so that is what the gate has to
         # compare — comparing against `written` rejected every ticket, including
         # ones that only changed a font weight.
-        kept = _keep_renderable_frames(elements, written)
+        kept = _keep_renderable_frames(copy.deepcopy(elements), written)
         gate = arbiter.DesignGate(
             frames=int(kept),
             frames_floor=max(floor, 0),
+            frames_before=int(frames_before),
             written_equals_accepted=kept == len(accepted),
             patch_share=_patch_share(elements, canvas),
             collisions_before=arbiter.count_collisions(shadow),
             collisions_after=arbiter.count_collisions(elements),
         )
         if gate.passed:
+            baseline_frames = gate.frames
             report["applied"] += 1
             report.setdefault("appliedTickets", []).append(
-                {"type": ticket.type, "fix": ticket.fix, "ref": ticket.ref, "change": changed, "note": ticket.note[:60]}
+                {
+                    "type": ticket.type,
+                    "fix": ticket.fix,
+                    "ref": ticket.ref,
+                    "change": changed,
+                    "frames": [frames_before, gate.frames],
+                    "note": ticket.note[:60],
+                }
             )
             continue
         elements[:] = shadow

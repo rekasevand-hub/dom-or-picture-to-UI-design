@@ -378,6 +378,7 @@ class GateResult:
     frames_floor: int
     written_equals_accepted: bool
     patch_share: float
+    frames_before: int = 0
 
     @property
     def passed(self) -> bool:
@@ -390,7 +391,7 @@ class GateResult:
             failed.append("roi-worse")
         if self.global_after < self.global_before - GLOBAL_TOLERANCE:
             failed.append("page-worse")
-        if self.frames < self.frames_floor:
+        if self.frames < self.frames_floor or (self.frames_before and self.frames < self.frames_before):
             failed.append("frames-lost")
         if not self.written_equals_accepted:
             failed.append("frames-disagree")
@@ -670,6 +671,15 @@ def execute_design(
 
 
 def _design_missing_text(ticket: DesignTicket, elements: list[dict[str, Any]], truth):
+    """Make the words appear where the model says they are missing.
+
+    The first thing to check is that they are not already there.  Three of the
+    live tickets were refused for `new-collision` because the node existed and
+    was simply invisible or too small — its colour sat within a few channels of
+    the surface behind it, or the type had been measured at 8px.  Adding a second
+    print of the same words is the one thing a design reviewer would notice
+    immediately, so the search comes first and the new node is the fallback.
+    """
     import numpy as np
 
     x, y, w, h = (int(value) for value in ticket.roi_bbox)
@@ -688,7 +698,14 @@ def _design_missing_text(ticket: DesignTicket, elements: list[dict[str, Any]], t
     foreground = np.median(crop[ink], axis=0)
     rows = np.where(ink.any(axis=1))[0]
     columns = np.where(ink.any(axis=0))[0]
-    size = max(8.0, round(float(rows[-1] - rows[0] + 1) * 0.95 * 2) / 2)
+    ink_height = float(rows[-1] - rows[0] + 1)
+    size = max(8.0, round(ink_height * 0.95 * 2) / 2)
+    ink_box = (x0 + int(columns[0]), y0 + int(rows[0]), int(columns[-1] - columns[0] + 1), int(ink_height))
+
+    host = _text_near(elements, ink_box)
+    if host is not None:
+        return _restyle_in_place(host, foreground, size, ticket.text, ink_box)
+
     digest = hashlib.sha1(
         f"design-text:{x0}:{y0}:{ticket.text}".encode("utf-8")
     ).hexdigest()[:16]
@@ -699,7 +716,7 @@ def _design_missing_text(ticket: DesignTicket, elements: list[dict[str, Any]], t
             "x": x0 + int(columns[0]),
             "y": y0 + int(rows[0]),
             "width": float(columns[-1] - columns[0] + 1),
-            "height": float(rows[-1] - rows[0] + 1),
+            "height": ink_height,
             "text": ticket.text,
             "style": {
                 "fontSize": size,
@@ -716,6 +733,65 @@ def _design_missing_text(ticket: DesignTicket, elements: list[dict[str, Any]], t
         }
     )
     return {"ref": f"design-text:{digest}", "action": "added", "text": ticket.text}
+
+
+def _text_near(elements: Sequence[dict[str, Any]], box: tuple[int, int, int, int]):
+    """The text node that already owns this place, if any.
+
+    Overlap against the *smaller* of the two boxes: a node measured a little wide
+    still owns the words, and a node two pixels off still owns them.
+    """
+    bx, by, bw, bh = box
+    best, best_share = None, 0.0
+    for element in elements:
+        if element.get("type") != "text" or not str(element.get("text") or "").strip():
+            continue
+        ex, ey = int(element.get("x") or 0), int(element.get("y") or 0)
+        ew, eh = int(element.get("width") or 0), int(element.get("height") or 0)
+        overlap_w = min(bx + bw, ex + ew) - max(bx, ex)
+        overlap_h = min(by + bh, ey + eh) - max(by, ey)
+        if overlap_w <= 0 or overlap_h <= 0:
+            continue
+        smaller = min(max(1, bw * bh), max(1, ew * eh))
+        share = (overlap_w * overlap_h) / smaller
+        if share > best_share:
+            best, best_share = element, share
+    return best if best_share >= 0.35 else None
+
+
+def _restyle_in_place(host, foreground, size: float, expected_text: str, ink_box):
+    """Fix the node that was already there: colour, size, and the words."""
+    style = host.setdefault("style", {})
+    actions = []
+    current = str(style.get("textColor") or "")
+    wanted = "#{:02x}{:02x}{:02x}".format(*(int(v) for v in foreground))
+    if current.lower() != wanted.lower():
+        try:
+            gap = max(
+                abs(int(current[i : i + 2], 16) - int(wanted[i : i + 2], 16))
+                for i in (1, 3, 5)
+            )
+        except (ValueError, IndexError):
+            gap = 255
+        if gap >= 16:
+            style["textColor"] = wanted
+            actions.append("recoloured")
+    current_size = float(style.get("fontSize") or 0)
+    if current_size and size / current_size >= 1.12:
+        style["fontSize"] = size
+        actions.append("enlarged")
+    text = str(host.get("text") or "")
+    if not text.strip():
+        host["text"] = expected_text
+        actions.append("filled")
+    elif expected_text and len(expected_text) > len(text) + 3 and expected_text[:2] == text[:2]:
+        host["text"] = expected_text
+        actions.append("rewritten")
+    # 几何一律不动。节点已经在帧里，挪它会把所在帧的绘制连序拆散——AtomGit
+    # 就因为一次"顺手对齐"从 13 帧掉到 12。要挪位置是 TEXT_COLLISION_OR_DRIFT
+    # 的事，那条工单有自己的门禁。
+    host.setdefault("designEvidence", {})["missingTextRepair"] = actions or ["inspected"]
+    return {"ref": str(host.get("contentRef") or host.get("id") or ""), "action": "in-place:" + ",".join(actions or ["noop"])}
 
 
 def _design_widget(ticket: DesignTicket, elements: list[dict[str, Any]], truth):
@@ -776,11 +852,12 @@ class DesignGate:
     patch_share: float
     collisions_before: int
     collisions_after: int
+    frames_before: int = 0
 
     @property
     def failures(self) -> list[str]:
         failed = []
-        if self.frames < self.frames_floor:
+        if self.frames < self.frames_floor or (self.frames_before and self.frames < self.frames_before):
             failed.append("frames-lost")
         if not self.written_equals_accepted:
             failed.append("frames-disagree")
