@@ -5606,25 +5606,76 @@ def _recover_page_fill(
     if background and _same_fill(hexed, background, SOFT_PANEL_MIN_DELTA):
         return False
 
-    # Bands: each one samples its own left and right margins, which no card is
-    # allowed to reach.
+    # Bands: each one reads its own left and right margins — the page is what
+    # shows at the edges — but only the margin pixels nothing else owns.  review
+    # is the reason: its top band has a gradient on the left and a white card
+    # touching the right edge, so the median of the two was a colour that exists
+    # nowhere (#dee7fb against a truth of #f2f5fb).  Unowned interior pixels are
+    # not the page either — on the bottom band they are mostly a card — so the
+    # sample stays at the margins and simply excludes what has been painted.
     strip = max(4, min(24, width // 40))
+    covered = np.zeros((height, width), dtype=bool)
+    for element in elements:
+        box = _layout_rect(element)
+        if box is None:
+            continue
+        x, y, w, h = box
+        x0, y0 = max(0, int(x)), max(0, int(y))
+        x1, y1 = min(width, int(x + w)), min(height, int(y + h))
+        if x1 <= x0 or y1 <= y0:
+            continue
+        if _solid_fill(element) or element.get("imageBase64"):
+            covered[y0:y1, x0:x1] = True
+
     bands: list[tuple[int, int, str]] = []
+    previous: tuple[int, int, int] | None = None
     for band in range(PAGE_BANDS):
         top = height * band // PAGE_BANDS
         bottom = height * (band + 1) // PAGE_BANDS
         if bottom - top < 2:
             continue
-        sample = np.concatenate(
-            [
-                image[top:bottom, 0:strip].reshape(-1, 3),
-                image[top:bottom, max(0, width - strip) : width].reshape(-1, 3),
-            ]
-        )
-        if sample.size == 0:
+        sides: list[tuple[int, int, int]] = []
+        for attempt in range(3):
+            width_strip = strip * (2**attempt)
+            for left_edge in (True, False):
+                if left_edge:
+                    crop = image[top:bottom, 0:width_strip]
+                    free = covered[top:bottom, 0:width_strip]
+                else:
+                    crop = image[top:bottom, max(0, width - width_strip) : width]
+                    free = covered[top:bottom, max(0, width - width_strip) : width]
+                pixels = crop[~free]
+                if pixels.size and pixels.reshape(-1, 3).shape[0] >= max(
+                    24, (bottom - top) // 4
+                ):
+                    median = np.median(pixels.reshape(-1, 3), axis=0)
+                    sides.append(tuple(int(value) for value in median))
+            if sides:
+                break
+        if not sides:
             continue
-        band_colour = tuple(int(value) for value in np.median(sample, axis=0))
-        bands.append((top, bottom, "#{:02x}{:02x}{:02x}".format(*band_colour)))
+        # Two margins that disagree are two different surfaces: one of them is a
+        # card that reaches the edge.  Averaging them invents a colour, so the
+        # band takes the side that continues the band above it.
+        if len(sides) == 1:
+            band_colour = sides[0]
+        else:
+            left_colour, right_colour = sides[0], sides[-1]
+            if max(abs(a - b) for a, b in zip(left_colour, right_colour)) <= 8:
+                band_colour = left_colour
+            elif previous is not None:
+                band_colour = min(
+                    (left_colour, right_colour),
+                    key=lambda colour: max(
+                        abs(a - b) for a, b in zip(colour, previous)
+                    ),
+                )
+            else:
+                band_colour = left_colour
+        previous = band_colour
+        bands.append(
+            (top, bottom, "#{:02x}{:02x}{:02x}".format(*band_colour))
+        )
     if not bands:
         return False
     if len({colour for _top, _bottom, colour in bands}) == 1:
