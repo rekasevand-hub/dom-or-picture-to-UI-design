@@ -3291,6 +3291,13 @@ DUPLICATE_GHOST_REACH = 24
 #: ... and their widths have to agree.  Two labels 20px apart with one three
 #: times the width of the other are a title and its subtitle, not a ghost.
 DUPLICATE_GHOST_WIDTH_RATIO = 0.4
+#: A paragraph's wrapped remainder, modelled a second time: a suffix of at least
+#: this many characters, starting a line below its host, inside the same span.
+PARAGRAPH_TAIL_MIN_CHARS = 6
+PARAGRAPH_TAIL_LENGTH_MARGIN = 8
+PARAGRAPH_TAIL_MIN_DROP = 4
+PARAGRAPH_TAIL_REACH = 12
+PARAGRAPH_TAIL_HORIZONTAL_SHARE = 0.5
 #: Channel distance under which text colour and surface are the same colour.
 INK_MIN_CONTRAST = 30
 
@@ -4183,6 +4190,85 @@ def _restore_chip_labels(
     return restored
 
 
+def _tail_key(element: Mapping[str, Any]) -> str:
+    """A text node's words, comparable across two models of the same sentence.
+
+    ``OCR_HOMOGLYPHS`` folds the lower-case confusions; a capital ``I`` read as a
+    lower-case ``l`` ("AI" vs "Al") is the one this pass actually met, so the
+    vertical strokes are folded here as well.  Comparison only — the text keeps
+    whatever the model wrote.
+    """
+    folded = "".join(_fold_homoglyphs(str(element.get("text") or "")).split())
+    return (
+        folded.replace("I", "1").replace("i", "1").replace("l", "1").replace("|", "1")
+    )
+
+
+def _drop_paragraph_tails(elements: list[dict[str, Any]]) -> int:
+    """Remove a fragment that is only the tail of a paragraph printed above it.
+
+    When a paragraph is modelled once as a whole string and once as its wrapped
+    remainder, the two boxes do not overlap — the fragment starts on the line
+    below — so the coincidence test leaves both.  In the SVG the paragraph then
+    runs past the card edge and the fragment repeats its last words; in Figma,
+    where the paragraph wraps inside its box, the two occupy the same lines and
+    print on top of each other.
+
+    The signature is specific enough to act on: the short string is a *suffix*
+    of the long one, it starts on a later line, and it sits inside the same
+    horizontal span.  A standalone label that happens to repeat the end of a
+    nearby paragraph is the risk, so the fragment has to be a real piece of
+    prose (six characters), the paragraph has to be most of a sentence longer,
+    and the fragment has to begin below the paragraph's first line.
+    """
+    tails = 0
+    texts = [
+        (index, element)
+        for index, element in enumerate(elements)
+        if element.get("type") == "text" and str(element.get("text") or "").strip()
+    ]
+    doomed: set[int] = set()
+    for fragment_index, fragment in texts:
+        if fragment_index in doomed:
+            continue
+        # OCR reads the same word differently in the two models ("AI" vs "Al"),
+        # so the comparison folds homoglyphs and drops the spaces that a line
+        # break introduced.  Matching only; the text itself is untouched.
+        fragment_text = _tail_key(fragment)
+        if len(fragment_text) < PARAGRAPH_TAIL_MIN_CHARS:
+            continue
+        for host_index, host in texts:
+            if host_index == fragment_index or host_index in doomed:
+                continue
+            host_text = _tail_key(host)
+            if len(host_text) < len(fragment_text) + PARAGRAPH_TAIL_LENGTH_MARGIN:
+                continue
+            if not host_text.endswith(fragment_text):
+                continue
+            fragment_box = _layout_rect(fragment)
+            host_box = _layout_rect(host)
+            if fragment_box is None or host_box is None:
+                continue
+            fx, fy, fw, fh = fragment_box
+            hx, hy, hw, hh = host_box
+            if fy < hy + PARAGRAPH_TAIL_MIN_DROP:
+                continue
+            if fy > hy + hh + PARAGRAPH_TAIL_REACH:
+                continue
+            overlap = min(fx + fw, hx + hw) - max(fx, hx)
+            if overlap < fw * PARAGRAPH_TAIL_HORIZONTAL_SHARE:
+                continue
+            doomed.add(fragment_index)
+            tails += 1
+            break
+    if not doomed:
+        return 0
+    elements[:] = [
+        element for index, element in enumerate(elements) if index not in doomed
+    ]
+    return tails
+
+
 def _separate_badge_icon_text(elements: list[dict[str, Any]]) -> int:
     """Start a badge's words after the glyph instead of inside it.
 
@@ -4904,6 +4990,18 @@ COLOUR_REGION_MIN_SIDE = 14
 COLOUR_REGION_MAX_SHARE = 0.35
 COLOUR_REGION_TOLERANCE = 10
 COLOUR_REGION_MIN_SAMPLES = 2500
+#: Capsules and rounded chips: wide, short, filled except where the corners are
+#: rounded away.  The fill band sits strictly below the solid pass's 0.90 so the
+#: two recoveries never claim the same region.
+PILL_MIN_WIDTH = 24
+PILL_MAX_WIDTH = 420
+PILL_MIN_HEIGHT = 14
+PILL_MAX_HEIGHT = 96
+PILL_MIN_FILL = 0.60
+PILL_MAX_FILL = 0.94
+PILL_CORNER_TOLERANCE = 12
+PILL_MIN_CONTRAST = 8
+PILL_MAX_REGIONS = 20
 COLOUR_REGION_MAX = 40
 
 
@@ -5035,6 +5133,192 @@ def _recover_colour_regions(
         covered.append((box, fill))
         added += 1
     return added
+
+
+def _recover_pill_shapes(
+    elements: list[dict[str, Any]],
+    image_path: str,
+    width: int,
+    height: int,
+    background: str,
+) -> int:
+    """Recover the capsules and rounded chips that carry words.
+
+    The solid-panel pass requires a block to fill 90% of its own box, which is
+    exactly what a capsule does not do: its four corners are rounded away, so it
+    lands at 0.80-0.90 and is dropped.  That is how a nav item loses its pill and
+    ends up as words lying directly on the page.
+
+    The shape is what identifies it, and the shape is measurable:
+
+    * all four corner patches are *not* the colour (roundness), while
+    * the left and right mid-edge are the colour (it spans the full width).
+
+    A line of text fails the second test; a square block fails the first.  The
+    fill share sits between the solid pass's 0.90 and a bare block, so the two
+    passes cannot both claim the same region.
+    """
+    try:
+        import numpy as np
+        from PIL import Image
+    except Exception:  # pragma: no cover - imaging stack is a hard dependency
+        return 0
+    try:
+        import cv2
+    except Exception:  # pragma: no cover - opencv is a pipeline dependency
+        return 0
+    if not background:
+        return 0
+    try:
+        image = np.asarray(Image.open(image_path).convert("RGB"), dtype=np.int16)
+    except (OSError, ValueError):
+        return 0
+    if image.ndim != 3:
+        return 0
+    image = image[:height, :width]
+    page = np.asarray(_hex_rgb(background), dtype=np.int16)
+
+    quantised = (image // 12).astype(np.int32)
+    keys = quantised[:, :, 0] * 4096 + quantised[:, :, 1] * 64 + quantised[:, :, 2]
+    values, counts = np.unique(keys.reshape(-1), return_counts=True)
+    order = np.argsort(counts)[::-1]
+
+    covered: list[tuple[tuple[int, int, int, int], str]] = []
+    for element in elements:
+        box = _layout_rect(element)
+        if box is None:
+            continue
+        fill = _solid_fill(element)
+        if fill:
+            covered.append((box, fill))
+        elif element.get("imageBase64"):
+            covered.append((box, ""))
+
+    found: list[tuple[int, tuple[int, int, int, int], str, int]] = []
+    for position in order[:24]:
+        if int(counts[position]) < COLOUR_REGION_MIN_SAMPLES:
+            break
+        key = int(values[position])
+        sample = image.reshape(-1, 3)[keys.reshape(-1) == key]
+        colour = tuple(int(value) for value in np.median(sample, axis=0))
+        if max(abs(one - two) for one, two in zip(colour, tuple(page))) < PILL_MIN_CONTRAST:
+            continue
+        target = np.asarray(colour, dtype=np.int16)
+        mask = (np.abs(image - target).max(axis=2) <= COLOUR_REGION_TOLERANCE).astype(
+            np.uint8
+        )
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((3, 3), dtype=np.uint8))
+        count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(mask, 8)
+        for index in range(1, count):
+            x, y, box_width, box_height, area = (int(value) for value in stats[index, :5])
+            if not (PILL_MIN_WIDTH <= box_width <= PILL_MAX_WIDTH):
+                continue
+            if not (PILL_MIN_HEIGHT <= box_height <= PILL_MAX_HEIGHT):
+                continue
+            share = area / max(1, box_width * box_height)
+            if not (PILL_MIN_FILL <= share <= PILL_MAX_FILL):
+                continue
+            if not _pill_corners_rounded(image, (x, y, box_width, box_height), target):
+                continue
+            if not _pill_spans_width(image, (x, y, box_width, box_height), target):
+                continue
+            radius = _pill_radius(image, (x, y, box_width, box_height), target, box_height)
+            found.append(
+                (
+                    area,
+                    (x, y, box_width, box_height),
+                    "#{:02x}{:02x}{:02x}".format(*colour),
+                    radius,
+                )
+            )
+
+    if not found:
+        return 0
+    found.sort(key=lambda item: item[0], reverse=True)
+    added = 0
+    for _area, box, fill_hex, radius in found[:PILL_MAX_REGIONS]:
+        if _already_painted(box, fill_hex, covered):
+            continue
+        digest = hashlib.sha1(
+            f"pill:{box[0]}:{box[1]}:{box[2]}:{box[3]}:{fill_hex}".encode("utf-8")
+        ).hexdigest()[:16]
+        elements.append(
+            {
+                "id": f"pill:{digest}",
+                "type": "container",
+                "x": box[0],
+                "y": box[1],
+                "width": box[2],
+                "height": box[3],
+                "text": "",
+                "style": {"fillColor": fill_hex, "borderRadius": radius},
+                "role": "panel",
+                "name": "Pill",
+                "contentRef": f"pill:{digest}",
+                "sceneOwnerId": f"pill:{digest}",
+                "imageMVP": {
+                    "source": "pixel-recovery",
+                    "role": "panel",
+                    "grouping_status": "recovered",
+                },
+            }
+        )
+        covered.append((box, fill_hex))
+        added += 1
+    return added
+
+
+def _pill_corners_rounded(image, box, target) -> bool:
+    """All four corners are off-colour: the rectangle has been rounded."""
+    import numpy as np
+
+    x, y, box_width, box_height = box
+    if box_width < 10 or box_height < 8:
+        return False
+    corners = (
+        (x + 1, y + 1),
+        (x + box_width - 4, y + 1),
+        (x + 1, y + box_height - 4),
+        (x + box_width - 4, y + box_height - 4),
+    )
+    for left, top in corners:
+        patch = image[top : top + 3, left : left + 3]
+        if patch.size == 0:
+            return False
+        if np.abs(patch - target).max(axis=2).min() <= PILL_CORNER_TOLERANCE:
+            # A corner still holds the fill: a square block, not a capsule.
+            return False
+    return True
+
+
+def _pill_spans_width(image, box, target) -> bool:
+    """The left and right mid-edge carry the fill: it runs the full width."""
+    import numpy as np
+
+    x, y, box_width, box_height = box
+    middle = y + box_height // 2
+    for column in (x + 1, x + box_width - 2):
+        patch = image[middle - 1 : middle + 2, column : column + 1]
+        if patch.size == 0:
+            return False
+        if np.abs(patch - target).max(axis=2).min() > COLOUR_REGION_TOLERANCE:
+            return False
+    return True
+
+
+def _pill_radius(image, box, target, box_height: int) -> int:
+    """Corner inset measured on the top row: how far in the fill starts."""
+    import numpy as np
+
+    x, y, box_width, _box_height = box
+    row = image[y + 1, x : x + box_width]
+    if row.size == 0:
+        return max(2, min(box_height // 2, 8))
+    inside = np.abs(row - target).max(axis=1) <= COLOUR_REGION_TOLERANCE
+    if not inside.any():
+        return max(2, min(box_height // 2, 8))
+    inset = int(np.argmax(inside))
+    return int(max(2, min(box_height // 2, inset, 24)))
 
 
 def _recover_page_fill(
@@ -6636,6 +6920,9 @@ def compile_scene_plan_to_design(
         _recover_page_fill(elements, image_path, width, height, background)
         _recover_soft_panels(elements, image_path, width, height, background)
         _recover_colour_regions(elements, image_path, width, height, background)
+        # Capsules whose corners are rounded away fall under the solid pass's
+        # fill share and are not a panel either; they are what a nav item sits in.
+        _recover_pill_shapes(elements, image_path, width, height, background)
         # Logos and oversized glyphs are the marks no stage reports.
         _recover_visual_regions(
             elements, image_path, width, height, ocr_observations, background
@@ -6645,6 +6932,11 @@ def compile_scene_plan_to_design(
     # "search" over a magnifier looks like a label that a real one duplicates.
     _drop_icon_descriptor_labels(elements, ocr_observations)
     _drop_coincident_texts(elements, background)
+    # A paragraph and the tail of it, modelled twice.  The overlap test above
+    # only sees boxes that cover each other; a wrapped remainder sits *below*
+    # the paragraph, so it survives and both get printed — in the browser as an
+    # overflowing line, in Figma as two lines on top of each other.
+    _drop_paragraph_tails(elements)
     _separate_badge_icon_text(elements)
     # A chip whose word was absorbed by the row's own line prints empty; OCR
     # read that chip's word at the chip's coordinates.

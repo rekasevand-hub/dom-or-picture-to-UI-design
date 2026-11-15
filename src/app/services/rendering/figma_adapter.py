@@ -968,6 +968,24 @@ class FigmaBridgeAdapter(PrototypeAdapter):
         self, spec: dict[str, Any], parent_id: str | None = None
     ) -> str | None:
         params = _with_parent(spec, parent_id)
+        # A node that carries one line of words must stay one line.  Figma wraps
+        # any text whose box is narrower than its own font metrics, which turns
+        # a measured single line into two lines drawn inside a one-line-tall box
+        # — they then print on top of each other.  The browser never wraps it, so
+        # asking Figma for an auto-width node is what keeps the two ends honest.
+        lines = spec.get("lines")
+        multi_line = isinstance(lines, list) and len(lines) > 1
+        if not multi_line and _single_visual_line(spec):
+            # Wrapping needs room to wrap into.  A box one line tall cannot hold
+            # two lines, so Figma draws them on top of each other — the browser
+            # never wraps this node at all, so neither does the export.  Drop the
+            # bounded flags the overflow estimate set and hug the words.
+            params = {
+                key: value
+                for key, value in params.items()
+                if key not in ("boundedText", "boundedHeight")
+            }
+            params["singleLine"] = True
         node_id = self._send("create_text", params)
         self._native_text_nodes = [
             *getattr(self, "_native_text_nodes", []),
@@ -1207,6 +1225,21 @@ class FigmaBridgeAdapter(PrototypeAdapter):
     def flush(self) -> None:
         self.finalize_semantic_componentization()
         self.disconnect()
+
+
+def _single_visual_line(spec: dict[str, Any]) -> bool:
+    """Whether this node is one measured line, in a shape both renderers honour.
+
+    ``_single_line_text`` answers for the DOM route, where ``textEmLines`` and
+    ``measuredLines`` exist.  An image-built design has neither: what it has is a
+    box whose height is one line tall.  Anything taller than 1.7 em is either a
+    paragraph or a label centred in a control, and those keep the box as drawn.
+    """
+    size = float(spec.get("fontSize") or 0)
+    height = float(spec.get("height") or 0)
+    if size <= 0 or height <= 0:
+        return False
+    return height <= size * 1.7
 
 
 def _with_parent(

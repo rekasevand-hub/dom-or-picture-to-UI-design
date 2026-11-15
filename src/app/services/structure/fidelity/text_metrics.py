@@ -338,7 +338,14 @@ def _learn_ink_em(corrections: Sequence[Correction]) -> float:
 def _apply(
     elements: Sequence[dict[str, Any]], corrections: Sequence[Correction], ink_em: float
 ) -> int:
-    """Write the correction back into the design.  Text count never changes."""
+    """Write the correction back into the design.  Text count never changes.
+
+    A size increase is only allowed while the drawn ink still fits the box it
+    belongs to.  That is not cosmetic: the SVG draws a single line past its box
+    edge without complaint, but Figma wraps it inside the box, and a paragraph
+    that grows by 12% then prints over the line below it.  The box is the
+    contract both renderers can honour.
+    """
     changed = 0
     for correction in corrections:
         if not correction.active:
@@ -347,6 +354,12 @@ def _apply(
         style = element.setdefault("style", {})
         size = float(style.get("fontSize") or correction.font_size)
         scale = correction.scale if correction.resized else 1.0
+        if scale > 1.0:
+            room = _room_for_growth(element, correction)
+            if room is not None and correction.ink_width * scale > room:
+                scale = max(1.0, room / correction.ink_width) if correction.ink_width else 1.0
+        if abs(scale - 1.0) < MIN_SCALE_DEVIATION:
+            scale = 1.0
         new_size = max(6.0, round(size * scale * 2) / 2)
         delta_size = new_size - size
         element["x"] = round(float(element.get("x") or 0) + correction.dx, 1)
@@ -367,6 +380,31 @@ def _apply(
         correction.after = (element["x"], element["y"], new_size)
         changed += 1
     return changed
+
+
+def _room_for_growth(element: Mapping[str, Any], correction: Correction) -> float | None:
+    """How wide the drawn ink may become before it leaves its own box.
+
+    ``maxWidth`` wins when the node carries one: it is what the plan asked the
+    text to stay inside.  A paragraph is allowed to be as wide as its box; a
+    single line may use the box plus nothing.
+    """
+    widths = []
+    box_width = float(element.get("width") or 0)
+    if box_width > 0:
+        widths.append(box_width)
+    style = element.get("style") or {}
+    for key in ("maxWidth", "textMaxWidth"):
+        value = element.get(key) or style.get(key)
+        try:
+            if value:
+                widths.append(float(value))
+        except (TypeError, ValueError):
+            continue
+    if not widths:
+        return None
+    # One pixel of slack: the measurement itself is integer-quantised.
+    return max(0.0, min(widths) - 1.0)
 
 
 def calibrate_arrays(
