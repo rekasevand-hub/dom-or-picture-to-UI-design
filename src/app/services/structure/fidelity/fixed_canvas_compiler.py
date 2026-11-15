@@ -152,10 +152,31 @@ def _text_element(
     render_y = y
     render_width = box_width
     render_height = box_height
+    right_anchor: dict[str, Any] | None = None
     if role == "table-header":
         style["textAlign"] = "center"
     elif not is_table_text:
         style["textAlign"] = "left"
+    # 列级对齐由感知层判定（右缘对齐的列锚在右缘）：跨端字体差只会改变行首，
+    # 不会把整列推歪。它比"按角色猜"更准，所以放在后面覆盖。
+    if str(node.get("text_align") or "") in ("left", "right", "center"):
+        style["textAlign"] = str(node["text_align"])
+        if style["textAlign"] == "right" and text:
+            # 右缘锚定只有在"我们的字正好填满这个盒"时才成立：字更宽就会向左
+            # 溢出到空白里。按墨迹宽度把字号收到贴合（不低于 85%），两边才都
+            # 落在原图的墨迹上——这正是跨端字体差的补偿。
+            from src.app.services.structure.fidelity.font_metrics import text_width
+
+            measured = text_width(text, float(style["fontSize"]))
+            ratio = render_width / max(1.0, measured)
+            # 两个方向都要贴合：右缘锚定的意思是"右缘钉死、左缘也要落在墨迹上"，
+            # 所以字宽要等于墨迹宽度。收的幅度不超过 15%，放的幅度也不超过 15%。
+            if ratio <= 0.98 or ratio >= 1.02:
+                scale = max(0.85, min(1.15, ratio))
+                style["fontSize"] = max(
+                    6.0, round(float(style["fontSize"]) * scale * 2) / 2
+                )
+                right_anchor = {"rightAnchor": {"scale": round(scale, 3)}}
     if is_table_text:
         if text_bbox is not None:
             text_x, text_y, text_width, text_height = text_bbox
@@ -224,6 +245,8 @@ def _text_element(
             "textStatus": "scene-plan-owner",
         },
     }
+    if right_anchor is not None:
+        element_payload["fitEvidence"] = right_anchor
     if node.get("ink_tight"):
         # 这个盒贴着墨迹量出来的：宽度就是这段字该有的宽度，允许按它标定字距。
         element_payload["inkTight"] = True
@@ -1030,6 +1053,13 @@ def _container_element(
     style: dict[str, Any] = {
         "fillColor": _dominant_color(image_path, render_bbox, inset=2)
     }
+    if role == "row":
+        # 行带是结构，不是一块漆：它只说明"这几个元素属于同一行"。涂成白色会
+        # 把行间的 1px 分隔线盖掉（盲测里 gmail within15 -0.96 就是这个）。
+        style = {"fillColor": "transparent"}
+    elif role == "separator":
+        # 采进来的是页面底色，不是线色：线只有 1px，内缩采样会采到旁边的白。
+        style = {"fillColor": str(node.get("fill") or "#e8e8e8")}
     # Border and corner radius live in the pixels, not in the plan: the
     # renderer accepts both, but nothing was feeding them, so every card came
     # out as a flat rectangle with no edge and square corners.
@@ -1107,21 +1137,27 @@ def _table_decorations(
     header_height = (
         y_boundaries[1] - y_boundaries[0] if len(y_boundaries) >= 2 else box_height
     )
-    decorations = [
-        {
-            "id": f"table-grid-header-{table_ordinal}",
-            "type": "container",
-            "x": x,
-            "y": y,
-            "width": box_width,
-            "height": header_height,
-            "text": "",
-            "style": {"fillColor": "#fbfcfd"},
-            "role": "table-header",
-            "contentRef": None,
-        }
-    ]
-    for column_index, line_x in enumerate(x_boundaries):
+    # 装饰必须镜像原图：没有表头底色的表不画表头带，没有竖线的表不画竖线。
+    # 之前无条件画，推断出来的"无框表格"会被加上一整套格子线，反而更假。
+    draw_header = bool(grid.get("header", True)) if isinstance(grid, Mapping) else True
+    draw_verticals = bool(grid.get("verticals", True)) if isinstance(grid, Mapping) else True
+    decorations: list[dict[str, Any]] = []
+    if draw_header:
+        decorations.append(
+            {
+                "id": f"table-grid-header-{table_ordinal}",
+                "type": "container",
+                "x": x,
+                "y": y,
+                "width": box_width,
+                "height": header_height,
+                "text": "",
+                "style": {"fillColor": "#fbfcfd"},
+                "role": "table-header",
+                "contentRef": None,
+            }
+        )
+    for column_index, line_x in enumerate(x_boundaries if draw_verticals else []):
         decorations.append(
             {
                 "id": f"table-grid-vertical-{table_ordinal}-{column_index}",
@@ -1136,7 +1172,10 @@ def _table_decorations(
                 "contentRef": None,
             }
         )
-    for row_index, line_y in enumerate(y_boundaries):
+    draw_horizontals = (
+        bool(grid.get("horizontals", True)) if isinstance(grid, Mapping) else True
+    )
+    for row_index, line_y in enumerate(y_boundaries if draw_horizontals else []):
         decorations.append(
             {
                 "id": f"table-grid-horizontal-{table_ordinal}-{row_index}",
@@ -13290,6 +13329,7 @@ def attach_layout_frames(elements: list[dict[str, Any]]) -> int:
     for owner in order:
         if owner in duplicates:
             continue
+
         children = members[owner]
         container = elements[owner]
         if str(container.get("type")) != "container":

@@ -606,3 +606,43 @@ class TestFontMetricsAndIconSplit:
         x, y, w, h = pieces[0]
         assert abs(x - 70) <= 3 and abs(w - 24) <= 4
         assert 0.7 <= w / h <= 1.4
+
+
+class TestRowBandsAndColumns:
+    def test_an_impossible_day_becomes_日_but_a_legal_one_stays(self) -> None:
+        from src.app.services.structure.physical_perception import _normalise_ocr_text
+
+        assert _normalise_ocr_text("11月148") == "11月14日"
+        assert _normalise_ocr_text("11月138") == "11月13日"
+        # 8 号、18 号是合法日期，一个字都不能动。
+        assert _normalise_ocr_text("10月8") == "10月8"
+        assert _normalise_ocr_text("11月18") == "11月18"
+        assert _normalise_ocr_text("11月18日") == "11月18日"
+
+    def test_rules_become_row_bands(self) -> None:
+        from src.app.services.structure.physical_perception import row_bands
+
+        groups = [{"x0": 100, "x1": 900, "ys": [200, 260, 320, 380]}]
+        bands = row_bands(groups)
+        assert len(bands) == 3
+        assert bands[0]["role"] == "row"
+        assert bands[0]["bbox"][0] == 100 and bands[0]["bbox"][2] == 800
+        assert 55 <= bands[0]["bbox"][3] <= 60
+
+    def test_a_right_aligned_column_is_detected_from_its_right_edge(self) -> None:
+        from src.app.services.structure.physical_perception import column_clusters
+
+        bands = [
+            {"bbox": [500, 400 + index * 60, 800, 59], "role": "row", "group": (500, 1300)}
+            for index in range(4)
+        ]
+        # 右缘对齐的日期列（宽度不同、右缘一致）+ 左缘对齐的标签列。
+        texts = [
+            [510, 410, 120, 24], [510, 470, 120, 24], [510, 530, 120, 24], [510, 590, 120, 24],
+            [1200, 410, 90, 24], [1186, 470, 104, 24], [1204, 530, 86, 24], [1190, 590, 100, 24],
+        ]
+        clusters = column_clusters(texts, bands)
+        right = [cluster for cluster in clusters if cluster["left"] > 1000]
+        assert right and right[0]["align"] == "right"
+        left = [cluster for cluster in clusters if cluster["left"] < 1000]
+        assert left and left[0]["align"] == "left"

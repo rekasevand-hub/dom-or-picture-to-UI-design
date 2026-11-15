@@ -78,6 +78,7 @@ def main() -> int:
     containers = [
         {
             "id": node["id"],
+            "fill": node.get("fill") or "",
             "bbox": node["bbox"],
             "role": node["role"],
             "depth": 0,
@@ -110,6 +111,16 @@ def main() -> int:
         for node in plan["nodes"]
         if node.get("type") in ("text", "image")
     ]
+    tables = [
+        {
+            "id": node["id"],
+            "bbox": list(node["bbox"]),
+            "source_ref": node.get("source_ref") or "",
+            "grid": dict(node.get("grid") or {}),
+        }
+        for node in plan["nodes"]
+        if node.get("type") == "table"
+    ]
     graph = {
         "image": str(image),
         "image_w": width,
@@ -117,7 +128,7 @@ def main() -> int:
         "route": "physical",
         "containers": containers,
         "elements": elements,
-        "tables": [],
+        "tables": tables,
         "provenance": {
             "perception": {
                 "mode": "physical",

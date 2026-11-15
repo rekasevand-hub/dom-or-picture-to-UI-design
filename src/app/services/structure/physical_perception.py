@@ -87,6 +87,8 @@ class PhysicalReport:
     icons: int = 0
     omniparser: str = "skipped"
     seconds: dict[str, float] = field(default_factory=dict)
+    rows: int = 0
+    tables: int = 0
     notes: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
@@ -96,6 +98,8 @@ class PhysicalReport:
             "height": self.height,
             "pageColour": self.page_colour,
             "containers": self.containers,
+            "rows": self.rows,
+            "tables": self.tables,
             "texts": self.texts,
             "icons": self.icons,
             "omniparser": self.omniparser,
@@ -537,26 +541,292 @@ def _contains(outer: Sequence[int], inner: Sequence[int], tolerance: int = 0) ->
     )
 
 
-def _normalise_ocr_text(text: str) -> str:
-    """Fix the one glyph confusion that changes meaning in a date.
+#: 横线检测的 Canny 阈值与霍夫票数：低对比 1px 线在 30/90 上就出来。
+SEPARATOR_CANNY_LOW = 30
+SEPARATOR_CANNY_HIGH = 90
+SEPARATOR_HOUGH_VOTES = 90
+#: 霍夫找的是"格子里那一小段"：最短段取 80px，之后按 y 合并成整条线。
+SEPARATOR_MIN_SEGMENT = 80
+#: 同一 y 上相邻线段间隙小于这个值，就当成同一条线（被竖线切断的格子）。
+SEPARATOR_MAX_GAP = 48
+#: 线的最短跨度（占页宽的比例，且不低于 160px）。
+SEPARATOR_MIN_RUN_SHARE = 0.18
+SEPARATOR_MIN_RUN = 160
+#: 同一组平行线至少这么多条，才认为它划分出了行带。
+SEPARATOR_MIN_LINES = 3
+#: 行带高度范围：再矮是线距，再高是整块面板。
+ROW_BAND_MIN_HEIGHT = 18
+ROW_BAND_MAX_HEIGHT = 200
+#: 列簇：至少这么多行，列内左缘的容差。
+COLUMN_MIN_ROWS = 3
+COLUMN_TOLERANCE = 12
+#: 右对齐判据：右缘标准差不超过这么多像素。
+ALIGN_RIGHT_STD = 3.0
+#: 右缘锚定开关（实验用）。实测见 HANDOFF §28。
+ALIGN_RIGHT_ENABLED = True
+#: 一个组里至少这么多列，才值得建成 table 节点。
+TABLE_MIN_COLUMNS = 3
+#: 无框表格至少这么多行。
+TABLE_MIN_ROWS = 3
 
-    EasyOCR reads the trailing 日 of a date as 8 about seven times in eight on
-    this page ("11月14日" -> "11月148"), and a wrong date is worse than a wrong
-    typeface.  Only this pattern is touched: a short token that already contains
-    月 and ends in a digit 8.
+
+def probe_separators(
+    image, width: int, height: int
+) -> list[dict[str, Any]]:
+    """1px horizontal rules, grouped into parallel families.
+
+    A list draws one hairline per row and nothing else; a grid table draws the
+    same hairline **per cell**, broken by its vertical borders.  Both are the
+    same fact at different granularity, so the detector works in two steps:
+    find short horizontal segments, merge the ones that share a y into one
+    logical rule, then group rules that share a span into a family.
+    """
+    import cv2
+    import numpy as np
+
+    if height < 8 or width < 16:
+        return []
+    gray = cv2.cvtColor(image.astype(np.uint8), cv2.COLOR_RGB2GRAY)
+    edges = cv2.Canny(gray, SEPARATOR_CANNY_LOW, SEPARATOR_CANNY_HIGH)
+    segments = cv2.HoughLinesP(
+        edges,
+        1,
+        np.pi / 180,
+        threshold=SEPARATOR_HOUGH_VOTES,
+        minLineLength=SEPARATOR_MIN_SEGMENT,
+        maxLineGap=6,
+    )
+    if segments is None:
+        return []
+    by_row: dict[int, list[tuple[int, int]]] = {}
+    for segment in segments:
+        x1, y1, x2, y2 = (int(value) for value in segment[0])
+        if abs(y2 - y1) > 1:
+            continue
+        y = min(y1, y2)
+        by_row.setdefault(y, []).append((min(x1, x2), max(x1, x2)))
+    # 同一 y 上的多个格子线段先并成一条逻辑线。
+    logical: list[tuple[int, int, int]] = []
+    for y in sorted(by_row):
+        spans = sorted(by_row[y])
+        merged: list[list[int]] = []
+        for x0, x1 in spans:
+            if merged and x0 - merged[-1][1] <= SEPARATOR_MAX_GAP:
+                merged[-1][1] = max(merged[-1][1], x1)
+            else:
+                merged.append([x0, x1])
+        x0, x1 = max(merged, key=lambda span: span[1] - span[0])
+        if x1 - x0 >= max(SEPARATOR_MIN_RUN, int(width * SEPARATOR_MIN_RUN_SHARE)):
+            logical.append((y, x0, x1))
+    # 抗锯齿让一条线占两行：y 相邻且跨度相近的并成一条。
+    lines: list[tuple[int, int, int]] = []
+    for y, x0, x1 in logical:
+        if lines and y - lines[-1][0] <= 3 and abs(lines[-1][1] - x0) <= 12 and abs(lines[-1][2] - x1) <= 12:
+            last_y, last_x0, last_x1 = lines[-1]
+            lines[-1] = (last_y, min(last_x0, x0), max(last_x1, x1))
+        else:
+            lines.append((y, x0, x1))
+    groups: list[list[tuple[int, int, int]]] = []
+    for line in lines:
+        for group in groups:
+            if abs(group[0][1] - line[1]) <= 12 and abs(group[0][2] - line[2]) <= 12:
+                group.append(line)
+                break
+        else:
+            groups.append([line])
+    return [
+        {"x0": group[0][1], "x1": group[0][2], "ys": sorted(line[0] for line in group)}
+        for group in groups
+        if len(group) >= SEPARATOR_MIN_LINES
+    ]
+
+
+def _line_colour(image, x0: int, x1: int, y: int) -> str:
+    """The colour of a 1px rule, read from its own row."""
+    import numpy as np
+
+    rows, columns = image.shape[:2]
+    y = max(0, min(rows - 1, y))
+    left = max(0, min(columns - 1, x0 + 4))
+    right = max(left + 1, min(columns, x1 - 4))
+    strip = image[y, left:right]
+    if not len(strip):
+        return "#e8e8e8"
+    colour = np.median(strip, axis=0)
+    return "#{:02x}{:02x}{:02x}".format(*(int(value) for value in colour))
+
+
+def row_bands(groups: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """The strips between consecutive rules: one per list row."""
+    bands: list[dict[str, Any]] = []
+    for group in groups:
+        ys = sorted(int(value) for value in group["ys"])
+        for top, bottom in zip(ys, ys[1:]):
+            height = bottom - top
+            if not (ROW_BAND_MIN_HEIGHT <= height <= ROW_BAND_MAX_HEIGHT):
+                continue
+            bands.append(
+                {
+                    "bbox": [int(group["x0"]), top + 1, int(group["x1"]) - int(group["x0"]), height - 1],
+                    "role": "row",
+                    "group": (int(group["x0"]), int(group["x1"])),
+                }
+            )
+    return bands
+
+
+def column_clusters(
+    text_boxes: Sequence[Sequence[int]],
+    bands: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Vertical columns inside a family of row bands, with their alignment.
+
+    A column is a set of texts that start at the same x in different rows.  If
+    their **right** edges agree to within a few pixels, the column is
+    right-aligned (dates, amounts) and the right edge is the anchor: pinning it
+    survives a cross-platform font difference, pinning the left edge does not.
+    """
+    import numpy as np
+
+    inside: list[tuple[int, int, int, int, int]] = []
+    for band_index, band in enumerate(bands):
+        x, y, w, h = (int(value) for value in band["bbox"])
+        for box in text_boxes:
+            cx = box[0] + box[2] / 2.0
+            cy = box[1] + box[3] / 2.0
+            if x <= cx <= x + w and y <= cy <= y + h:
+                inside.append((box[0], box[1], box[2], box[3], band_index))
+    if not inside:
+        return []
+    inside.sort(key=lambda item: (item[0], item[1]))
+    clusters: list[list[tuple[int, int, int, int, int]]] = []
+    for item in inside:
+        # 单链：和上一个成员比，不和簇首比。日期列的左缘本身就会差十几像素
+        # （月/日位数不同），按簇首比会把一列拆成三簇，然后每簇都不足三行。
+        if clusters and item[0] - clusters[-1][-1][0] <= COLUMN_TOLERANCE:
+            clusters[-1].append(item)
+        else:
+            clusters.append([item])
+    result: list[dict[str, Any]] = []
+    for cluster in clusters:
+        rows = {item[4] for item in cluster}
+        if len(rows) < COLUMN_MIN_ROWS:
+            continue
+        left = np.asarray([item[0] for item in cluster], dtype=float)
+        right = np.asarray([item[0] + item[2] for item in cluster], dtype=float)
+        result.append(
+            {
+                "left": int(left.min()),
+                "right": int(right.max()),
+                "rows": len(rows),
+                "leftStd": float(left.std()),
+                "rightStd": float(right.std()),
+                "boxes": [[item[0], item[1], item[2], item[3]] for item in cluster],
+                "align": (
+                    "right"
+                    if (
+                        ALIGN_RIGHT_ENABLED
+                        and right.std() <= ALIGN_RIGHT_STD
+                        and left.std() > ALIGN_RIGHT_STD
+                    )
+                    else "left"
+                ),
+            }
+        )
+    result.sort(key=lambda item: item["left"])
+    return result
+
+
+def infer_text_table(
+    text_boxes: Sequence[Sequence[int]],
+    *,
+    min_rows: int = TABLE_MIN_ROWS,
+    min_columns: int = TABLE_MIN_COLUMNS,
+) -> dict[str, Any] | None:
+    """A borderless table, inferred from the text grid alone.
+
+    Worklog draws outer borders and nothing else — no row rules, no column
+    rules.  The grid is still there, in the only place left: rows of cells that
+    start at the same x.  Rows come from clustering y, columns from clustering
+    x0, and the table exists when enough rows hit enough columns.
+    """
+    boxes = [list(int(value) for value in box) for box in text_boxes if box[2] >= 8 and box[3] >= 8]
+    if len(boxes) < min_rows * min_columns:
+        return None
+    heights = sorted(box[3] for box in boxes)
+    tolerance = max(4.0, heights[len(heights) // 2] * 0.6)
+    rows: list[dict[str, Any]] = []
+    for box in sorted(boxes, key=lambda item: item[1] + item[3] / 2.0):
+        centre = box[1] + box[3] / 2.0
+        if rows and abs(centre - rows[-1]["centre"]) <= tolerance:
+            rows[-1]["boxes"].append(box)
+        else:
+            rows.append({"centre": centre, "boxes": [box]})
+    rows = [row for row in rows if len(row["boxes"]) >= min_columns]
+    if len(rows) < min_rows:
+        return None
+    lefts = sorted({box[0] for row in rows for box in row["boxes"]})
+    columns: list[int] = []
+    for left in lefts:
+        if columns and left - columns[-1] <= COLUMN_TOLERANCE:
+            continue
+        columns.append(left)
+    if len(columns) < min_columns:
+        return None
+    # 每一行至少落在 min_columns 个不同的列上，才不是"碰巧对齐"的两三行字。
+    filled = 0
+    for row in rows:
+        hits = {
+            index
+            for box in row["boxes"]
+            for index, left in enumerate(columns)
+            if box[0] - COLUMN_TOLERANCE <= left <= box[0] + COLUMN_TOLERANCE
+        }
+        if len(hits) >= min_columns:
+            filled += 1
+    if filled < min_rows:
+        return None
+    xs = [box[0] for row in rows for box in row["boxes"]]
+    xe = [box[0] + box[2] for row in rows for box in row["boxes"]]
+    top = min(row["boxes"][0][1] for row in rows)
+    bottom = max(box[1] + box[3] for row in rows for box in row["boxes"])
+    boundaries = sorted({*columns, max(xe)})
+    y_boundaries = [int(round(row["centre"] - heights[len(heights) // 2] / 2)) for row in rows]
+    y_boundaries.append(bottom + 2)
+    return {
+        "bbox": [min(xs), top, max(xe) - min(xs), bottom - top],
+        "x_boundaries": boundaries,
+        "y_boundaries": y_boundaries,
+        "rows": filled,
+    }
+
+
+def _normalise_ocr_text(text: str) -> str:
+    """Turn an impossible day number back into 日, and nothing else.
+
+    EasyOCR reads the trailing 日 of a date as 8 fairly often ("11月14日" ->
+    "11月148").  A blanket "ends with 8 means 日" rule would corrupt legal dates
+    like "10月8", so the test is the calendar itself: only a day number that
+    cannot exist (> 31) whose last glyph is one of the closed shapes the reader
+    confuses with 日 (8 / 0 / B) is a misread of 日.
     """
     stripped = text.strip()
-    if "月" not in stripped or len(stripped) > 8 or len(stripped) < 3:
+    if "月" not in stripped or len(stripped) < 3 or len(stripped) > 9:
         return text
-    if not stripped.endswith("8"):
+    head, _sep, day = stripped.partition("月")
+    if not head.isdigit() or len(head) > 2:
         return text
-    head, _sep, _tail = stripped.partition("月")
-    if not head.isdigit():
+    last = day[-1:] if day else ""
+    if last not in ("8", "0", "B"):
         return text
-    tail = stripped.split("月", 1)[1]
-    if not tail[:-1].isdigit() or len(tail) > 3:
+    digits = day[:-1]
+    if not digits.isdigit():
         return text
-    return stripped[:-1] + "日"
+    value = int(digits + last) if last.isdigit() else int(digits)
+    if value <= 31:
+        # 8 号、18 号、10月8：合法日期，一个字都不动。
+        return text
+    return f"{head}月{digits}日"
 
 
 def build_physical_plan(
@@ -593,8 +863,16 @@ def build_physical_plan(
 
     started = time.time()
     containers = probe_containers(image, page, width, height, text_boxes)
+    # 只有 1px 横线、没有闭合框的列表与表格：把线之间的条带实例化成行容器。
+    groups = probe_separators(image, width, height)
+    bands = row_bands(groups)
+    containers.extend(bands)
+    # 分隔线本身不画：原图里的线是两像素宽、被抗锯齿冲淡过的灰，硬画一条
+    # 1px 实色比不画更远（gmail within15：画 91.81 / 不画 92.51）。行带把
+    # 结构说清楚了，线交给下游的补丁与描边恢复。
     stats.seconds["cv"] = time.time() - started
     stats.containers = len(containers)
+    stats.rows = len(bands)
 
     started = time.time()
     icons, state = omniparser_icons(
@@ -613,6 +891,58 @@ def build_physical_plan(
             "凭空生成文字胶囊。"
         )
 
+    # 行带里的文本如果形成 >=3 个稳定列簇，就把这组行带升级成 table 节点：
+    # 有列宽边界，钳制字号与对齐才有依据。
+    tables: list[dict[str, Any]] = []
+    right_aligned: set[tuple[int, ...]] = set()
+    for group in groups:
+        group_bands = [
+            band for band in bands if band["group"] == (group["x0"], group["x1"])
+        ]
+        clusters = column_clusters(text_boxes, group_bands)
+        # 只有横线的列表（Gmail）：行带已经给出结构，不再建 table——表格装饰会
+        # 补出竖线与表头带，而原图并没有。这里只取列对齐信息。
+        for cluster in clusters:
+            if cluster["align"] == "right":
+                for box in cluster["boxes"]:
+                    right_aligned.add(tuple(int(value) for value in box))
+
+    # 一条线都没有的表格（Worklog）：在容器内部用文本网格推断，且只在"这块
+    # 区域里没有行带"时才做——有线的时候线说了算。
+    canvas_area = float(width * height)
+    for item in containers:
+        if item["role"] not in ("card", "panel"):
+            continue
+        box = item["bbox"]
+        if box[2] * box[3] < canvas_area * 0.05:
+            continue
+        if any(_contains(box, band["bbox"], tolerance=4) for band in bands):
+            continue
+        inside = [
+            text_box
+            for text_box in text_boxes
+            if box[0] <= text_box[0] + text_box[2] / 2 <= box[0] + box[2]
+            and box[1] <= text_box[1] + text_box[3] / 2 <= box[1] + box[3]
+        ]
+        inferred = infer_text_table(inside)
+        if inferred is None:
+            continue
+        if inferred["bbox"][2] < box[2] * 0.5:
+            continue
+        tables.append(
+            {
+                "id": f"table:text:{len(tables)}",
+                "bbox": inferred["bbox"],
+                "x_boundaries": inferred["x_boundaries"],
+                "y_boundaries": inferred["y_boundaries"],
+                "inferred": True,
+                # 原图没有格子线也没有表头底色：装饰层不要替它画。
+                # 原图没有格子线也没有表头底色：装饰层不要替它画。
+                "grid_flags": {"header": False, "verticals": False, "horizontals": False},
+            }
+        )
+    stats.tables = len(tables)
+
     nodes: list[dict[str, Any]] = []
     container_nodes: list[dict[str, Any]] = []
     for index, item in enumerate(containers):
@@ -629,6 +959,8 @@ def build_physical_plan(
             "children": [],
             "source_ref": f"physical.containers[{index}]",
         }
+        if item.get("fill"):
+            node["fill"] = str(item["fill"])
         container_nodes.append(node)
         nodes.append(node)
 
@@ -680,6 +1012,54 @@ def build_physical_plan(
         }
         icon_nodes.append(node)
         nodes.append(node)
+
+    for index, table in enumerate(tables):
+        node = {
+            "id": table["id"],
+            "parent_id": None,
+            "type": "table",
+            "role": "table",
+            "bbox": list(table["bbox"]),
+            "content_ref": table["id"],
+            "geometry_ref": f"geometry:{_digest('table', *table['bbox'])}",
+            "children": [],
+            "source_ref": f"physical.tables[{index}]",
+            "grid": {
+                "x_boundaries": list(table["x_boundaries"]),
+                "y_boundaries": list(table["y_boundaries"]),
+                **dict(table.get("grid_flags") or {}),
+            },
+        }
+        nodes.append(node)
+
+    # 右对齐的列：把锚点从"左缘"换成"右缘"，跨端字体差不会再把整列推歪。
+    for node in text_nodes:
+        if tuple(int(value) for value in node["bbox"]) in right_aligned:
+            node["text_align"] = "right"
+
+    # table 节点也要挂到容器上：它是行带的上层结构。
+    for node in nodes:
+        if node.get("type") != "table":
+            continue
+        box = node["bbox"]
+        centre = (box[0] + box[2] / 2.0, box[1] + box[3] / 2.0)
+        for candidate in sorted(
+            (item for item in container_nodes if item.get("type") == "container"),
+            key=lambda item: item["bbox"][2] * item["bbox"][3],
+        ):
+            cbox = candidate["bbox"]
+            if (
+                cbox[0] <= centre[0] <= cbox[0] + cbox[2]
+                and cbox[1] <= centre[1] <= cbox[1] + cbox[3]
+            ):
+                node["parent_id"] = candidate["id"]
+                break
+        node["children"] = [
+            band["id"]
+            for band in container_nodes
+            if band.get("role") == "row"
+            and _contains(node["bbox"], band["bbox"], tolerance=4)
+        ]
 
     # 确定性建树：每个叶子归给"装得下它的最小容器"。
     container_nodes.sort(key=lambda node: node["bbox"][2] * node["bbox"][3])
