@@ -555,6 +555,9 @@ def _node_from_item(
         "table_id": str(item.get("table_id") or ""),
         "reference_only": bool(item.get("reference_only")),
         "original": bool(item.get("original")),
+        # A tilted seal is the one thing a box model cannot express; the plan may
+        # name the angle in degrees, anticlockwise positive.
+        "rotation": float(item.get("rotation") or 0.0),
     }
     if node_type == "control":
         node["control_type"] = str(item.get("control_type") or "")

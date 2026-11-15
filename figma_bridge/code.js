@@ -127,6 +127,8 @@ async function handleAction(action, params) {
       return await componentInstanceProbe(params);
     case "componentize_semantic_groups":
       return await componentizeSemanticGroups(params);
+    case "set_rotation":
+      return await setRotation(params);
     case "set_text":
       return await setText(params);
     case "set_name":
@@ -1944,6 +1946,55 @@ async function componentizeSemanticGroups(params) {
     instances,
     rejected,
     geometry_checks: geometryChecks,
+  };
+}
+
+// 给节点加倾角，并把"旋转后的中心"钉回设计给的中心。
+//
+// 两个坑都在这里一次性处理：
+// 1) 设计说逆时针为正，Figma 的 rotation 是顺时针为正 —— 取负；
+// 2) Figma 的 rotation 绕节点自己的原点转，转完中心会跑。设完 rotation 后再按
+//    旋转矩阵把 x/y 反向偏移，让 (x,y) 满足 origin + R(θ)·(w/2,h/2) = 设计中心。
+//    宽度/高度取节点**实际**尺寸（文本框会自适应），不用入参。
+//
+// 单独做成命令而不是塞进 create_*：文本要等 characters/换行/autoResize 全部落定
+// 之后才知道真实尺寸，先转再改尺寸会让补偿量作废。
+async function setRotation(params) {
+  const node = figma.getNodeById(params.nodeId);
+  if (!node) throw new Error(`NODE_NOT_FOUND: ${params.nodeId}`);
+  const angle = Number(params.angle) || 0;
+  if (!("rotation" in node)) {
+    return { nodeId: node.id, applied: false, reason: "no-rotation-property" };
+  }
+  const width = Number(node.width) || 0;
+  const height = Number(node.height) || 0;
+  const centre = Array.isArray(params.centre) && params.centre.length === 2
+    ? [Number(params.centre[0]), Number(params.centre[1])]
+    : null;
+  if (!centre || !Number.isFinite(centre[0]) || !Number.isFinite(centre[1])) {
+    node.rotation = -angle;
+    return { nodeId: node.id, applied: true, rotation: node.rotation };
+  }
+  // 逆时针为正 → Figma 的顺时针角度取负。
+  const theta = (-angle) * Math.PI / 180;
+  const cos = Math.cos(theta);
+  const sin = Math.sin(theta);
+  const halfW = width / 2;
+  const halfH = height / 2;
+  node.rotation = -angle;
+  node.x = centre[0] - (halfW * cos - halfH * sin);
+  node.y = centre[1] - (halfW * sin + halfH * cos);
+  const box = node.absoluteBoundingBox;
+  return {
+    nodeId: node.id,
+    applied: true,
+    rotation: node.rotation,
+    x: node.x,
+    y: node.y,
+    width,
+    height,
+    centre: centre,
+    absolute: box ? [box.x + box.width / 2, box.y + box.height / 2] : null,
   };
 }
 

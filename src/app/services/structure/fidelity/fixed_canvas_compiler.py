@@ -111,6 +111,19 @@ def _refine_textarea_text_bbox(
     ]
 
 
+def _stamp_rotation(element: dict[str, Any], node: Mapping[str, Any]) -> None:
+    """Carry a plan's angle onto the element, folded and rounded.
+
+    Only present when the plan actually named one: an axis-aligned page keeps a
+    byte-identical design, which is what the frozen samples are checked against.
+    """
+    from src.app.services.structure.fidelity.rotation import normalise_angle
+
+    angle = normalise_angle(node.get("rotation"))
+    if angle:
+        element["rotation"] = angle
+
+
 def _text_element(
     node: Mapping[str, Any],
     *,
@@ -189,7 +202,7 @@ def _text_element(
     # keeps the renderer's default rhythm (the adapter strips it anyway).
     if style.get("lineHeight"):
         style_payload["lineHeight"] = style["lineHeight"]
-    return {
+    element_payload = {
         "id": str(node.get("id") or ""),
         "type": "text",
         "x": render_x,
@@ -211,6 +224,8 @@ def _text_element(
             "textStatus": "scene-plan-owner",
         },
     }
+    _stamp_rotation(element_payload, node)
+    return element_payload
 
 
 def _control_element(
@@ -1015,7 +1030,7 @@ def _container_element(
     style.update(
         sample_container_decoration(image_path, render_bbox, style["fillColor"])
     )
-    return {
+    element = {
         "id": str(node.get("id") or ""),
         "type": "container",
         "x": x,
@@ -1034,6 +1049,8 @@ def _container_element(
             "grouping_status": "planned",
         },
     }
+    _stamp_rotation(element, node)
+    return element
 
 
 def _table_decorations(

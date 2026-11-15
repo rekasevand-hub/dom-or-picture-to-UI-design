@@ -227,7 +227,18 @@ class SVGMockAdapter(PrototypeAdapter):
 
         不用"把盒子裁小"的做法：文本基线吃 height（y + h/2 + 0.375em），改盒子会
         让基线跟着漂。裁边只该发生在绘制阶段。
+
+        带 rotation 的图元再套一层 rotate：SVG 的 rotate 是屏幕上的顺时针，
+        而设计说的是逆时针为正，所以取负；中心点与 Figma 端补偿后的中心一致。
         """
+        from src.app.services.structure.fidelity.rotation import svg_transform
+
+        transform = svg_transform(spec)
+        if transform:
+            holder = ET.Element("g")
+            holder.set("transform", transform)
+            holder.append(el)
+            el = holder
         cid = self._clip_id(spec)
         if not cid:
             self.elements.append(el)

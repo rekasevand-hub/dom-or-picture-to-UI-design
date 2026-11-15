@@ -625,6 +625,7 @@ class FigmaBridgeAdapter(PrototypeAdapter):
     def create_frame(self, spec: dict[str, Any]) -> str | None:
         node_id = self._send("create_frame", spec)
         self._record_semantic_node(node_id, spec, node_type="FRAME")
+        self._apply_rotation(node_id, spec)
         return node_id
 
     def render_design(self, design: dict[str, Any]) -> None:
@@ -954,6 +955,7 @@ class FigmaBridgeAdapter(PrototypeAdapter):
         params = _with_parent(spec, parent_id)
         node_id = self._send("create_rectangle", params)
         self._record_semantic_node(node_id, params, node_type="RECTANGLE")
+        self._apply_rotation(node_id, spec)
         return node_id
 
     def create_ellipse(
@@ -962,6 +964,7 @@ class FigmaBridgeAdapter(PrototypeAdapter):
         params = _with_parent(spec, parent_id)
         node_id = self._send("create_ellipse", params)
         self._record_semantic_node(node_id, params, node_type="ELLIPSE")
+        self._apply_rotation(node_id, spec)
         return node_id
 
     def create_text(
@@ -992,7 +995,34 @@ class FigmaBridgeAdapter(PrototypeAdapter):
             {"node_id": node_id, "text": str(spec.get("text") or "")},
         ]
         self._record_semantic_node(node_id, params, node_type="TEXT")
+        self._apply_rotation(node_id, spec)
         return node_id
+
+    def _apply_rotation(self, node_id: str | None, spec: dict[str, Any]) -> None:
+        """Pin a rotated node's centre back where the design put it.
+
+        Figma rotates about the node's own origin, so the box has to be moved by
+        the rotation of its half-extent.  The plugin does that algebra with the
+        node's *actual* size (a text node re-measures itself), and this call only
+        supplies the angle and the centre the design asked for.
+        """
+        from src.app.services.structure.fidelity.rotation import (
+            element_centre,
+            normalise_angle,
+        )
+
+        angle = normalise_angle(spec.get("rotation"))
+        if not node_id or not angle:
+            return
+        centre = element_centre(spec)
+        self._send(
+            "set_rotation",
+            {
+                "nodeId": node_id,
+                "angle": angle,
+                "centre": [round(centre[0], 3), round(centre[1], 3)],
+            },
+        )
 
     def resolve_font(
         self,
@@ -1088,6 +1118,7 @@ class FigmaBridgeAdapter(PrototypeAdapter):
             {"node_id": node_id, "imageBase64": params.get("imageBase64")},
         ]
         self._record_semantic_node(node_id, params, node_type="RECTANGLE")
+        self._apply_rotation(node_id, spec)
         return node_id
 
     def create_vector(
@@ -1096,6 +1127,7 @@ class FigmaBridgeAdapter(PrototypeAdapter):
         params = _with_parent(spec, parent_id)
         node_id = self._send("create_vector", params)
         self._record_semantic_node(node_id, params, node_type="VECTOR")
+        self._apply_rotation(node_id, spec)
         return node_id
 
     def set_text(self, node_id: str, text: str) -> dict[str, Any]:
