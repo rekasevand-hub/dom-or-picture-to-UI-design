@@ -157,7 +157,13 @@ def build_candidates(
             Candidate(index=index, box=(x0, y0, x1 - x0, y1 - y0), error=float(block.mean()))
         )
     candidates.sort(key=lambda candidate: candidate.error, reverse=True)
-    return candidates[:MAX_TICKETS]
+    candidates = candidates[:MAX_TICKETS]
+    # The number the model sees is the position of the strip it was shown, not
+    # the region's original index: "candidate 1" has to mean "the second image",
+    # or every answer lands on a block the model never looked at.
+    for position, candidate in enumerate(candidates):
+        candidate.index = position
+    return candidates
 
 
 def side_by_side(
@@ -206,18 +212,29 @@ def propose(
         )
     prompt = (prompt_builder or default_prompt)(candidates)
     payload = vision(prompt, strips) or {}
+    by_index = {candidate.index: candidate for candidate in candidates}
     tickets: list[Ticket] = []
     for raw in (payload.get("tickets") or [])[:MAX_TICKETS]:
         try:
+            chosen = raw.get("candidate")
+            chosen = int(chosen) if chosen is not None else None
             ticket = Ticket(
                 type=str(raw.get("type") or ""),
-                candidate=int(raw.get("candidate")) if raw.get("candidate") is not None else None,
+                candidate=chosen,
                 node_id=str(raw.get("node_id") or ""),
                 expected_text=str(raw.get("expected_text") or ""),
                 fix=str(raw.get("fix") or ""),
-                roi_bbox=[int(value) for value in raw.get("roi_bbox") or []],
+                roi_bbox=[],
                 reason=str(raw.get("reason") or ""),
             )
+            # The model does not get to say where.  A candidate was measured, so
+            # its box *is* the region; anything the model wrote there is a guess
+            # at best and a hallucination at worst.
+            if ticket.type == "MISSING_OR_FADED_TEXT":
+                candidate = by_index.get(ticket.candidate) if ticket.candidate is not None else None
+                if candidate is None:
+                    continue
+                ticket.roi_bbox = [int(value) for value in candidate.box]
             ticket.validate()
         except (TypeError, ValueError):
             continue
@@ -229,12 +246,13 @@ def default_prompt(candidates: Sequence[Candidate]) -> str:
     """The question, kept short enough that the answer stays a schema."""
     listing = json.dumps([candidate.as_dict() for candidate in candidates], ensure_ascii=False)
     return (
-        "每张图是一个候选区域的并排对照：左边是原图，右边是当前渲染。\n"
+        "下面按顺序给出 N 张并排对照图，第 i 张对应候选 i：左边是原图，右边是当前渲染。\n"
         f"候选清单（编号、页面坐标、平均误差）：{listing}\n"
         "只回答 JSON，不要解释。格式：\n"
         '{"tickets":[{"type":"MISSING_OR_FADED_TEXT","candidate":0,'
-        '"roi_bbox":[x,y,w,h],"expected_text":"图上真实可见的文字","reason":"..."},'
-        '{"type":"STYLE_MISMATCH","node_id":"<候选里给出的节点 id>","fix":"bold|pill_bg|border"}]}\n'
+        '"expected_text":"图上真实可见的文字","reason":"..."},'
+        '{"type":"STYLE_MISMATCH","candidate":1,"fix":"bold|pill_bg|border","reason":"..."}]}\n'
+        "坐标由系统按候选补齐，你不要写 bbox，也不要编造节点 id。\n"
         f"最多 {MAX_TICKETS} 条；只在能确定时回答，看不清就少答。"
     )
 

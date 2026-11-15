@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -126,6 +127,107 @@ FRAME_FLOORS = {
 }
 
 
+def _vision_callable():
+    """The multimodal client, or ``None`` when no key is configured.
+
+    Everything the model is allowed to do happens here: it receives the numbered
+    strips and a prompt, and returns parsed JSON.  It is never handed a design.
+    """
+    try:
+        from src.app.services.llm.llm_service import call_vlm
+        from src.config import load_config
+    except Exception:  # pragma: no cover - optional dependency at runtime
+        return None
+    config = load_config()
+    if not getattr(config, "vision_api_key", ""):
+        return None
+
+    def call(prompt: str, strips) -> dict:
+        import base64
+        import io
+
+        from PIL import Image
+
+        content: list[dict] = [{"type": "text", "text": prompt}]
+        for strip in strips:
+            buffer = io.BytesIO()
+            Image.fromarray(strip).save(buffer, format="PNG")
+            content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": "data:image/png;base64,"
+                        + base64.b64encode(buffer.getvalue()).decode("ascii")
+                    },
+                }
+            )
+        answer = call_vlm([{"role": "user", "content": content}], config)
+        if os.environ.get("RV_ARBITER_DEBUG"):
+            print(f"[arbiter] raw answer ({len(answer)} chars): {answer[:400]!r}", flush=True)
+        return _json_block(answer)
+
+    return call
+
+
+def _json_block(text: str) -> dict:
+    """Pull the answer out of whatever wrapping the model put around it.
+
+    Asked for an object, models happily answer with the array of tickets alone —
+    or wrap either in a fenced block.  Both shapes mean the same thing here.
+    """
+    import json as _json
+
+    raw = str(text or "").strip()
+    if raw.startswith("```"):
+        raw = raw[3:]
+        if raw.lstrip().startswith("json"):
+            raw = raw.lstrip()[4:]
+        raw = raw.split("```")[0]
+    raw = raw.strip()
+    if raw.startswith("["):
+        return {"tickets": _loads_list(raw)}
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start < 0 or end <= start:
+        return {}
+    try:
+        parsed = _json.loads(raw[start : end + 1])
+    except ValueError:
+        return {}
+    if isinstance(parsed, list):
+        return {"tickets": parsed}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _loads_list(raw: str) -> list:
+    import json as _json
+
+    try:
+        parsed = _json.loads(raw)
+    except ValueError:
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
+def _largest_text_in(elements, box) -> str:
+    """The text node a style ticket is about: the biggest one in the block."""
+    if not box:
+        return ""
+    x, y, w, h = (int(value) for value in box)
+    best, best_area = "", 0
+    for element in elements:
+        if element.get("type") != "text" or not element.get("text"):
+            continue
+        ex, ey = int(element.get("x") or 0), int(element.get("y") or 0)
+        ew, eh = int(element.get("width") or 0), int(element.get("height") or 0)
+        overlap = max(0, min(x + w, ex + ew) - max(x, ex)) * max(
+            0, min(y + h, ey + eh) - max(y, ey)
+        )
+        if overlap > best_area:
+            best, best_area = str(element.get("id") or ""), overlap
+    return best
+
+
 def _arbitrate(design: dict, picture: str | Path, out: Path, tag: str, render_path: Path) -> dict:
     """Run the frozen tickets for this render, and gate every one of them.
 
@@ -180,7 +282,7 @@ def _arbitrate(design: dict, picture: str | Path, out: Path, tag: str, render_pa
             frozen = arbiter.propose(
                 candidates,
                 [arbiter.side_by_side(truth, drawn, candidate) for candidate in candidates],
-                vision=None,
+                vision=_vision_callable(),
             )
         except arbiter.ArbiterUnavailable as exc:
             report["note"] = str(exc)
@@ -201,8 +303,13 @@ def _arbitrate(design: dict, picture: str | Path, out: Path, tag: str, render_pa
         )
         roi_before = _within30_box(picture, render_path, roi) if roi else 0.0
         global_before = _within30(picture, render_path)
+        if ticket.type == "STYLE_MISMATCH" and not ticket.node_id:
+            ticket.node_id = _largest_text_in(elements, roi)
+            if not ticket.node_id:
+                continue
         shadow = copy.deepcopy(elements)
-        if not arbiter.execute(ticket, elements, truth, drawn):
+        changed = arbiter.execute(ticket, elements, truth, drawn)
+        if not changed:
             continue
         _render(design, out)
         reasons: dict = {}
@@ -220,10 +327,22 @@ def _arbitrate(design: dict, picture: str | Path, out: Path, tag: str, render_pa
         )
         if gate.passed:
             report["applied"] += 1
+            report.setdefault("appliedTickets", []).append(
+                {"type": ticket.type, "roi": list(roi), "change": changed}
+            )
             continue
         elements[:] = shadow
         _render(design, out)
-        report["rolledBack"].append({"type": ticket.type, "why": gate.failures})
+        report["rolledBack"].append(
+            {
+                "type": ticket.type,
+                "why": gate.failures,
+                "roi": [gate.roi_before, gate.roi_after],
+                "global": [gate.global_before, gate.global_after],
+                "frames": [gate.frames, gate.frames_floor],
+                "patches": gate.patch_share,
+            }
+        )
     if frozen.tickets:
         frozen.save(frozen_path)
     return report
@@ -293,6 +412,13 @@ def replay(
                 _render(design, out)
                 calibration["reverted"] = True
 
+    arbitration: dict = {}
+    if arbiter:
+        # Before the patches: a ticket that adds real text has to be judged
+        # against the drawing, not against a pixel-perfect copy of the picture
+        # that already covers the same block.
+        arbitration = _arbitrate(design, _picture, out, tag, out / "render.png")
+
     if patches:
         # Pass three: look at what the render got wrong and give the worst small
         # blocks back as pictures.  Everything else already had its chance.
@@ -335,10 +461,6 @@ def replay(
                         json.dumps(design, ensure_ascii=False, indent=1), encoding="utf-8"
                     )
                     _render(design, out)
-
-    arbitration: dict = {}
-    if arbiter:
-        arbitration = _arbitrate(design, _picture, out, tag, out / "render.png")
 
     elements = design.get("elements") or []
     return {
