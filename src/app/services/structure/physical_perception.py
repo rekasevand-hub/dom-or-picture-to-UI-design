@@ -63,7 +63,16 @@ ICON_DEDUPE_IOU = 0.7
 ICON_TEXT_SHARE = 0.5
 #: 一个框把某个 OCR 文本框整个装进去，且这个字占框面积这么多：它是"图标+标签"
 #: 的一行，不是图标。留着就会在字上盖一张同尺寸的裁片。
-ICON_TEXT_INSIDE_SHARE = 0.08
+ICON_TEXT_INSIDE_SHARE = 0.02
+#: 复合框里抠图标：剩余条带、图标边长、宽高比。
+SPLIT_ICON_MIN_SIDE = 12
+SPLIT_ICON_MAX_SIDE = 32
+SPLIT_ICON_MAX_BAND = 56
+SPLIT_ICON_MIN_ASPECT = 0.7
+SPLIT_ICON_MAX_ASPECT = 1.4
+#: 条带里"有墨"的判据：与条带底色差这么多、且占比不低于这个值。
+SPLIT_ICON_INK_DELTA = 24
+SPLIT_ICON_MIN_INK = 0.04
 
 
 @dataclass
@@ -359,6 +368,82 @@ def _encloses_text(box: Sequence[int], text_boxes: Sequence[Sequence[int]]) -> f
     return largest
 
 
+def _ink_box(image, box: Sequence[int]) -> list[int] | None:
+    """Tight box around the ink inside ``box``, or None when it is empty."""
+    import numpy as np
+
+    x, y, w, h = (int(value) for value in box)
+    rows, columns = image.shape[:2]
+    x0, y0 = max(0, x), max(0, y)
+    x1, y1 = min(columns, x + w), min(rows, y + h)
+    if x1 - x0 < 4 or y1 - y0 < 4:
+        return None
+    crop = image[y0:y1, x0:x1]
+    background = np.median(crop.reshape(-1, 3), axis=0)
+    ink = np.abs(crop - background).max(axis=2) >= SPLIT_ICON_INK_DELTA
+    if float(ink.mean()) < SPLIT_ICON_MIN_INK:
+        return None
+    rows_with = np.where(ink.any(axis=1))[0]
+    columns_with = np.where(ink.any(axis=0))[0]
+    if not len(rows_with) or not len(columns_with):
+        return None
+    return [
+        x0 + int(columns_with[0]),
+        y0 + int(rows_with[0]),
+        int(columns_with[-1] - columns_with[0] + 1),
+        int(rows_with[-1] - rows_with[0] + 1),
+    ]
+
+
+def _split_side_icons(
+    image,
+    box: Sequence[int],
+    text_boxes: Sequence[Sequence[int]],
+) -> list[list[int]]:
+    """The small square icon next to a label inside one composite YOLO box.
+
+    A sidebar row is "icon + words": OmniParser boxes the whole row, and using
+    that box as a crop prints a picture of the words over the words.  Dropping
+    it loses the icon, which is the half worth keeping.  So subtract the text:
+    whatever is left on the left (or right) of the label, is near-square and has
+    ink, is the icon.
+    """
+    x, y, w, h = (int(value) for value in box)
+    inside = [
+        (tx, ty, tw, th)
+        for tx, ty, tw, th in text_boxes
+        if x - 2 <= tx and y - 2 <= ty and tx + tw <= x + w + 2 and ty + th <= y + h + 2
+    ]
+    if not inside:
+        return None
+    found: list[list[int]] = []
+    left_edge = min(tx for tx, _ty, _tw, _th in inside)
+    right_edge = max(tx + tw for tx, _ty, tw, _th in inside)
+    # 条带贴着**文字**取，不是贴着框边：菜单行的图标紧挨着标签（x≈68~96），
+    # 而行框从 x=0 开始，前面那 60px 是缩进，贴边取只会取到一片空白。
+    left_span = min(left_edge - x, SPLIT_ICON_MAX_BAND)
+    right_span = min((x + w) - right_edge, SPLIT_ICON_MAX_BAND)
+    bands = [
+        (left_edge - left_span, y, left_span, h),
+        (right_edge, y, right_span, h),
+    ]
+    for band in bands:
+        if band[2] < SPLIT_ICON_MIN_SIDE:
+            continue
+        ink = _ink_box(image, band)
+        if ink is None:
+            continue
+        if not (SPLIT_ICON_MIN_SIDE <= ink[2] <= SPLIT_ICON_MAX_SIDE):
+            continue
+        if not (SPLIT_ICON_MIN_SIDE <= ink[3] <= SPLIT_ICON_MAX_SIDE):
+            continue
+        ratio = ink[2] / max(1, ink[3])
+        if not (SPLIT_ICON_MIN_ASPECT <= ratio <= SPLIT_ICON_MAX_ASPECT):
+            continue
+        found.append([ink[0] - 1, ink[1] - 1, ink[2] + 2, ink[3] + 2])
+    return found
+
+
 def omniparser_icons(
     image_path: str | Path,
     width: int,
@@ -391,6 +476,7 @@ def omniparser_icons(
     except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
         return [], f"unavailable: {type(exc).__name__}"
     canvas = width * height
+    picture = _load_rgb(image_path)
     icons: list[dict[str, Any]] = []
     for item in _parse_omniparser(payload, width, height):
         x, y, w, h = item["bbox"]
@@ -403,8 +489,21 @@ def omniparser_icons(
         if _text_coverage((x, y, w, h), text_boxes) >= ICON_TEXT_SHARE:
             continue
         # 一个框把成段的字整个装进去了：那是"图标 + 标签"的一行，不是图标。
-        # 留着它就会在字上面盖一张同样大的裁片（ERP 的"生产管理"）。
+        # 留着它就会在字上面盖一张同样大的裁片（ERP 的"生产管理"）。但左边那颗
+        # 小图标值得留下——把文字从框里减掉，剩下的近方形墨迹就是它。
         if _encloses_text((x, y, w, h), text_boxes) >= ICON_TEXT_INSIDE_SHARE:
+            # 只要能装下一段字，就要么切出侧边图标、要么整块丢掉：留着整块就是在
+            # 字上盖一张画着同样文字的裁片。
+            for piece in _split_side_icons(picture, (x, y, w, h), text_boxes):
+                icons.append(
+                    {
+                        "bbox": piece,
+                        "caption": item["caption"],
+                        "interactive": item["interactive"],
+                        "kind": "icon",
+                        "split": True,
+                    }
+                )
             continue
         duplicate = False
         for other in icons:
@@ -436,6 +535,28 @@ def _contains(outer: Sequence[int], inner: Sequence[int], tolerance: int = 0) ->
         and inner[0] + inner[2] <= outer[0] + outer[2] + tolerance
         and inner[1] + inner[3] <= outer[1] + outer[3] + tolerance
     )
+
+
+def _normalise_ocr_text(text: str) -> str:
+    """Fix the one glyph confusion that changes meaning in a date.
+
+    EasyOCR reads the trailing 日 of a date as 8 about seven times in eight on
+    this page ("11月14日" -> "11月148"), and a wrong date is worse than a wrong
+    typeface.  Only this pattern is touched: a short token that already contains
+    月 and ends in a digit 8.
+    """
+    stripped = text.strip()
+    if "月" not in stripped or len(stripped) > 8 or len(stripped) < 3:
+        return text
+    if not stripped.endswith("8"):
+        return text
+    head, _sep, _tail = stripped.partition("月")
+    if not head.isdigit():
+        return text
+    tail = stripped.split("月", 1)[1]
+    if not tail[:-1].isdigit() or len(tail) > 3:
+        return text
+    return stripped[:-1] + "日"
 
 
 def build_physical_plan(
@@ -514,7 +635,7 @@ def build_physical_plan(
     text_nodes: list[dict[str, Any]] = []
     for index, observation in enumerate(observations):
         box = [int(value) for value in observation["bbox"]]
-        text = str(observation.get("text") or "").strip()
+        text = _normalise_ocr_text(str(observation.get("text") or "").strip())
         if not text:
             continue
         content_ref = f"text:{_digest(text, *box)}"
@@ -530,6 +651,8 @@ def build_physical_plan(
             "text": text,
             "source_ref": f"physical.ocr[{index}]",
             "confidence": float(observation.get("confidence") or 0.0),
+            # OCR 的框贴着墨迹：它的宽度就是这段字该有的宽度，允许按它标定字距。
+            "ink_tight": True,
         }
         text_nodes.append(node)
         nodes.append(node)

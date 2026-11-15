@@ -574,3 +574,35 @@ class TestPhysicalPerception:
         assert fitted.get("fitEvidence")
         # 邻列不动：规则只碰越界的那一格。
         assert elements[1]["style"]["fontSize"] == 20
+
+
+class TestFontMetricsAndIconSplit:
+    def test_cjk_is_one_em_and_digits_are_narrower(self) -> None:
+        from src.app.services.structure.fidelity import font_metrics
+
+        assert 0.95 <= font_metrics.char_ratio("广") <= 1.05
+        assert 0.4 <= font_metrics.char_ratio("8") <= 0.65
+        # 一个汉字约等于两个数字宽。旧的 1.0/0.55 会把数字估成半个字。
+        assert font_metrics.text_width("广东", 20) > font_metrics.text_width("88", 20) * 1.8
+
+    def test_the_icon_beside_a_label_is_cut_out_of_the_composite_box(self, tmp_path: Path) -> None:
+        import numpy as np
+        from PIL import Image
+
+        from src.app.services.structure.physical_perception import _split_side_icons
+
+        from PIL import ImageDraw
+
+        image = Image.new("RGB", (400, 120), (40, 48, 64))
+        painter = ImageDraw.Draw(image)
+        painter.rectangle((70, 40, 94, 64), fill=(240, 120, 40))  # the icon
+        painter.rectangle((102, 44, 240, 62), fill=(230, 230, 230))  # the label
+        source = tmp_path / "row.png"
+        image.save(source)
+
+        loaded = np.asarray(Image.open(source).convert("RGB"), dtype=np.int16)
+        pieces = _split_side_icons(loaded, (0, 30, 376, 44), [[102, 44, 138, 18]])
+        assert pieces, "左侧那颗图标应当被切出来"
+        x, y, w, h = pieces[0]
+        assert abs(x - 70) <= 3 and abs(w - 24) <= 4
+        assert 0.7 <= w / h <= 1.4

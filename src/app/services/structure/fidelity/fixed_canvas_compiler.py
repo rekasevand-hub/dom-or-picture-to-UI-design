@@ -224,6 +224,9 @@ def _text_element(
             "textStatus": "scene-plan-owner",
         },
     }
+    if node.get("ink_tight"):
+        # 这个盒贴着墨迹量出来的：宽度就是这段字该有的宽度，允许按它标定字距。
+        element_payload["inkTight"] = True
     _stamp_rotation(element_payload, node)
     return element_payload
 
@@ -3375,9 +3378,10 @@ def _rendered_span(element: Mapping[str, Any]) -> tuple[int, int]:
         font = float(style.get("fontSize") or 0.0)
     except (TypeError, ValueError):
         font = 0.0
-    estimated = 0.0
-    for char in text:
-        estimated += font * (1.0 if ord(char) > 0x2E80 else 0.55)
+    # 真实字宽：字体自己给出的 advance width，而不是"CJK 1 em、其他 0.55 em"。
+    from src.app.services.structure.fidelity.font_metrics import text_width
+
+    estimated = text_width(text, font)
     return (left, left + max(box_width, int(round(estimated))))
 
 
@@ -7988,9 +7992,10 @@ def _rendered_span(element: Mapping[str, Any]) -> tuple[int, int]:
         font = float(style.get("fontSize") or 0.0)
     except (TypeError, ValueError):
         font = 0.0
-    estimated = 0.0
-    for char in text:
-        estimated += font * (1.0 if ord(char) > 0x2E80 else 0.55)
+    # 真实字宽：字体自己给出的 advance width，而不是"CJK 1 em、其他 0.55 em"。
+    from src.app.services.structure.fidelity.font_metrics import text_width
+
+    estimated = text_width(text, font)
     return (left, left + max(box_width, int(round(estimated))))
 
 
@@ -9489,27 +9494,43 @@ TEXT_FIT_TOLERANCE = 0.03
 TEXT_FIT_MIN_SCALE = 0.85
 #: 负字距最多收到字号的这个比例。
 TEXT_FIT_MAX_TRACKING = -0.04
+#: 正字距最多放到字号的这个比例。
+TEXT_FIT_MAX_TRACKING_GROW = 0.04
+#: 比墨迹窄过这个比例，才认为"该放宽"；1~2% 的差是字体抖动。
+TEXT_FIT_GROW = 0.02
+#: 放宽（字距/字号）默认关闭。实测 gmail：放 0.8px 字距后日期列反而被自己的
+#: 盒子裁掉，整页 -0.07；而且 Figma 端的字形本来就比 Noto Sans SC 宽，按我们的
+#: 度量去"补宽"是补错方向。机制与证据留着，等字体身份能确定再开。
+TEXT_FIT_GROW_ENABLED = False
+#: 用"墨迹宽度 / 每字 em"反推字号时，最多比现在大这么多。
+#: 实测（gmail）：按宽度放大会把整页推开 0.16~0.22，因为 Figma 端的实际字形比
+#: 我们量的 Noto Sans SC 更宽；机制保留，默认不放。
+TEXT_FIT_MAX_GROW_FONT = 1.0
 
 
 def _estimated_width(text: str, font: float) -> float:
-    """Width the renderer will paint, from the same per-character estimate."""
-    width = 0.0
-    for char in text:
-        width += font * (1.0 if ord(char) > 0x2E80 else 0.55)
-    return width
+    """Width the renderer will paint, from the target font's advance widths."""
+    from src.app.services.structure.fidelity.font_metrics import text_width
+
+    return text_width(text, font)
 
 
 def _fit_text_to_box(elements: list[dict[str, Any]]) -> int:
-    """A line that overruns its measured box far enough to touch the next column.
+    """Make a line paint as wide as the ink the screenshot measured.
 
-    The screenshot measured the ink; the output font has different metrics, so a
-    cell that fits in the picture can overprint its neighbour in Figma.  Only an
-    overrun that actually reaches another text node is touched — shrinking every
-    wide line would flatten the type hierarchy for nothing.
+    Two failures, one cause.  Our font is wider than the original's, so a cell
+    that fits in the picture overruns its neighbour; and it is narrower for
+    digits, so a date column drifts left of where the picture has it.  Both are
+    fixed by comparing the **real** advance width of the string with the box the
+    ink occupies:
 
-    Two knobs, in order: type size down to 85% of the measured size, then a small
-    negative tracking.  Both are recorded on the element so the change is
-    reviewable instead of mysterious.
+    * too wide — shrink the type down to 85% of the measured size, then tighten
+      the tracking;
+    * too narrow — loosen the tracking, never the size (the height is right, and
+      growing the type would change the line's weight in the hierarchy).
+
+    Widening only applies where the box is known to be ink-tight (OCR nodes);
+    a padded box from a coarse measurement must not stretch its words to fill it.
     """
     texts = [
         index
@@ -9534,7 +9555,7 @@ def _fit_text_to_box(elements: list[dict[str, Any]]) -> int:
             continue
         text = str(element.get("text") or "")
         estimated = _estimated_width(text, font)
-        if estimated <= box[2] * (1.0 + TEXT_FIT_TOLERANCE):
+        if not text:
             continue
         # 可用宽度：自己的盒子，以及同一行右边最近那段文字的左缘。表格里"格子"
         # 往往没有容器，能防住串列的就是邻列的位置。
@@ -9550,7 +9571,38 @@ def _fit_text_to_box(elements: list[dict[str, Any]]) -> int:
             gap = other_box[0] - box[0]
             if gap > box[2] - 2:
                 limit = min(limit, float(gap))
-        if estimated <= limit * (1.0 + TEXT_FIT_TOLERANCE):
+        ratio = estimated / max(1.0, limit)
+        if ratio <= 1.0 + TEXT_FIT_TOLERANCE:
+            if (
+                TEXT_FIT_GROW_ENABLED
+                and element.get("inkTight")
+                and ratio < 1.0 - TEXT_FIT_GROW
+            ):
+                # 我们的字比原图窄。先怀疑字号：中文的 advance 就是 1 em，墨迹宽度
+                # 反推出来的字号比"墨迹高度 × 系数"准（高度少算 8~12%）。幅度在
+                # 合理范围内就用它，否则只微调字距。
+                from src.app.services.structure.fidelity.font_metrics import em_width
+
+                ems = max(0.1, em_width(text))
+                width_font = limit / ems
+                evidence = element.setdefault("fitEvidence", {})
+                grow = evidence.setdefault("widthGrow", {"box": round(limit, 1)})
+                if font < width_font <= font * TEXT_FIT_MAX_GROW_FONT:
+                    style["fontSize"] = round(width_font * 2) / 2
+                    estimated = _estimated_width(text, style["fontSize"])
+                    grow["sizeFrom"] = round(font, 1)
+                    grow["sizeTo"] = round(style["fontSize"], 1)
+                    fitted += 1
+                remaining = limit - estimated
+                if remaining > 0.5:
+                    tracking = min(
+                        TEXT_FIT_MAX_TRACKING_GROW * style["fontSize"],
+                        remaining / max(1, len(text)),
+                    )
+                    if tracking > 0.2:
+                        style["letterSpacing"] = round(tracking, 2)
+                        grow["tracking"] = round(tracking, 2)
+                        fitted += 1
             continue
         scale = max(TEXT_FIT_MIN_SCALE, min(1.0, limit * 0.99 / estimated))
         new_font = round(font * scale * 2) / 2
@@ -9567,7 +9619,7 @@ def _fit_text_to_box(elements: list[dict[str, Any]]) -> int:
         element.setdefault("fitEvidence", {})["widthFit"] = {
             "from": round(font, 1),
             "to": round(new_font, 1),
-            "box": box[2],
+            "box": round(limit, 1),
             "estimated": round(estimated, 1),
         }
         fitted += 1
