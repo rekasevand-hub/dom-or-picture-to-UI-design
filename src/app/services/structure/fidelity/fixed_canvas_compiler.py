@@ -5418,8 +5418,9 @@ _PICTURE_TRIM_ENABLED = False
 SNAP_MIN_PAGE_GAP = 8
 SNAP_MIN_CHANGE = 12
 SNAP_MIN_OVERLAP = 30
-#: 填充色吸附默认关闭：见 _settle_pictures_and_controls 上方的实测记录。
+SNAP_MIN_RIGHT_PULL = 30
 _SNAP_FILL_ENABLED = False
+#: 填充色吸附默认关闭：见 _settle_pictures_and_controls 上方的实测记录。
 #: 图片来源的墨迹阈值：与自身表面差多少算"有内容"。
 PICTURE_INK_TOLERANCE = 40
 #: 墨迹同时压到上下边框这么多，说明这张裁片是被切断的形状，不是一行字。
