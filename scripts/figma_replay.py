@@ -270,6 +270,96 @@ def _review(render_p: Path, ref_p: Path) -> None:
     )
 
 
+def _bind_target_tickets(tickets, candidates) -> list:
+    """Tie a confirmation back to a candidate, even when the model writes "None".
+
+    The live model filled `ref` with the string "None" while naming "第 1 个候选"
+    in its note — the placeholder in the schema leaked into the answer.  So the
+    binding is: an exact ref wins; otherwise the ordinal in the note; otherwise a
+    single candidate may take it.  Anything else is dropped rather than guessed.
+    """
+    import re
+
+    refs = {candidate.ref for candidate in candidates}
+    bound = []
+    for ticket in tickets:
+        ref = str(ticket.ref or "").strip()
+        if ref in refs:
+            bound.append(ticket)
+            continue
+        match = re.search(r"第\s*(\d+)\s*个", str(ticket.note or ""))
+        if match:
+            index = int(match.group(1)) - 1
+            if 0 <= index < len(candidates):
+                ticket.ref = candidates[index].ref
+                bound.append(ticket)
+                continue
+        if len(candidates) == 1:
+            ticket.ref = candidates[0].ref
+            bound.append(ticket)
+    return bound
+
+
+def _roundtrip(out: Path, design: dict, adapter, *, scale: float = 1.0, limit: int = 1) -> dict:
+    """真机回环：原图 vs 导出图，2× 局部裁片，最多一轮增量修补。
+
+    整页裁判看不见"只在目标端发生"的差异——`输入 · 峰时` 在设计文件里是六个
+    完整的字，只在 Figma 画面被吞掉两个。这一轮把输入换成真机导出图，探针先
+    找出"原图有墨、导出图没墨"的文字和"原图有线、导出图没线"的容器，再让模型
+    逐条确认；成立的就地抬层或补描边，然后重画一次。
+    """
+    import numpy as np
+    from PIL import Image
+
+    from src.app.services.structure.fidelity import vlm_arbiter as arbiter
+    from src.app.services.structure.fidelity.arbitration_store import save_arbitrated
+
+    truth_path = out / "00_screenshot.png"
+    target_path = out / "figma_render.png"
+    if not truth_path.is_file() or not target_path.is_file():
+        return {"note": "缺少原图或导出图"}
+    truth = np.asarray(Image.open(truth_path).convert("RGB"), dtype=np.int16)
+    target = np.asarray(Image.open(target_path).convert("RGB"), dtype=np.int16)
+    if truth.shape != target.shape:
+        return {"note": f"尺寸不一致 {truth.shape} vs {target.shape}"}
+    elements = design.get("elements") or []
+    background = str((design.get("canvas") or {}).get("background") or "")
+    candidates = arbiter.probe_target_candidates(elements, truth, target, background)
+    report: dict = {"candidates": len(candidates), "kinds": [c.kind for c in candidates]}
+    if not candidates:
+        return report
+    try:
+        from replay_pagegraph import _vision_callable
+
+        vision = _vision_callable()
+    except Exception:  # noqa: BLE001 - optional at runtime
+        vision = None
+    if vision is None:
+        report["note"] = "VISION_API_KEY 未配置，只记录候选"
+        return report
+    panels = arbiter.candidate_panels(truth, target, candidates)
+    answer = vision(arbiter.target_prompt(candidates), panels)
+    tickets = _bind_target_tickets(arbiter.parse_design_tickets(answer), candidates)
+    applied = []
+    for ticket in tickets[:limit + 2]:
+        change = arbiter.execute_target(ticket, elements, truth)
+        if change:
+            applied.append({"type": ticket.type, "ref": ticket.ref, **change})
+    report["tickets"] = len(tickets)
+    report["applied"] = applied
+    if not applied:
+        return report
+    save_arbitrated(design, out, stages=["roundtrip"], tickets=[a["type"] for a in applied])
+    try:
+        adapter._send("remove_nodes_by_name", {"name": SCREEN_NAME, "prefix": True})
+        adapter.render_design(design)
+        _export_png(adapter, out / "figma_render.png", scale)
+        report["redrawn"] = True
+    except Exception as exc:  # noqa: BLE001 - the first export is still valid
+        report["redrawError"] = f"{type(exc).__name__}: {exc}"
+    return report
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument(
@@ -312,6 +402,11 @@ def main() -> int:
         help="只读当前文档的文字字体报告（不重画）",
     )
     ap.add_argument(
+        "--no-roundtrip",
+        action="store_true",
+        help="导出后不做真机回环复检（默认做一轮）",
+    )
+    ap.add_argument(
         "--review",
         action="store_true",
         help="导出后把 PNG 交给多模态模型复核排版缺陷（需 VISION_API_KEY）",
@@ -320,6 +415,14 @@ def main() -> int:
 
     out = Path(args.out)
     design_p = out / args.design
+    if args.design == "12_design.json":
+        # 默认导出"真正被渲染过的那一份"：仲裁与补丁都写在
+        # 12_design_arbitrated.json 里，12_design.json 只是编译器的输出。
+        from src.app.services.structure.fidelity.arbitration_store import (
+            resolve_design,
+        )
+
+        design_p = resolve_design(out)
     if not design_p.exists():
         print(f"[FAIL] 缺少 DesignSpec: {design_p}")
         return 1
@@ -382,6 +485,12 @@ def main() -> int:
             print(f"[image] 图片填充报告失败（可忽略）: {type(exc).__name__}: {exc}")
         render_p = _export_png(adapter, out / "figma_render.png", args.scale)
         print(f"[exp  ] {render_p}")
+        if not args.no_roundtrip:
+            loop = _roundtrip(out, design, adapter, scale=args.scale)
+            if loop.get("candidates"):
+                print(f"[loop ] 候选 {loop['candidates']} 条 -> 修复 {len(loop.get('applied') or [])} 条 {loop.get('note') or ''}")
+            if loop.get("redrawn"):
+                render_p = out / "figma_render.png"
         if args.review:
             _review(render_p, out / "00_screenshot.png")
     except Exception as exc:

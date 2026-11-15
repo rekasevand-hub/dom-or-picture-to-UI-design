@@ -660,3 +660,92 @@ marketplace 96.74/95.72），三条新 pass 全部默认关闭。
 **下一步（按样本逐个落，不要一次全开）**：先只开 `_snap_containers_to_fill`，并给它加
 "右边界回收 ≥30px 且与同色邻居重叠 ≥30px"以外的第二道界——AtomGit 的子卡片同样满足这两条，
 需要再加"面积 ≥ 半屏宽"或"该容器本身已是帧"之类按结构的判据，然后逐样本量帧数与 within15。
+
+## 23. 装饰层进主链 + 两段式仲裁：四处缺陷默认开启（本轮）
+
+§22 的结论是"修得对，但分离不开"。这一轮换了个切法：不是给规则加更多颜色/尺寸判据，
+而是把**结构**和**笔画**在时间上分开——帧结构锁定之后才允许落笔画。
+
+### 23.1 三条 pass 移到 `_keep_renderable_frames` 之后
+
+`_decorate_locked_frames()`（新）在成帧锁定后依次跑 `_snap_containers_to_fill` 与
+`_recover_chip_outlines`。之前它们在 `attach_layout_frames` 之前跑，新增的 panel 会被当成
+容器参与布局推断：AtomGit 13→17 帧、review 3→2、wecom 6→4。现在帧的成员名单已经写死，
+加多少笔都不会再改一次结构。
+
+为了让"移动"真的成立，改了三处执行细节：
+
+* 卡片吸附不再把容器刷成页色（那样会把下面那张 panel 糊掉），而是 `fillColor:
+  "transparent"` + `transparent: true`（插件端会清空 fills），真盒由 panel 画；
+* 芯片描边插在**标签之前**，装饰永远在文字之下；
+* 两道新判据把误伤挡住：`_is_main_card()`（宽度 ≥ 画布 20%、包住 ≥2 行字，AtomGit 的
+  60~200px 细碎子块不再被当成主卡）、`_wrapped_by_control()`（标签已被 button/input/
+  或"紧贴的 panel"包住就跳过，防重复套框）。
+
+`_snap_containers_to_fill` 另加 `SNAP_MIN_COVER=0.8`：连通域必须盖住方案盒 80%，被徽章
+劈开的半张白卡（AtomGit 上偏了 260px）不再被采纳。`_recover_chip_outlines` 加了三条细线
+判据——内边距 ≥6px、盒最多比标签大 20px、连通域面积 ≤ 周长×3——白底卡片上那圈"抗锯齿"
+和"套住两行字"的区块边框都不再算芯片。
+
+### 23.2 `_settle_pictures_and_controls` 拆成 A/B/C
+
+| 子规则 | 函数 | 前置条件 |
+|---|---|---|
+| A 裁片向文字退让 | `_trim_pictures_under_text` | 裁片 ≤140×72（是"一段字形"不是插图）**且**墨迹真的画到文字起始处 4px 内 |
+| B 清冒名控件 | `_drop_impostor_controls` | 标签在控件自己的盒上没有 OCR 支撑，**且**没有可见边框（框色与背后底色差 <12），**且**没有自己的底 |
+| C 印章裁片补全 | `_complete_stamp_crops` | 上下边都被墨迹压住（被切断）**且**有文字盒 ≥35% 落在裁片里（图文双印） |
+
+### 23.3 倾角进主链，以及"位图印章不转"
+
+`_measure_stamp_rotations()`：角度从**裁片**上量（`estimate_rotation`→`minAreaRect`），
+写到压在它上面的矢量字上；同一区域里水平重复的那一份删掉。判据是"字的中心落在印章里"，
+不是"旋转后的四角还在印章里"——斜着放的盒子，AABB 必然变大。
+
+`imageBase64` 的元素**不转**：裁片的像素已经带着倾角，再转一次就是转两次。marketplace
+的印章属于这一类，所以它的"原生倾斜"由 §23.2-C 把裁片补全到 162×162 实现（`117×61` 的
+一角 → 整枚印章），水平那条 `5.8 折` 被删掉。矢量徽章（无位图）才走 rotation 字段，
+SVG 出 `rotate(-a cx cy)`、Figma 走 `set_rotation` 中心补偿，真机验证见 §20。
+
+### 23.4 仲裁器：2× 裁片 + 配额 + 同节点互斥 + 工单持久化
+
+* 新工单 `BORDER_OR_SEPARATION`（fix: border|gap|inset）。执行器 `_design_border()` 只改
+  样式（描边色/宽度/圆角），不动几何；卡片被吸附过（自身透明、真盒在 paint 面板上）时读
+  面板，已经补过就回 `already-bordered`，不重复画。
+* 两段式：`probe_candidates()` 先在同色互叠容器（互叠 ≥2% 即提名，marketplace 只叠
+  4.9%）、"原图有描边方案没有"、"控件压字"三类里挑 ≤5 个候选；`candidate_panels()` 出
+  2× 局部对照；`design_prompt(digest, candidates)` 把候选当**问题**而不是结论。
+  marketplace 实测：`candidates: 3`（三条 gap），VLM 三条都命中双卡。
+* 配额 `WHOLE_PAGE_QUOTA=3` + `BAND_QUOTA=3`/带，`cap_design_tickets()` 按盒中心分带；
+  同 `ref` 只留一条，优先级 BORDER/COLLISION > TYPO > MISSING（原来 6 条被字重吃光）。
+* 持久化 `arbitration_store.py`：`12_design.json` 只写编译产物（SHA 缓存键），真正被渲染
+  的那份写 `12_design_arbitrated.json`，带 `sourceSha`。重跑时 SHA 对得上就直接加载，
+  `figma_replay.py --design 12_design.json` 默认解析到它。`--fresh` 可强制重建。
+* 回环 `_roundtrip()`（`figma_replay.py`，默认开）：原图 vs **真机导出图**，同一套 2×
+  裁片，只提名两类——"原图有墨、导出图没墨"和"原图有线、导出图没线"；成立的就地抬
+  `zIndex` 或补描边，重画一次。`_bind_target_tickets()` 处理模型把 ref 写成 `"None"` 的
+  情况：ref 命中 > note 里的"第 N 个" > 唯一候选。
+
+### 23.5 数字（7 页，`_ship`，全默认开启）
+
+| 样本 | 帧 | within30 | within15 | 补丁% | 对比基线（30/15） |
+|---|---|---|---|---|---|
+| AtomGit | 13 | 92.69 | 88.56 | 4.14 | +0.07 / +0.08 |
+| FluxWeaver | 6 | 96.38 | 96.01 | 1.21 | −0.02 / +0.03 |
+| inventory | 10 | 94.52 | 92.80 | 1.61 | −0.02 / −0.02 |
+| inventory2 | 14 | 93.74 | 91.96 | 2.19 | +0.17 / +0.19 |
+| marketplace | 9 | 96.97 | 96.10 | 1.38 | +0.23 / +0.38 |
+| review | 3 | 95.57 | 75.30 | 1.70 | +0.38 / +0.40 |
+| wecom-modal | 6 | 96.67 | 95.65 | 0.73 | 0 / +0.06 |
+
+帧数严格 13/6/10/14/9/3/6；补丁面积 ≤4.14%（预算 8%）；`tests/v2/test_image_*.py`
+**400 passed**（新增 `test_image_pipeline_v2.py` 8 条：装饰不成帧、控件内标签不算芯片、
+倾斜印章转角+删重影、同节点互斥、分带配额、探针提名、目标端吞字、arbitrated 缓存 SHA）。
+
+### 23.6 还没做完的
+
+* `去画布试` 那颗浅色胶囊：底色来自**残差补丁**（矩形），所以圆角是方的，且补丁里已经
+  有字，矢量字再印一遍仍有轻微毛边。`_drop_text_under_patches` 已接到重放期（之前只有
+  编译期跑），毛边变细但没消失。正解是把这颗胶囊做成 `_recover_pill_shapes` 的
+  panel，不是补丁。
+* marketplace 左卡那颗 `看详情` 控件在设计里不存在（只有右卡有），所以左卡是纯文字。
+* 芯片描边只在"四周都有内边距"的标签上生效；`2.0 Mini` 这类左卡芯片仍靠残差补丁。

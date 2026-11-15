@@ -38,6 +38,10 @@ for _path in (ROOT, SCRIPTS):
 
 from sample_sources import MissingScreenshot, bind  # noqa: E402,F401
 from src.app.services.rendering.adapter_factory import build_adapter  # noqa: E402
+from src.app.services.structure.fidelity.arbitration_store import (  # noqa: E402
+    load_arbitrated,
+    save_arbitrated,
+)
 from src.app.services.structure.image_contract import build_image_design  # noqa: E402
 from src.app.utils.svg_raster import rasterize_svg  # noqa: E402
 from src.config import load_config  # noqa: E402
@@ -229,9 +233,13 @@ def _largest_text_in(elements, box) -> str:
 
 
 def _arbitrate(design: dict, picture: str | Path, out: Path, tag: str, render_path: Path) -> dict:
-    """宏观仲裁：整页 + 三段的并排图，五类"设计神似"工单。
+    """两段式仲裁：整页看排版，2× 局部裁片看 1px。
 
-    门禁不再看像素——矢量和原图字形差 0.5px 是正常的。只看结构红线（帧、
+    第一阶段是确定性的：像素探针先在同色互叠的容器、原图有描边而方案没有的
+    盒子、以及压住文字的控件里挑出 3~5 个候选，裁成 2× 对照图。第二阶段模型
+    只做"是/否 + 一句依据"，不负责发现。
+
+    门禁不看像素——矢量和原图字形差 0.5px 是正常的。只看结构红线（帧、
     written == accepted、补丁预算）与几何防撞（重叠数不许变多）。
     """
     import copy
@@ -253,19 +261,37 @@ def _arbitrate(design: dict, picture: str | Path, out: Path, tag: str, render_pa
     key = arbiter.render_key(image_sha, render_path)
     frozen_path = out / "15_arbiter_tickets.json"
     frozen = arbiter.DesignFile.load(frozen_path, key)
-    report: dict = {"key": key, "source": "frozen", "tickets": len(frozen.tickets), "applied": 0, "rolledBack": []}
+    report: dict = {
+        "key": key,
+        "source": "frozen",
+        "tickets": len(frozen.tickets),
+        "candidates": 0,
+        "applied": 0,
+        "rolledBack": [],
+    }
     if not frozen.tickets:
         vision = _vision_callable()
         if vision is None:
             report["note"] = "VISION_API_KEY 未配置，只回放冻结工单"
             return report
-        panels = arbiter.macro_panels(truth, drawn)
-        answer = vision(arbiter.design_prompt(arbiter.scene_digest(elements)), panels)
-        tickets = arbiter.parse_design_tickets(answer)
+        candidates = arbiter.probe_candidates(
+            elements, truth, str(design["canvas"].get("background") or "")
+        )
+        panels = arbiter.macro_panels(truth, drawn) + arbiter.candidate_panels(
+            truth, drawn, candidates
+        )
+        answer = vision(
+            arbiter.design_prompt(arbiter.scene_digest(elements), candidates), panels
+        )
+        tickets = arbiter.cap_design_tickets(
+            arbiter.parse_design_tickets(answer), elements, canvas
+        )
         frozen = arbiter.DesignFile(key=key, tickets=tickets)
         frozen.save(frozen_path)
         report["source"] = "vlm"
         report["tickets"] = len(tickets)
+        report["candidates"] = len(candidates)
+        report["candidateKinds"] = [candidate.kind for candidate in candidates]
     if not frozen.tickets:
         return report
 
@@ -332,6 +358,7 @@ def replay(
     patches: bool = True,
     calibrate_text: bool = True,
     arbiter: bool = False,
+    fresh: bool = False,
 ) -> dict:
     source = ROOT / SAMPLES[tag] / "pipeline"
     reference = _read(source / "image_reference.json")
@@ -362,6 +389,25 @@ def replay(
         return design
 
     design = build()
+    if not fresh:
+        cached = load_arbitrated(out)
+        if cached is not None:
+            # 上一轮已经仲裁过，而且这一轮的编译产物和当时逐字节相同：直接拿
+            # 那份"真正被渲染过的设计"，重导不会把工单修好的东西丢掉。
+            design = cached
+            _render(design, out)
+            elements = design.get("elements") or []
+            return {
+                "tag": tag,
+                "elements": len(elements),
+                "frames": sum(1 for e in elements if e.get("layoutChildren")),
+                "texts": sum(
+                    1 for e in elements if e.get("type") == "text" and e.get("text")
+                ),
+                "patches": sum(1 for e in elements if str(e.get("role") or "") == "patch"),
+                "calibration": {},
+                "arbitration": {"source": "arbitrated-cache"},
+            }
     _render(design, out)
 
     calibration: dict = {}
@@ -434,12 +480,36 @@ def replay(
                     regions,
                 )
                 if added:
-                    (out / "12_design.json").write_text(
-                        json.dumps(design, ensure_ascii=False, indent=1), encoding="utf-8"
+                    from src.app.services.structure.fidelity.fixed_canvas_compiler import (  # noqa: PLC0415
+                        _drop_text_under_patches,
                     )
+
+                    # 补丁是按原图裁的像素，里面已经有那行字；矢量字再印一遍就是
+                    # 双影（"去画布试"四周那圈毛边）。编译期有这一步，重放期的
+                    # 补丁是后加的，得自己再走一次。
+                    _drop_text_under_patches(design["elements"])
                     _render(design, out)
 
     elements = design.get("elements") or []
+    # 12_design.json 保持"编译器的输出"，它是缓存键；真正被渲染的这一份单独存，
+    # 带上来历（工单 + 阶段）。下一次重导会先找它。
+    save_arbitrated(
+        design,
+        out,
+        tickets=[
+            f"{item['type']}:{item.get('fix') or '-'}"
+            for item in arbitration.get("appliedTickets") or []
+        ],
+        stages=[
+            name
+            for name, used in (
+                ("calibration", bool(calibration)),
+                ("arbitration", bool(arbitration.get("applied"))),
+                ("patches", patches),
+            )
+            if used
+        ],
+    )
     return {
         "tag": tag,
         "elements": len(elements),
@@ -476,6 +546,11 @@ def main() -> int:
         action="store_true",
         help="run the frozen visual-arbiter tickets (needs 15_arbiter_tickets.json or a key)",
     )
+    parser.add_argument(
+        "--fresh",
+        action="store_true",
+        help="ignore 12_design_arbitrated.json and rebuild everything",
+    )
     args = parser.parse_args()
     missing = 0
     for tag in args.tags or sorted(SAMPLES):
@@ -487,6 +562,7 @@ def main() -> int:
                     patches=not args.no_patches,
                     calibrate_text=not args.no_calibrate,
                     arbiter=args.arbiter,
+                    fresh=args.fresh,
                 ),
                 flush=True,
             )

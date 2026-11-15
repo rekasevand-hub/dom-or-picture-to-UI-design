@@ -418,11 +418,37 @@ DESIGN_TICKETS = (
     "INCOMPLETE_GRAPHIC_OR_WIDGET",
     "TYPOGRAPHY_HIERARCHY",
     "CONTAINER_CROWDING",
+    "BORDER_OR_SEPARATION",
 )
+#: 边界类工单能派发的执行动作。
+BORDER_FIXES = ("border", "gap", "inset")
 #: 两个文本框重叠超过较小者面积的这个比例，就算 A 压 B。
 COLLISION_SHARE = 0.45
 #: 整页图缩到这个宽度再送模型：它要看排版，不需要数清每一个像素。
 MACRO_WIDTH = 1440
+#: 整页最多几条；上/中/下每一带最多几条。之前是"全页 6 条"，结果四条被字重
+#: 字号吃掉，卡片粘连连一条都没剩下。
+WHOLE_PAGE_QUOTA = 3
+BAND_QUOTA = 3
+#: 局部裁片放大倍数：1px 描边在 0.56× 的整页图里小于一个像素，2× 才看得见。
+CROP_ZOOM = 2
+#: 候选裁片最多几张，以及每张裁片向外留多少上下文。
+CROP_LIMIT = 5
+#: 同色容器互相压住多少比例，才提名为"缝隙"候选。
+GAP_MIN_OVERLAP = 0.02
+CROP_PAD = 12
+#: 目标端修复时把文字抬到这一层：比页面上任何内容都高。
+TARGET_TEXT_Z = 9999
+
+
+@dataclass
+class ProbeCandidate:
+    """一处"几何上可疑"的地方，由确定性探针提出、交给模型确认。"""
+
+    kind: str
+    ref: str
+    box: list[int]
+    note: str = ""
 
 
 @dataclass
@@ -443,8 +469,12 @@ class DesignTicket:
             raise ValueError(f"unknown design ticket: {self.type}")
         if self.type == "MISSING_TEXT_BLOCK" and len(self.roi_bbox) != 4:
             raise ValueError("MISSING_TEXT_BLOCK needs roi_bbox")
-        if self.type in ("TEXT_COLLISION_OR_DRIFT", "TYPOGRAPHY_HIERARCHY") and not self.ref:
+        if self.type in ("TEXT_COLLISION_OR_DRIFT", "TYPOGRAPHY_HIERARCHY", "BORDER_OR_SEPARATION") and not self.ref:
             raise ValueError(f"{self.type} needs ref")
+        if self.type == "BORDER_OR_SEPARATION" and not self.fix:
+            raise ValueError("BORDER_OR_SEPARATION needs a fix")
+        if self.fix and self.fix not in BORDER_FIXES and self.type == "BORDER_OR_SEPARATION":
+            raise ValueError(f"unknown border fix: {self.fix}")
 
 
 @dataclass
@@ -556,31 +586,388 @@ def _resize(image, scale: float):
     return np.asarray(resized)
 
 
-def design_prompt(digest: str) -> str:
+def _rect(element: Mapping[str, Any]) -> tuple[int, int, int, int]:
     return (
-        "图 1 是整页对比（左原图、右当前 Figma 渲染），图 2/3/4 分别是上/中/下三段，"
-        "都是 1:1 原尺寸，左原图右渲染。\n"
-        "判断标准是**设计神似**，不是逐像素相等：排版、间距、容器完整、图标、字重字号层级、"
-        "整体风格要还原。允许字形有细微差别，但下面六类观感问题必须指出：\n"
+        int(float(element.get("x") or 0)),
+        int(float(element.get("y") or 0)),
+        int(float(element.get("width") or 0)),
+        int(float(element.get("height") or 0)),
+    )
+
+
+def _share(inner: Sequence[int], outer: Sequence[int]) -> float:
+    """Share of ``inner`` covered by ``outer``."""
+    width = min(inner[0] + inner[2], outer[0] + outer[2]) - max(inner[0], outer[0])
+    height = min(inner[1] + inner[3], outer[1] + outer[3]) - max(inner[1], outer[1])
+    if width <= 0 or height <= 0:
+        return 0.0
+    return (width * height) / max(1, inner[2] * inner[3])
+
+
+def probe_candidates(
+    elements: Sequence[Mapping[str, Any]],
+    truth,
+    background: str,
+    *,
+    limit: int = CROP_LIMIT,
+) -> list[ProbeCandidate]:
+    """Deterministic suspects for the two-stage judge.
+
+    The whole-page view is the wrong instrument for a 1px stroke: at 0.56× a
+    hairline is half a pixel, and the model — any model — reads it as noise.  So
+    the pixels nominate, and the model only confirms: same-colour surfaces that
+    overlap, a border the picture draws and the design does not, and a control
+    painted on top of its own label.
+
+    Every candidate is a *question*, never a ticket.  A false nomination costs
+    one crop in the prompt; a false ticket costs a wrong edit on the page.
+    """
+    from src.app.services.structure.fidelity import pixel_probe
+
+    height, width = truth.shape[:2]
+    canvas = max(1, width * height)
+    # 卡片吸附之后，卡自己已经不画底色了（真盒由它下面那张 paint 面板负责）。
+    # 探针要问的是"这张盒子的**画**在哪、是什么颜色"，所以透明容器一律换成它的
+    # 面板：否则每张卡都在第一行 continue 掉，候选永远是 0。
+    panels = {
+        str(element.get("id") or "")[len("paint:") :]: element
+        for element in elements
+        if str(element.get("id") or "").startswith("paint:")
+    }
+    surfaces: list[tuple[str, tuple[int, int, int, int], str, Mapping[str, Any]]] = []
+    for element in elements:
+        if element.get("type") != "container":
+            continue
+        if str(element.get("role") or "") not in (
+            "card",
+            "panel",
+            "header",
+            "sidebar",
+            "main-content",
+        ):
+            continue
+        style = element.get("style") or {}
+        fill = str(style.get("fillColor") or "")
+        box = _rect(element)
+        painted = panels.get(str(element.get("id") or ""))
+        if fill in ("", "transparent", "none") and painted is not None:
+            box = _rect(painted)
+            fill = str((painted.get("style") or {}).get("fillColor") or "")
+        if not fill or fill in ("", "transparent", "none"):
+            continue
+        if box[2] * box[3] < canvas * 0.01:
+            continue
+        surfaces.append(
+            (str(element.get("contentRef") or element.get("id") or ""), box, fill.lower(), element)
+        )
+    candidates: list[ProbeCandidate] = []
+    for ref, box, fill, element in surfaces:
+        style = element.get("style") or {}
+        painted = panels.get(str(element.get("id") or ""))
+        border_width = int(style.get("borderWidth") or 0) or int(
+            ((painted or {}).get("style") or {}).get("borderWidth") or 0
+        )
+        if border_width:
+            continue
+        found = pixel_probe.detect_border(truth, box, fill)
+        if not found:
+            continue
+        candidates.append(
+            ProbeCandidate(
+                kind="border",
+                ref=ref,
+                box=list(box),
+                note=f"原图有 {found['color']} 的 {found['width']}px 轮廓，方案里没有",
+            )
+        )
+    # 同色互叠：两张卡共用一种填充，盒又压在一起，看上去就是一块。
+    for index, (ref_a, a, fa, _first) in enumerate(surfaces):
+        for ref_b, b, fb, _second in surfaces[index + 1 :]:
+            if fa != fb:
+                continue
+            # 任意方向压住对方 2% 就足够可疑：marketplace 那两张卡只互叠
+            # 61/1243（4.9%），阈值定 25% 就永远看不见它们。
+            if _share(a, b) < GAP_MIN_OVERLAP and _share(b, a) < GAP_MIN_OVERLAP:
+                continue
+            box = [
+                max(a[0], b[0]),
+                max(a[1], b[1]),
+                min(a[0] + a[2], b[0] + b[2]) - max(a[0], b[0]),
+                min(a[1] + a[3], b[1] + b[3]) - max(a[1], b[1]),
+            ]
+            if box[2] < 8 or box[3] < 8:
+                continue
+            candidates.append(
+                ProbeCandidate(
+                    kind="gap",
+                    ref=ref_a,
+                    box=box,
+                    note=f"与 {ref_b} 同色互叠 {box[2]}x{box[3]}",
+                )
+            )
+    # 控件压字：画在文字之后、又没有 OCR 支撑的按钮/输入框。
+    for order, element in enumerate(elements):
+        if element.get("type") not in ("button", "input"):
+            continue
+        box = _rect(element)
+        for other_order, other in enumerate(elements):
+            if other_order >= order or other.get("type") != "text":
+                continue
+            if not str(other.get("text") or "").strip():
+                continue
+            if _share(_rect(other), box) >= 0.6:
+                candidates.append(
+                    ProbeCandidate(
+                        kind="occlusion",
+                        ref=str(element.get("contentRef") or element.get("id") or ""),
+                        box=list(box),
+                        note=f"控件画在「{str(other.get('text'))[:8]}」之上",
+                    )
+                )
+                break
+    candidates.sort(key=lambda item: item.box[2] * item.box[3], reverse=True)
+    seen: set[tuple[str, str]] = set()
+    unique: list[ProbeCandidate] = []
+    for candidate in candidates:
+        key = (candidate.kind, candidate.ref)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(candidate)
+        if len(unique) >= limit:
+            break
+    return unique
+
+
+def candidate_panels(truth, drawn, candidates: Sequence[ProbeCandidate], zoom: int = CROP_ZOOM):
+    """One 2× side-by-side strip per candidate, in the order they are numbered."""
+    import numpy as np
+
+    height, width = truth.shape[:2]
+    panels = []
+    for candidate in candidates:
+        x, y, w, h = candidate.box
+        x0 = max(0, x - CROP_PAD)
+        y0 = max(0, y - CROP_PAD)
+        x1 = min(width, x + w + CROP_PAD)
+        y1 = min(height, y + h + CROP_PAD)
+        if x1 - x0 < 8 or y1 - y0 < 8:
+            continue
+        left = _resize(truth[y0:y1, x0:x1], zoom)
+        right = _resize(drawn[y0:y1, x0:x1], zoom)
+        gap = np.full((left.shape[0], 10, 3), 255, dtype=np.uint8)
+        panels.append(np.concatenate([left, gap, right], axis=1))
+    return panels
+
+
+def probe_target_candidates(
+    elements: Sequence[Mapping[str, Any]],
+    truth,
+    target,
+    background: str,
+    *,
+    limit: int = CROP_LIMIT,
+) -> list[ProbeCandidate]:
+    """Differences that exist **only** in the export.
+
+    A whole-page judge that compares the SVG to the picture can never see these:
+    the words are in the design, the stroke is in the design, and the target
+    renderer is what loses them.  So the second stage compares the picture to the
+    *export* and nominates exactly two kinds — a label whose ink is gone, and a
+    hairline the export did not draw.
+    """
+    import numpy as np
+
+    from src.app.services.structure.fidelity import pixel_probe
+
+    height, width = truth.shape[:2]
+    candidates: list[ProbeCandidate] = []
+
+    def ink_share(image, box) -> float:
+        x, y, w, h = box
+        x0, y0 = max(0, x), max(0, y)
+        x1, y1 = min(width, x + w), min(height, y + h)
+        if x1 - x0 < 4 or y1 - y0 < 4:
+            return 0.0
+        crop = np.asarray(image[y0:y1, x0:x1], dtype=np.int16)
+        surface = np.median(
+            np.concatenate([crop[:1].reshape(-1, 3), crop[-1:].reshape(-1, 3)]), axis=0
+        )
+        return float((np.abs(crop - surface).max(axis=2) >= 40).mean())
+
+    for element in elements:
+        if element.get("type") != "text" or not str(element.get("text") or "").strip():
+            continue
+        if element.get("rotation"):
+            continue
+        box = _rect(element)
+        if box[2] < 8 or box[3] < 8:
+            continue
+        before = ink_share(truth, box)
+        after = ink_share(target, box)
+        if before < 0.02 or after >= before * 0.4:
+            continue
+        candidates.append(
+            ProbeCandidate(
+                kind="target-text",
+                ref=str(element.get("contentRef") or element.get("id") or ""),
+                box=list(box),
+                note=f"原图有字（墨迹 {before:.0%}），导出图只剩 {after:.0%}",
+            )
+        )
+    for element in elements:
+        if element.get("type") != "container":
+            continue
+        style = element.get("style") or {}
+        fill = str(style.get("fillColor") or "")
+        if not fill or fill in ("transparent", "none"):
+            continue
+        box = _rect(element)
+        if box[2] < 24 or box[3] < 16:
+            continue
+        if not pixel_probe.detect_border(truth, box, fill):
+            continue
+        if pixel_probe.detect_border(target, box, fill):
+            continue
+        candidates.append(
+            ProbeCandidate(
+                kind="target-border",
+                ref=str(element.get("contentRef") or element.get("id") or ""),
+                box=list(box),
+                note="原图有 1px 轮廓，导出图没有",
+            )
+        )
+    candidates.sort(key=lambda item: item.box[2] * item.box[3], reverse=True)
+    return candidates[:limit]
+
+
+def execute_target(
+    ticket: DesignTicket,
+    elements: list[dict[str, Any]],
+    truth,
+) -> dict[str, Any] | None:
+    """One round of repair for a target-only difference, and nothing clever.
+
+    Only two operations are allowed: lift the label above what covers it, and
+    draw the hairline the export dropped.  Both are paint-order or style, so no
+    member moves and no frame is re-vetted.
+    """
+    from src.app.services.structure.fidelity import pixel_probe
+
+    element = _by_ref(elements, ticket.ref)
+    if element is None:
+        return None
+    box = _rect(element)
+    if ticket.type == "BORDER_OR_SEPARATION" or element.get("type") == "container":
+        fill = str((element.get("style") or {}).get("fillColor") or "")
+        found = pixel_probe.detect_border(truth, box, fill) if fill else None
+        if not found:
+            return None
+        style = element.setdefault("style", {})
+        style["borderColor"] = found["color"]
+        style["borderWidth"] = max(1, int(found["width"]))
+        return {"ref": ticket.ref, "action": "border"}
+    # 文字：抬到最上面，并把颜色校准成原图墨色。
+    element["zIndex"] = TARGET_TEXT_Z
+    style = element.setdefault("style", {})
+    style["textColor"] = _ink_colour(truth, box) or style.get("textColor")
+    return {"ref": ticket.ref, "action": "lifted"}
+
+
+def _ink_colour(truth, box: tuple[int, int, int, int]) -> str:
+    import numpy as np
+
+    x, y, w, h = box
+    height, width = truth.shape[:2]
+    x0, y0 = max(0, x), max(0, y)
+    x1, y1 = min(width, x + w), min(height, y + h)
+    if x1 - x0 < 4 or y1 - y0 < 4:
+        return ""
+    crop = np.asarray(truth[y0:y1, x0:x1], dtype=np.int16)
+    surface = np.median(
+        np.concatenate([crop[:1].reshape(-1, 3), crop[-1:].reshape(-1, 3)]), axis=0
+    )
+    ink = np.abs(crop - surface).max(axis=2) >= 40
+    if not ink.any():
+        return ""
+    colour = np.median(crop[ink], axis=0)
+    return "#{:02x}{:02x}{:02x}".format(*(int(value) for value in colour))
+
+
+def target_prompt(candidates: Sequence[ProbeCandidate]) -> str:
+    """Second-stage prompt: original vs the real Figma export, 2× crops only."""
+    return (
+        f"图 1..{len(candidates)} 是**原图**与**真机 Figma 导出图**的 2× 局部对照"
+        "（每张左半是原图，右半是导出图）。这些差异只在导出端出现——"
+        "设计文件里字和线都在，是目标端把它们吞掉了。\n"
+        f"候选清单：\n{candidate_digest(candidates)}\n"
+        "逐条判断候选是否成立，只输出 JSON：\n"
+        '{"tickets":[\n'
+        '{"type":"TEXT_COLLISION_OR_DRIFT","ref":"<文字的 contentRef>","fix":"nudge",'
+        '"dx":0,"dy":0,"note":"导出图把这段字吞了/盖住了"},\n'
+        '{"type":"BORDER_OR_SEPARATION","ref":"<容器的 contentRef>","fix":"border",'
+        '"note":"导出图没画这圈 1px 轮廓"}\n'
+        "]}\n"
+        "不成立就不要报；ref 必须从下面这几个字符串里原样挑一个，"
+        "不要写 None、不要写 null、不要自己编：\n"
+        + "\n".join(f"- {candidate.ref}" for candidate in candidates)
+        + f"\n最多 {BAND_QUOTA} 条。"
+    )
+
+
+def candidate_digest(candidates: Sequence[ProbeCandidate]) -> str:
+    lines = []
+    for index, candidate in enumerate(candidates, start=1):
+        lines.append(
+            f"{index}. [{candidate.kind}] ref={candidate.ref} bbox={candidate.box} {candidate.note}"
+        )
+def design_prompt(digest: str, candidates: Sequence[ProbeCandidate] = ()) -> str:
+    """The one prompt.  Whole page for layout, 2x crops for hairlines.
+
+    图 1 是整页，图 2/3/4 是三段，图 5 起是探针挑出来的局部 2× 对照。分开给是
+    因为两种判断需要两种尺度：排版关系要退后看，1px 描边要贴着看。整页图缩到
+    1440 宽以后，1px 只剩 0.57px，任何模型都只能当噪声。
+    """
+    scenes = (
+        "图 1 是整页对比（左原图、右当前渲染），图 2/3/4 分别是上/中/下三段。"
+    )
+    if candidates:
+        scenes += (
+            f"图 5 起是 {len(candidates)} 张**局部 2× 放大**对照（左原图、右渲染），"
+            "顺序对应下面的候选清单。\n"
+            f"候选清单（确定性探针提出，只等你确认，不是结论）：\n{candidate_digest(candidates)}\n"
+        )
+    return (
+        scenes
+        + "判断标准是**设计神似**，不是逐像素相等：排版、间距、容器完整、图标、字重字号层级、"
+        "整体风格要还原。允许字形有细微差别，但下面七类观感问题必须指出：\n"
         "1 漏掉明显的文字块或副标题；2 文字明显偏移或互相重叠（A 压 B、同文双影）；"
         "3 图标/Logo/印章不完整；4 悬浮小窗结构或零件残缺；"
-        "5 标题/价格/导航的字重字号层级不对；6 容器大小异常或同层互相挤占越界。\n"
+        "5 标题/价格/导航的字重字号层级不对；6 容器大小异常或同层互相挤占越界；"
+        "7 **相邻同色容器之间没有可见边界**——两张卡同色相接、看起来是一块，"
+        "或卡片/胶囊缺了那一圈 1px 轮廓、缺了该有的间距。\n"
         f"当前页面骨架（容器的 ref/bbox，文字的 ref/bbox/内容/字号/字重）：\n{digest}\n"
         "只输出 JSON，不要解释：\n"
         '{"tickets":[\n'
+        '{"type":"BORDER_OR_SEPARATION","ref":"<容器的 contentRef>","fix":"border|gap|inset",'
+        '"note":"第几个候选；边界缺什么"},\n'
         '{"type":"MISSING_TEXT_BLOCK","roi_bbox":[x,y,w,h],"text":"应该出现的文字","note":"依据"},\n'
         '{"type":"TEXT_COLLISION_OR_DRIFT","ref":"<文字的 contentRef>","fix":"remove|nudge","dx":0,"dy":0,"note":"..."},\n'
         '{"type":"INCOMPLETE_GRAPHIC_OR_WIDGET","roi_bbox":[x,y,w,h],"fix":"pill|border","note":"..."},\n'
         '{"type":"TYPOGRAPHY_HIERARCHY","ref":"<文字的 contentRef>","fix":"bold|bigger|both","note":"..."},\n'
         '{"type":"CONTAINER_CROWDING","ref":"<容器的 contentRef>","fix":"clamp","note":"..."}\n'
         "]}\n"
-        "最多 6 条，只报确实影响观感的；坐标用原图像素，ref 必须来自上面的清单。"
+        f"配额：整页最多 {WHOLE_PAGE_QUOTA} 条，上/中/下每一段最多 {BAND_QUOTA} 条；"
+        "同一个节点只能派一种工单（说它缺字就不要再同时说它压字）。"
+        "坐标用原图像素，ref 必须来自上面的清单；有候选时优先回答候选，"
+        "候选都不成立就只报整页的排版问题。"
     )
 
 
 def parse_design_tickets(payload: Mapping[str, Any]) -> list[DesignTicket]:
     tickets: list[DesignTicket] = []
-    for raw in (payload.get("tickets") or [])[:6]:
+    limit = WHOLE_PAGE_QUOTA + BAND_QUOTA * 3
+    for raw in (payload.get("tickets") or [])[:limit]:
         try:
             ticket = DesignTicket(
                 type=str(raw.get("type") or ""),
@@ -597,6 +984,77 @@ def parse_design_tickets(payload: Mapping[str, Any]) -> list[DesignTicket]:
             continue
         tickets.append(ticket)
     return tickets
+
+
+#: 同节点互斥时的优先级：越靠前越可信。MISSING_TEXT_BLOCK 最弱——它是对"这一带
+#: 看不见字"的解释，而碰撞/边界是对"这一带怎么错了"的直接观察。
+TICKET_PRIORITY = {
+    "BORDER_OR_SEPARATION": 0,
+    "TEXT_COLLISION_OR_DRIFT": 1,
+    "TYPOGRAPHY_HIERARCHY": 2,
+    "INCOMPLETE_GRAPHIC_OR_WIDGET": 3,
+    "CONTAINER_CROWDING": 4,
+    "MISSING_TEXT_BLOCK": 5,
+}
+
+
+def _ticket_box(ticket: DesignTicket, elements: Sequence[Mapping[str, Any]]):
+    if len(ticket.roi_bbox) == 4:
+        return list(ticket.roi_bbox)
+    element = _by_ref(elements, ticket.ref)
+    if element is None:
+        return None
+    return list(_rect(element))
+
+
+def cap_design_tickets(
+    tickets: Sequence[DesignTicket],
+    elements: Sequence[Mapping[str, Any]],
+    canvas: tuple[int, int],
+    *,
+    whole: int = WHOLE_PAGE_QUOTA,
+    per_band: int = BAND_QUOTA,
+) -> list[DesignTicket]:
+    """One ticket per node, and a budget per band.
+
+    The quota used to be "six for the page", which the typography tickets ate:
+    of six live tickets for marketplace, two were "this should be bold" and the
+    merged cards never got one.  Three for the page plus three per band keeps a
+    structural finding from being crowded out by a font weight.
+    """
+    by_node: dict[str, DesignTicket] = {}
+    loose: list[DesignTicket] = []
+    for ticket in tickets:
+        node = ticket.ref or (ticket.text.strip() if ticket.type == "MISSING_TEXT_BLOCK" else "")
+        if not node:
+            loose.append(ticket)
+            continue
+        current = by_node.get(node)
+        if current is None or TICKET_PRIORITY.get(ticket.type, 9) < TICKET_PRIORITY.get(
+            current.type, 9
+        ):
+            by_node[node] = ticket
+    ordered = sorted(
+        by_node.values(), key=lambda item: TICKET_PRIORITY.get(item.type, 9)
+    ) + loose
+    height = max(1, int(canvas[1]))
+    used_whole = 0
+    used_band = [0, 0, 0]
+    kept: list[DesignTicket] = []
+    for ticket in ordered:
+        box = _ticket_box(ticket, elements)
+        if box is None or box[3] >= height * 0.5:
+            if used_whole >= whole:
+                continue
+            used_whole += 1
+            kept.append(ticket)
+            continue
+        band = min(2, max(0, int((box[1] + box[3] / 2) * 3 // height)))
+        if used_band[band] >= per_band:
+            continue
+        used_band[band] += 1
+        kept.append(ticket)
+    return kept
 
 
 def _by_ref(elements: Sequence[dict[str, Any]], ref: str) -> dict[str, Any] | None:
@@ -667,7 +1125,98 @@ def execute_design(
         return {"ref": ticket.ref, "action": "clamped"}
     if ticket.type == "INCOMPLETE_GRAPHIC_OR_WIDGET":
         return _design_widget(ticket, elements, truth)
+    if ticket.type == "BORDER_OR_SEPARATION":
+        return _design_border(ticket, elements, truth, canvas)
     return None
+
+
+def _median_fill(truth, box: tuple[int, int, int, int]) -> str:
+    """The colour inside a box, ignoring its 2px rim."""
+    import numpy as np
+
+    x, y, w, h = box
+    height, width = truth.shape[:2]
+    x0, y0 = max(0, x + 2), max(0, y + 2)
+    x1, y1 = min(width, x + w - 2), min(height, y + h - 2)
+    if x1 - x0 < 4 or y1 - y0 < 4:
+        return ""
+    crop = truth[y0:y1, x0:x1]
+    colour = np.median(crop.reshape(-1, 3), axis=0)
+    return "#{:02x}{:02x}{:02x}".format(*(int(value) for value in colour))
+
+
+def _design_border(
+    ticket: DesignTicket,
+    elements: list[dict[str, Any]],
+    truth,
+    canvas: tuple[int, int],
+) -> dict[str, Any] | None:
+    """Give a surface the edge the picture draws around it.
+
+    A border is a *style*, not a new node: it paints inside the box the element
+    already owns, so no member moves and no frame is re-vetted.  `gap` and
+    `inset` land on the same operation on purpose — two same-colour cards are
+    separated by drawing the hairline each of them has in the picture, and
+    Figma's `inset` stroke is the same 1px ring drawn inside the bounds.
+    """
+    from src.app.services.structure.fidelity import pixel_probe
+
+    element = _by_ref(elements, ticket.ref)
+    if element is None:
+        return None
+    box = _rect(element)
+    style = element.setdefault("style", {})
+    fill = str(style.get("fillColor") or "")
+    # 卡片吸附之后，卡本身是透明的，真正的盒子与底色在它下面那张 paint 面板上。
+    panel = None
+    for other in elements:
+        if str(other.get("id") or "") == f"paint:{element.get('id')}":
+            panel = other
+            break
+    if panel is not None:
+        box = _rect(panel)
+        panel_style = panel.get("style") or {}
+        fill = str(panel_style.get("fillColor") or fill)
+        if int(panel_style.get("borderWidth") or 0):
+            # 这条工单要的东西已经在画面上了（吸附阶段补过），不用再画一遍。
+            return {"ref": ticket.ref, "action": "already-bordered"}
+    if box[2] < 8 or box[3] < 8:
+        return None
+    if fill in ("", "transparent", "none"):
+        fill = _median_fill(truth, box)
+    if not fill:
+        return None
+    if int(style.get("borderWidth") or 0):
+        return {"ref": ticket.ref, "action": "already-bordered"}
+    found = pixel_probe.detect_border(truth, box, fill)
+    if not found:
+        return None
+    style["borderColor"] = found["color"]
+    style["borderWidth"] = max(1, int(found["width"]))
+    radius = pixel_probe.estimate_corner_radius(truth, box, fill=fill)
+    if radius:
+        style["borderRadius"] = int(radius)
+    if ticket.fix == "inset":
+        style["borderStyle"] = "inset"
+    siblings = []
+    for other in elements:
+        if other is element or other.get("type") != "container":
+            continue
+        other_fill = str((other.get("style") or {}).get("fillColor") or "")
+        if other_fill.lower() != fill.lower():
+            continue
+        if _share(_rect(other), box) > 0.05:
+            siblings.append(str(other.get("id") or ""))
+    element.setdefault("designEvidence", {})["borderRepair"] = {
+        "ticket": ticket.fix,
+        "colour": found["color"],
+        "siblings": siblings[:4],
+    }
+    return {
+        "ref": ticket.ref,
+        "action": f"border {found['color']} {found['width']}px",
+        "separated": siblings[:4],
+    }
 
 
 def _design_missing_text(ticket: DesignTicket, elements: list[dict[str, Any]], truth):
@@ -794,6 +1343,30 @@ def _restyle_in_place(host, foreground, size: float, expected_text: str, ink_box
     return {"ref": str(host.get("contentRef") or host.get("id") or ""), "action": "in-place:" + ",".join(actions or ["noop"])}
 
 
+def _paint_index_for(
+    elements: Sequence[Mapping[str, Any]], box: Sequence[int]
+) -> int:
+    """Where a decoration has to go so it paints over the page but under content.
+
+    A recovered backdrop inserted at index 0 lands *behind* the page fill and is
+    never seen; one appended last covers the words it was drawn for.  The slot is
+    the first piece of content that overlaps the box, and never before the last
+    page-ground element.
+    """
+    floor = 0
+    for index, element in enumerate(elements):
+        if str(element.get("role") or "") == "page-ground":
+            floor = index + 1
+    for index, element in enumerate(elements):
+        if index < floor:
+            continue
+        if element.get("type") not in ("text", "button", "input", "image"):
+            continue
+        if _share(_rect(element), box) >= 0.3:
+            return index
+    return len(elements)
+
+
 def _design_widget(ticket: DesignTicket, elements: list[dict[str, Any]], truth):
     import numpy as np
 
@@ -821,9 +1394,10 @@ def _design_widget(ticket: DesignTicket, elements: list[dict[str, Any]], truth):
     if ticket.fix == "border":
         style["borderColor"] = "#e6e6e6"
         style["borderWidth"] = 1
-    # 放在最前面：底框必须在文字之下，不能盖住已经画好的内容。
+    # 底框必须落在"页面底色之上、这块内容之下"。之前插在下标 0，结果被 page-ground
+    # 那块整页底色盖住，胶囊等于没画。
     elements.insert(
-        0,
+        _paint_index_for(elements, (x0, y0, x1 - x0, y1 - y0)),
         {
             "id": f"design-widget:{digest}",
             "type": "container",

@@ -5407,24 +5407,56 @@ OUTLINE_CHIP_MAX_WIDTH = 260
 OUTLINE_CHIP_MIN_HEIGHT = 18
 OUTLINE_CHIP_MAX_HEIGHT = 80
 OUTLINE_CHIP_SEARCH_PAD = 30
-#: 细线芯片恢复默认关闭：见调用点的实测记录。
-_CHIP_OUTLINE_ENABLED = False
-#: 图片裁片补全默认关闭：AtomGit 15 个点、wecom 掉 2 帧、review 掉 1 帧。
-_SETTLE_PICTURES_ENABLED = False
-#: 图片裁片"补全"默认关闭：AtomGit within15 掉 7.5 个点、wecom 掉 2 帧。
-_PICTURE_GROW_ENABLED = False
-_PICTURE_TRIM_ENABLED = False
+#: 标签外围已有控件时，控件盒最多比文字大这么多才算"这只芯片已经画过了"。
+OUTLINE_CHIP_WRAP_PAD = 24
+#: 细线最厚算几像素：更厚的连通域是实心块，不是描边。
+OUTLINE_CHIP_MAX_THICKNESS = 3
+#: 胶囊内边距至少这么大，紧贴字面的那一圈算抗锯齿。
+OUTLINE_CHIP_MIN_PAD = 6
+#: 胶囊盒最多比标签大这么多；超过就是区块边框，不是芯片。
+OUTLINE_CHIP_MAX_PAD = 20
+#: 胶囊盒最多比标签大这么多；超过就是区块边框，不是芯片。
+OUTLINE_CHIP_MAX_PAD = 20
+#: 胶囊内边距至少这么大，紧贴字面的那一圈算抗锯齿。
+OUTLINE_CHIP_MIN_PAD = 6
+#: 细线芯片恢复：默认开启，但只作为"帧锁定后的视觉装饰层"，不成帧。
+_CHIP_OUTLINE_ENABLED = True
+#: 图片边缘/冒名控件/印章裁片三条子规则：默认开启，各自有独立前置条件。
+_SETTLE_PICTURES_ENABLED = True
+#: C 子规则（印章裁片补全）只在"图文双印"区域触发，普通图标一律不动。
+_PICTURE_GROW_ENABLED = True
+_PICTURE_TRIM_ENABLED = True
 #: 卡片与页底色差至少这么大，才用填充色连通域去吸附它的盒。
 SNAP_MIN_PAGE_GAP = 8
 SNAP_MIN_CHANGE = 12
+#: 连通域至少要盖住方案盒这么大比例，才算"这张盒子的底"；被徽章劈开的半张卡不算。
+SNAP_MIN_COVER = 0.8
 SNAP_MIN_OVERLAP = 30
 SNAP_MIN_RIGHT_PULL = 30
-_SNAP_FILL_ENABLED = False
+#: 卡片吸附同样移到帧锁定之后：只加 paint 层，不改结构。
+_SNAP_FILL_ENABLED = True
+#: 主卡片级容器的下限：宽度占画布这个比例、且至少包住这么多条文字。
+CARD_MIN_WIDTH_SHARE = 0.2
+CARD_MIN_TEXT_MEMBERS = 2
+CARD_MIN_HEIGHT = 120
 #: 填充色吸附默认关闭：见 _settle_pictures_and_controls 上方的实测记录。
 #: 图片来源的墨迹阈值：与自身表面差多少算"有内容"。
 PICTURE_INK_TOLERANCE = 40
 #: 墨迹同时压到上下边框这么多，说明这张裁片是被切断的形状，不是一行字。
 PICTURE_CUT_SHARE = 0.3
+#: 文字盒至少这么大比例落在裁片里，才算"图文双印"，而不是旁边那行字。
+PICTURE_PRINT_SHARE = 0.35
+#: 裁片右侧的墨迹距离文字起始多少像素内，才算"裁片画到了字上"。
+PICTURE_TRIM_REACH = 4
+#: 会被"裁到文字起始处"的裁片上限：大于这个尺寸的是插图，不是一段字形。
+PICTURE_TRIM_MAX_WIDTH = 140
+PICTURE_TRIM_MAX_HEIGHT = 72
+#: 文字压在这张裁片上多大比例，才认为印章是它的宿主。
+STAMP_HOST_SHARE = 0.25
+#: 冒名小控件的框色与背后底色差这么多，就算"看得见的框"，不能删。
+OUTLINE_IMPOSTOR_GAP = 12
+#: 旋转后的四角允许超出宿主这么多像素（印章是斜的，盒子是正的）。
+STAMP_ROTATION_SLACK = 8
 PICTURE_GROW_PAD = 96
 PICTURE_GROW_TOLERANCE = 48
 #: 只有描边、没有独立填充的芯片：内芯是卡片色，边缘一圈比卡片亮 8 个通道以上。
@@ -6234,6 +6266,7 @@ def _recover_chip_outlines(
     image = image[:height, :width]
     added = 0
     page_fill = _page_fill(elements, "#000000")
+    page_rgb = np.asarray(_hex_rgb(page_fill), dtype=np.int16)
     boxes = [
         (_layout_rect(element), element)
         for element in elements
@@ -6306,7 +6339,28 @@ def _recover_chip_outlines(
             )
             if not inside:
                 continue
+            # 真正的胶囊在文字四周留着一圈内边距。紧贴字面的那一圈是抗锯齿，
+            # 不是描边——白底卡片上尤其明显。
+            if (
+                x - ax < OUTLINE_CHIP_MIN_PAD
+                or y - ay < OUTLINE_CHIP_MIN_PAD // 2
+                or (ax + bw) - (x + w) < OUTLINE_CHIP_MIN_PAD
+                or (ay + bh) - (y + h) < OUTLINE_CHIP_MIN_PAD // 2
+            ):
+                continue
+            # 一只胶囊只装一行字。套住两行、或左右留白超过一只胶囊的边距，
+            # 那圈线是整个区块的边框，不是这一个标签的芯片。
+            if (
+                bw > w + 2 * OUTLINE_CHIP_MAX_PAD
+                or bh > h + 2 * OUTLINE_CHIP_MAX_PAD
+            ):
+                continue
             area = bw * bh
+            # 只认"一圈细线"：连通域的面积得接近周长乘线宽。一块实心色块也满足
+            # 尺寸范围，但它不是描边，画上去就是给卡片糊一块底。
+            thin = OUTLINE_CHIP_MAX_THICKNESS * 2 * (bw + bh)
+            if _area > thin:
+                continue
             if any(
                 _overlap_share((ax, ay, bw, bh), other) >= 0.7
                 for other in painted
@@ -6322,55 +6376,174 @@ def _recover_chip_outlines(
             ring_colour = np.median(ring, axis=0)
             if int(np.abs(ring_colour - colour).max()) < CHIP_OUTLINE_MIN_DELTA:
                 continue
+            # 白底卡片上一圈白线不是描边，是两张近白面之间的缝。线上必须和页面
+            # 有色差，否则画出来只是一块同色底板。
+            if int(np.abs(ring_colour - page_rgb).max()) < CHIP_OUTLINE_MIN_DELTA:
+                continue
             stroke = "#{:02x}{:02x}{:02x}".format(*(int(v) for v in ring_colour))
-            elements.append(
-                {
-                    "id": f"chip-outline:{ax}:{ay}",
-                    "type": "container",
-                    "role": "panel",
-                    "x": ax,
-                    "y": ay,
-                    "width": bw,
-                    "height": bh,
-                    "text": "",
-                    "style": {
-                        "fillColor": fill,
-                        "borderColor": stroke,
-                        "borderWidth": 1,
-                        "borderRadius": min(14, max(8, bh // 3)),
-                    },
-                    "name": "Chip outline",
-                    "contentRef": f"chip-outline:{ax}:{ay}",
-                    "imageMVP": {
-                        "source": "pixel-recovery",
-                        "role": "chip-outline",
-                        "grouping_status": "recovered",
-                    },
-                }
-            )
+            # 标签已经被现有控件包着（button / input / panel 的盒把它整个盖住），
+            # 再画一圈就是重复套框：AtomGit 的工具栏按钮全属这种情况。
+            if _wrapped_by_control(elements, (x, y, w, h), ignore=label):
+                continue
+            outline = {
+                "id": f"chip-outline:{ax}:{ay}",
+                "type": "container",
+                "role": "panel",
+                "x": ax,
+                "y": ay,
+                "width": bw,
+                "height": bh,
+                "text": "",
+                "style": {
+                    "fillColor": fill,
+                    "borderColor": stroke,
+                    "borderWidth": 1,
+                    "borderRadius": min(14, max(8, bh // 3)),
+                },
+                "name": "Chip outline",
+                "contentRef": f"chip-outline:{ax}:{ay}",
+                "imageMVP": {
+                    "source": "pixel-recovery",
+                    "role": "chip-outline",
+                    "grouping_status": "recovered",
+                },
+            }
+            # 插在标签之前：装饰层永远在文字之下，文字永远在它之上。
+            elements.insert(elements.index(label), outline)
             added += 1
             break
     return added
 
 
-def _settle_pictures_and_controls(
+def _wrapped_by_control(
+    elements: Sequence[Mapping[str, Any]],
+    box: tuple[int, int, int, int],
+    *,
+    ignore: Mapping[str, Any] | None = None,
+) -> bool:
+    """Whether an existing control already draws a box around these words.
+
+    A label inside a real button already has the button's own border; the ring
+    the pixel pass finds around it is that border, not a missing chip.  Only a
+    *tight* panel counts — the card the chip sits on contains the words too, and
+    treating that as "already wrapped" would drop every chip on the page.
+    """
+    for element in elements:
+        if element is ignore:
+            continue
+        kind = str(element.get("type") or "")
+        role = str(element.get("role") or "")
+        other = _layout_rect(element)
+        if other is None:
+            continue
+        if kind in ("button", "input"):
+            if _rect_contains(other, box, tolerance=6):
+                return True
+            continue
+        if kind != "container" or role not in ("panel", "chip"):
+            continue
+        if (
+            other[2] <= box[2] + 2 * OUTLINE_CHIP_WRAP_PAD
+            and other[3] <= box[3] + 2 * OUTLINE_CHIP_WRAP_PAD
+            and _rect_contains(other, box, tolerance=6)
+        ):
+            return True
+    return False
+
+
+def _picture_stats(
+    image,
+    width: int,
+    height: int,
+    box: tuple[int, int, int, int],
+) -> dict[str, Any] | None:
+    """Ink summary of one crop: how much of each edge it touches, and its colour."""
+    import numpy as np
+
+    x, y, w, h = box
+    x0, y0 = max(0, x), max(0, y)
+    x1, y1 = min(width, x + w), min(height, y + h)
+    if x1 - x0 < 4 or y1 - y0 < 4:
+        return None
+    crop = image[y0:y1, x0:x1]
+    surface = np.median(
+        np.concatenate([crop[:2].reshape(-1, 3), crop[-2:].reshape(-1, 3)]), axis=0
+    )
+    ink = np.abs(crop - surface).max(axis=2) > PICTURE_INK_TOLERANCE
+    if not ink.any():
+        return None
+    return {
+        "ink": ink,
+        "colour": np.median(crop[ink], axis=0),
+        "top": float(ink[0].mean()),
+        "bottom": float(ink[-1].mean()),
+        "left": float(ink[:, 0].mean()),
+        "right": float(ink[:, -1].mean()),
+        "colours": np.flatnonzero(ink.any(axis=0)),
+    }
+
+
+def _picture_guests(
+    elements: Sequence[Mapping[str, Any]],
+    picture: Mapping[str, Any],
+    box: tuple[int, int, int, int],
+    skip: set[str],
+) -> list[dict[str, Any]]:
+    """Text nodes printed on top of this crop."""
+    guests = []
+    for text in elements:
+        if text is picture or text.get("type") != "text":
+            continue
+        if not str(text.get("text") or "").strip():
+            continue
+        if str(text.get("id") or "") in skip:
+            continue
+        text_box = _layout_rect(text)
+        if text_box is None:
+            continue
+        if _overlap_share(text_box, box) >= 0.25:
+            guests.append(text)
+    return guests
+
+
+def _surface_behind(
+    elements: Sequence[Mapping[str, Any]],
+    box: tuple[int, int, int, int],
+) -> str:
+    """The colour a control's own fill has to differ from to be a real surface."""
+    owner_fill, owner_area = "", 0
+    for element in elements:
+        if element.get("type") != "container":
+            continue
+        other = _layout_rect(element)
+        if other is None or not _rect_contains(other, box, tolerance=2):
+            continue
+        fill = _solid_fill(element)
+        if not fill:
+            continue
+        area = other[2] * other[3]
+        if not owner_area or area < owner_area:
+            owner_fill, owner_area = fill, area
+    return owner_fill
+
+
+def _complete_stamp_crops(
     elements: list[dict[str, Any]],
     image_path: str,
     width: int,
     height: int,
-    ocr_observations: Sequence[Mapping[str, Any]] | None,
 ) -> tuple[int, int]:
-    """Two ways a small picture and the words beside it fight, and one impostor.
+    """Sub-rule C: complete a cut stamp, but only where the words are on top.
 
-    * A crop that runs off its own edges is a *fragment* of a shape — the
-      marketplace discount stamp was cut to its top-left corner, 117x61 of a
-      160x160 seal — so it is completed to the shape's real extent and the words
-      printed on top of it are dropped.  The tilt lives in those pixels; a
-      horizontal text node on top of them is what made "5.8 折" look doubled.
-    * A crop whose ink *stops* before the words begin is a glyph run that happens
-      to be cut from a line of type ("Kimi" with the logo).  Those pixels belong
-      to the text node next door, so the crop is trimmed to end where the text
-      starts instead of printing a second copy of its first word.
+    A crop that runs off its own top *and* bottom edges is a fragment of a shape
+    rather than a whole icon, and that shape is the seal the picture drew.  The
+    second condition is what keeps this rule away from ordinary icons: a text
+    node has to be printing on the same pixels — the 图文双印 a tilted seal
+    produces.  AtomGit's fifty-odd toolbar icons sit fully inside their boxes and
+    carry no words, so none of them qualifies.
+
+    Those words are dropped afterwards: the seal already contains them, and a
+    horizontal copy on top of tilted pixels is exactly the double print.
     """
     import numpy as np
     from PIL import Image
@@ -6380,156 +6553,178 @@ def _settle_pictures_and_controls(
     except (OSError, ValueError):
         return 0, 0
     image = image[:height, :width]
-
-    def _stats(box: tuple[int, int, int, int]):
-        x, y, w, h = box
-        x0, y0 = max(0, x), max(0, y)
-        x1, y1 = min(width, x + w), min(height, y + h)
-        if x1 - x0 < 4 or y1 - y0 < 4:
-            return None
-        crop = image[y0:y1, x0:x1]
-        surface = np.median(
-            np.concatenate([crop[:2].reshape(-1, 3), crop[-2:].reshape(-1, 3)]), axis=0
-        )
-        ink = np.abs(crop - surface).max(axis=2) > PICTURE_INK_TOLERANCE
-        if not ink.any():
-            return None
-        return {
-            "ink": ink,
-            "colour": np.median(crop[ink], axis=0),
-            "top": float(ink[0].mean()),
-            "bottom": float(ink[-1].mean()),
-            "left": float(ink[:, 0].mean()),
-            "right": float(ink[:, -1].mean()),
-            "colours": np.flatnonzero(ink.any(axis=0)),
-        }
-
     grown = 0
-    trimmed = 0
-    texts = [
-        element
-        for element in elements
-        if element.get("type") == "text" and str(element.get("text") or "").strip()
-    ]
-    doomed_texts: set[str] = set()
-    for picture in elements:
+    doomed: set[str] = set()
+    for picture in list(elements):
         if not picture.get("imageBase64"):
             continue
         box = _layout_rect(picture)
         if box is None or box[2] < 24 or box[3] < 16:
             continue
-        stats = _stats(box)
+        stats = _picture_stats(image, width, height, box)
         if stats is None:
             continue
-        guests = [
-            text
-            for text in texts
-            if str(text.get("id") or "") not in doomed_texts
-            and (text.get("id") or "") != (picture.get("id") or "")
-            and _layout_rect(text) is not None
-            and _overlap_share(_layout_rect(text), box) >= 0.25
-        ]
-        if not guests:
+        if not (
+            stats["top"] >= PICTURE_CUT_SHARE and stats["bottom"] >= PICTURE_CUT_SHARE
+        ):
             continue
-        cut = (
-            _PICTURE_GROW_ENABLED
-            and stats["top"] >= PICTURE_CUT_SHARE
-            and stats["bottom"] >= PICTURE_CUT_SHARE
+        overprinted = [
+            text
+            for text in _picture_guests(elements, picture, box, doomed)
+            if _overlap_share(_layout_rect(text), box) >= PICTURE_PRINT_SHARE
+        ]
+        if not overprinted:
+            continue
+        colour = stats["colour"]
+        pad = PICTURE_GROW_PAD
+        window = (
+            max(0, box[0] - pad),
+            max(0, box[1] - pad),
+            min(width, box[0] + box[2] + pad),
+            min(height, box[1] + box[3] + pad),
         )
-        if cut:
-            # Complete the crop to the shape it belongs to, then drop the words
-            # that were printing on top of it.
-            colour = stats["colour"]
-            pad = PICTURE_GROW_PAD
-            window = (
-                max(0, box[0] - pad),
-                max(0, box[1] - pad),
-                min(width, box[0] + box[2] + pad),
-                min(height, box[1] + box[3] + pad),
-            )
-            crop = image[window[1] : window[3], window[0] : window[2]]
-            mask = (np.abs(crop - colour).max(axis=2) <= PICTURE_GROW_TOLERANCE).astype(
-                np.uint8
-            )
-            try:
-                import cv2
+        crop = image[window[1] : window[3], window[0] : window[2]]
+        mask = (np.abs(crop - colour).max(axis=2) <= PICTURE_GROW_TOLERANCE).astype(
+            np.uint8
+        )
+        try:
+            import cv2
 
-                labels_count, labels, comp_stats, _c = cv2.connectedComponentsWithStats(
-                    mask, 8
-                )
-            except Exception:  # pragma: no cover
-                labels_count = 0
-            if labels_count > 1:
-                keep = np.zeros(mask.shape, dtype=bool)
-                for label in range(1, labels_count):
-                    bx, by, bw, bh, _area = (
-                        int(value) for value in comp_stats[label]
-                    )
-                    absolute = (window[0] + bx, window[1] + by, bw, bh)
-                    if _overlap_share(absolute, box) > 0.0:
-                        keep[
-                            by : by + bh,
-                            bx : bx + bw,
-                        ] = True
-                rows = np.flatnonzero(keep.any(axis=1))
-                cols = np.flatnonzero(keep.any(axis=0))
-                if rows.size and cols.size:
-                    new_box = (
-                        window[0] + int(cols[0]),
-                        window[1] + int(rows[0]),
-                        int(cols[-1] - cols[0] + 1),
-                        int(rows[-1] - rows[0] + 1),
-                    )
-                    if new_box[2] * new_box[3] > box[2] * box[3]:
-                        from src.app.services.structure.image_contract import (
-                            crop_image_b64,
-                        )
+            labels_count, _labels, comp_stats, _c = cv2.connectedComponentsWithStats(
+                mask, 8
+            )
+        except Exception:  # pragma: no cover
+            labels_count = 0
+        if labels_count <= 1:
+            continue
+        keep = np.zeros(mask.shape, dtype=bool)
+        for label in range(1, labels_count):
+            bx, by, bw, bh, _area = (int(value) for value in comp_stats[label])
+            absolute = (window[0] + bx, window[1] + by, bw, bh)
+            if _overlap_share(absolute, box) > 0.0:
+                keep[by : by + bh, bx : bx + bw] = True
+        rows = np.flatnonzero(keep.any(axis=1))
+        cols = np.flatnonzero(keep.any(axis=0))
+        if not rows.size or not cols.size:
+            continue
+        new_box = (
+            window[0] + int(cols[0]),
+            window[1] + int(rows[0]),
+            int(cols[-1] - cols[0] + 1),
+            int(rows[-1] - rows[0] + 1),
+        )
+        if new_box[2] * new_box[3] <= box[2] * box[3]:
+            continue
+        from src.app.services.structure.image_contract import crop_image_b64
 
-                        encoded = crop_image_b64(
-                            image_path, new_box[0], new_box[1], new_box[2], new_box[3],
-                            width, height,
-                        )
-                        if encoded:
-                            picture["imageBase64"] = encoded
-                            picture["x"], picture["y"] = new_box[0], new_box[1]
-                            picture["width"], picture["height"] = new_box[2], new_box[3]
-                            grown += 1
-                            box = new_box
-                            for text in guests:
-                                if _overlap_share(_layout_rect(text), box) >= 0.5:
-                                    doomed_texts.add(str(text.get("id") or ""))
-        else:
-            # The crop prints the words of the text node beside it.  End the crop
-            # where the words begin.
-            for text in guests:
-                text_box = _layout_rect(text)
-                if text_box is None:
-                    continue
-                if not (box[0] + 4 < text_box[0] < box[0] + box[2]):
-                    continue
-                keep_width = int(text_box[0] - box[0] - 2)
-                if keep_width < 12:
-                    continue
-                picture["width"] = keep_width
-                trimmed += 1
-                break
-    if doomed_texts:
+        encoded = crop_image_b64(
+            image_path,
+            new_box[0],
+            new_box[1],
+            new_box[2],
+            new_box[3],
+            width,
+            height,
+        )
+        if not encoded:
+            continue
+        picture["imageBase64"] = encoded
+        picture["x"], picture["y"] = new_box[0], new_box[1]
+        picture["width"], picture["height"] = new_box[2], new_box[3]
+        grown += 1
+        for text in overprinted:
+            doomed.add(str(text.get("id") or ""))
+    if doomed:
         elements[:] = [
             element
             for element in elements
-            if str(element.get("id") or "") not in doomed_texts
+            if str(element.get("id") or "") not in doomed
         ]
+    return grown, len(doomed)
 
-    # A control whose label the picture does not have, while the same words exist
-    # elsewhere on the page, is a duplicate dropped in the wrong place: "看详情 →"
-    # was sitting on top of "输入 · 峰时" and printing its rounded border across
-    # the word.
-    by_label: dict[str, int] = {}
-    for element in elements:
-        if element.get("type") in ("button", "input") and str(element.get("text") or "").strip():
-            by_label[str(element.get("text")).strip()] = (
-                by_label.get(str(element.get("text")).strip(), 0) + 1
-            )
+
+def _ink_reaches(columns, cut: int, reach: int) -> bool:
+    """Whether any ink sits within ``reach`` pixels of ``cut`` (a column index)."""
+    import numpy as np
+
+    if columns is None or not len(columns):
+        return False
+    return bool(np.min(np.abs(np.asarray(columns) - int(cut))) <= int(reach))
+
+
+def _trim_pictures_under_text(
+    elements: list[dict[str, Any]],
+    image_path: str,
+    width: int,
+    height: int,
+) -> int:
+    """Sub-rule A: a crop that prints into the words beside it ends where they do.
+
+    The crop carries a second copy of the first glyphs of its label — "Kimi" with
+    the logo, the model name with its mark — so it is cut at the first column the
+    words occupy.  Nothing else about the crop changes.
+    """
+    import numpy as np
+    from PIL import Image
+
+    try:
+        image = np.asarray(Image.open(image_path).convert("RGB"), dtype=np.int16)
+    except (OSError, ValueError):
+        return 0
+    image = image[:height, :width]
+    trimmed = 0
+    for picture in list(elements):
+        if not picture.get("imageBase64"):
+            continue
+        box = _layout_rect(picture)
+        if box is None or box[2] < 24 or box[3] < 16:
+            continue
+        # 只有"一小段字形"会被裁：照片、插图、整块图标即使旁边有字，也不能切。
+        if box[2] > PICTURE_TRIM_MAX_WIDTH or box[3] > PICTURE_TRIM_MAX_HEIGHT:
+            continue
+        stats = _picture_stats(image, width, height, box)
+        if stats is None:
+            continue
+        if stats["top"] >= PICTURE_CUT_SHARE and stats["bottom"] >= PICTURE_CUT_SHARE:
+            # A cut shape belongs to sub-rule C; this one only handles a whole
+            # crop whose right edge prints into the label.
+            continue
+        for text in _picture_guests(elements, picture, box, set()):
+            text_box = _layout_rect(text)
+            if text_box is None:
+                continue
+            if not (box[0] + 4 < text_box[0] < box[0] + box[2]):
+                continue
+            cut = int(text_box[0] - box[0])
+            # 只有墨迹真的画到文字起始处，才叫"裁片压到字上"。图标旁边正好是
+            # 一行字、而图标自己的墨早在一半就结束时，裁掉的是图标本身。
+            if not _ink_reaches(stats["colours"], cut, PICTURE_TRIM_REACH):
+                continue
+            keep_width = cut - 2
+            if keep_width < 12:
+                continue
+            picture["width"] = keep_width
+            trimmed += 1
+            break
+    return trimmed
+
+
+def _drop_impostor_controls(
+    elements: list[dict[str, Any]],
+    ocr_observations: Sequence[Mapping[str, Any]] | None,
+) -> int:
+    """Sub-rule B: a borderless mini control printing over real words is a ghost.
+
+    "输入 · 峰时" was covered by a 48x23 button the plan had moved there; its
+    rounded border printed straight across the word.  A genuine control has a
+    label the picture reads at the control's own box, so the test is OCR support
+    at the *text* node's box, not at the control's.
+    """
+    texts = [
+        element
+        for element in elements
+        if element.get("type") == "text" and str(element.get("text") or "").strip()
+    ]
     dropped = 0
     for element in list(elements):
         if element.get("type") not in ("button", "input"):
@@ -6542,10 +6737,18 @@ def _settle_pictures_and_controls(
             continue
         if _ocr_carries(label, box, ocr_observations):
             continue
-        # The picture does not say these words here, and the box is sitting in
-        # the middle of a text node: a real control's label is what OCR reads at
-        # the control's own box, so this one is an impostor.
-        duplicate = by_label.get(label, 0) >= 2
+        style = element.get("style") or {}
+        fill = str(style.get("fillColor") or "")
+        border_width = int(style.get("borderWidth") or 0)
+        behind = _surface_behind(elements, box)
+        if border_width > 0:
+            border = str(style.get("borderColor") or "")
+            if not behind or not _same_fill(border, behind, OUTLINE_IMPOSTOR_GAP):
+                # 真有框、且框色和背后的底不一样：这是正经控件。
+                continue
+        if fill and behind and not _same_fill(fill, behind, 4):
+            # 真有自己的一块底：不是"无底色小框"。
+            continue
         for text in texts:
             text_box = _layout_rect(text)
             if text_box is None:
@@ -6556,7 +6759,160 @@ def _settle_pictures_and_controls(
                 elements.remove(element)
                 dropped += 1
                 break
-    return grown + trimmed, dropped
+    return dropped
+
+
+def _rotated_bbox(
+    box: tuple[int, int, int, int], angle: float
+) -> tuple[float, float, float, float]:
+    """Axis-aligned box a rotated rectangle occupies (degrees, anticlockwise)."""
+    import math
+
+    x, y, w, h = (float(value) for value in box)
+    theta = math.radians(-angle)
+    cos, sin = math.cos(theta), math.sin(theta)
+    cx, cy = x + w / 2.0, y + h / 2.0
+    corners = []
+    for dx, dy in ((-w / 2, -h / 2), (w / 2, -h / 2), (w / 2, h / 2), (-w / 2, h / 2)):
+        corners.append((cx + dx * cos - dy * sin, cy + dx * sin + dy * cos))
+    xs = [point[0] for point in corners]
+    ys = [point[1] for point in corners]
+    return min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys)
+
+
+def _measure_stamp_rotations(
+    elements: list[dict[str, Any]],
+    image_path: str,
+    width: int,
+    height: int,
+) -> int:
+    """Give a tilted seal's words their real angle, and drop the level copies.
+
+    The angle is measured from the *picture* under the words, not from the words
+    themselves: a text box is axis-aligned by construction, while the seal's ink
+    is a rotated rectangle that `minAreaRect` reads directly.  The picture is
+    never rotated — its pixels already carry the tilt, and rotating the crop
+    would tilt it twice — so this pass only touches vector nodes standing in for
+    the stamp's type.
+
+    A copy of the same words that stays level inside the same seal is the second
+    print the eye reads as a shadow, so it goes.
+    """
+    import numpy as np
+    from PIL import Image
+
+    from src.app.services.structure.fidelity.rotation import estimate_rotation
+
+    try:
+        image = np.asarray(Image.open(image_path).convert("RGB"), dtype=np.int16)
+    except (OSError, ValueError):
+        return 0
+    image = image[:height, :width]
+    pictures = [
+        element
+        for element in elements
+        if element.get("imageBase64") and _layout_rect(element) is not None
+    ]
+    if not pictures:
+        return 0
+    owners = [
+        element
+        for element in elements
+        if element.get("type") == "container" and _layout_rect(element) is not None
+    ]
+    rotated = 0
+    doomed: set[str] = set()
+    for element in list(elements):
+        if element.get("type") != "text" or not str(element.get("text") or "").strip():
+            continue
+        if str(element.get("id") or "") in doomed:
+            continue
+        if element.get("rotation"):
+            continue
+        box = _layout_rect(element)
+        if box is None or box[2] < 12 or box[3] < 10:
+            continue
+        host, host_share = None, 0.0
+        for picture in pictures:
+            share = _overlap_share(box, _layout_rect(picture))
+            if share > host_share:
+                host, host_share = picture, share
+        if host is None or host_share < STAMP_HOST_SHARE:
+            continue
+        host_box = _layout_rect(host)
+        angle = estimate_rotation(image, host_box)
+        if not angle:
+            continue
+        turned = _rotated_bbox(box, angle)
+        # 文字的中心必须落在这张印章里，否则就是把旁边的字也转了。旋转后 AABB
+        # 必然比原盒大（斜着放的盒子就是这么算的），所以判中心不判四角。
+        cx = box[0] + box[2] / 2.0
+        cy = box[1] + box[3] / 2.0
+        if not _rect_contains(
+            host_box, (int(cx), int(cy), 1, 1), tolerance=STAMP_ROTATION_SLACK
+        ):
+            continue
+        # 帧成员被钉死在自己的帧里，旋转后超出帧界会被裁掉。
+        for owner in owners:
+            owner_box = _layout_rect(owner)
+            if _rect_contains(owner_box, box, tolerance=2):
+                if not _rect_contains(
+                    owner_box, turned, tolerance=STAMP_ROTATION_SLACK
+                ):
+                    host = None
+                    break
+        if host is None:
+            continue
+        element["rotation"] = angle
+        element.setdefault("rotationEvidence", {})["stamp"] = {
+            "angle": angle,
+            "host": str(host.get("id") or ""),
+        }
+        rotated += 1
+        label = str(element.get("text") or "").strip()
+        for other in elements:
+            if other is element or other.get("type") != "text":
+                continue
+            if other.get("rotation") or str(other.get("id") or "") in doomed:
+                continue
+            other_box = _layout_rect(other)
+            if other_box is None:
+                continue
+            if _overlap_share(other_box, box) < 0.5:
+                continue
+            if _label_match_ratio(label, str(other.get("text") or "")) >= 0.8:
+                doomed.add(str(other.get("id") or ""))
+    if doomed:
+        elements[:] = [
+            element
+            for element in elements
+            if str(element.get("id") or "") not in doomed
+        ]
+    return rotated
+
+
+def _settle_pictures_and_controls(
+    elements: list[dict[str, Any]],
+    image_path: str,
+    width: int,
+    height: int,
+    ocr_observations: Sequence[Mapping[str, Any]] | None,
+) -> tuple[int, int]:
+    """A + B + C, each with its own precondition.
+
+    The three used to share one switch, which is why two of them had to be
+    parked behind a flag: "complete any crop that touches its own edges" is true
+    of a great many ordinary icons, and AtomGit paid for it.  Split apart, each
+    rule only fires where the picture itself proves it should.
+    """
+    grown = dropped_texts = 0
+    if _PICTURE_GROW_ENABLED:
+        grown, dropped_texts = _complete_stamp_crops(elements, image_path, width, height)
+    trimmed = 0
+    if _PICTURE_TRIM_ENABLED:
+        trimmed = _trim_pictures_under_text(elements, image_path, width, height)
+    dropped_controls = _drop_impostor_controls(elements, ocr_observations)
+    return grown + trimmed, dropped_controls + dropped_texts
 
 
 def _page_fill(elements: Sequence[Mapping[str, Any]], background: str) -> str:
@@ -6574,6 +6930,70 @@ def _page_fill(elements: Sequence[Mapping[str, Any]], background: str) -> str:
             if fill:
                 return fill
     return background
+
+
+def _decorate_locked_frames(
+    elements: list[dict[str, Any]],
+    image_path: str,
+    width: int,
+    height: int,
+    background: str,
+) -> dict[str, int]:
+    """视觉装饰层：帧结构锁定之后才落笔，只画，不成帧。
+
+    两件事都在这里做，因为它们是同一类东西——原图上有、方案里没有的**笔画**：
+
+    * 卡片的底板与 1px 低对比度轮廓（`_snap_containers_to_fill`）；
+    * 标签外围那一圈闭合的细线（`_recover_chip_outlines`）。
+
+    之前它们在 `attach_layout_frames` 之前跑，新增的 panel 会被当成容器参与布局
+    推断：AtomGit 从 13 帧涨到 17 帧、review 3→2、wecom 6→4。挪到
+    `_keep_renderable_frames` 之后，帧的成员名单与数量已经写死，这里加多少笔都
+    不会再改一次结构。
+    """
+    report = {"cardPanels": 0, "chipOutlines": 0}
+    if _SNAP_FILL_ENABLED:
+        report["cardPanels"] = _snap_containers_to_fill(
+            elements, image_path, width, height, background
+        )
+    if _CHIP_OUTLINE_ENABLED:
+        report["chipOutlines"] = _recover_chip_outlines(
+            elements, image_path, width, height
+        )
+    return report
+
+
+def _is_main_card(
+    element: Mapping[str, Any],
+    elements: Sequence[Mapping[str, Any]],
+    canvas_width: int,
+) -> bool:
+    """Whether this box is one cell of the page skeleton, not a sub-block.
+
+    macOS-style pages are built from a handful of large surfaces; inside each of
+    them live dozens of boxes of the same colour.  Snapping a sub-block produces
+    a second paint layer over its own content, which is how AtomGit lost four
+    frames when this pass ran before the frame lock.  A cell of the skeleton is
+    wide, holds several lines of text, and is not itself the page.
+    """
+    try:
+        x, y = float(element.get("x") or 0), float(element.get("y") or 0)
+        w, h = float(element.get("width") or 0), float(element.get("height") or 0)
+    except (TypeError, ValueError):
+        return False
+    if w < max(200.0, canvas_width * CARD_MIN_WIDTH_SHARE) or h < CARD_MIN_HEIGHT:
+        return False
+    texts = 0
+    for other in elements:
+        if other is element or other.get("type") != "text":
+            continue
+        if not str(other.get("text") or "").strip():
+            continue
+        ox, oy = float(other.get("x") or 0), float(other.get("y") or 0)
+        ow, oh = float(other.get("width") or 0), float(other.get("height") or 0)
+        if ox >= x - 2 and oy >= y - 2 and ox + ow <= x + w + 2 and oy + oh <= y + h + 2:
+            texts += 1
+    return texts >= CARD_MIN_TEXT_MEMBERS
 
 
 def _snap_containers_to_fill(
@@ -6633,6 +7053,11 @@ def _snap_containers_to_fill(
             continue
         if w < 200 or h < 120:
             continue
+        # 只处理主卡片级容器。AtomGit 内部那些 60~200px 的细碎子块一旦被吸附，
+        # 就会多出一层 paint 并把内容盖住；判据看的是"这张盒子是不是页面骨架的
+        # 一格"，与具体站点无关。
+        if not _is_main_card(element, elements, width):
+            continue
         # The tolerance has to be a fraction of the gap to the page, or the page
         # joins the mask: marketplace's card is #1a1917 on #100f0d, ten channels
         # apart, and the generic twelve-channel tolerance floods the whole canvas
@@ -6679,6 +7104,13 @@ def _snap_containers_to_fill(
             continue
         if (bx, by, bw, bh) == (x, y, w, h):
             continue
+        # The component has to be *this box's* paint, not a slice of it: a white
+        # card split by a badge yields a same-colour half, and snapping to that
+        # half moved AtomGit's card by 260px.  A box measured short still covers
+        # its own paint; one measured over a neighbour covers a piece.
+        covered = _overlap_share((x, y, w, h), (bx, by, bw, bh))
+        if covered < SNAP_MIN_COVER:
+            continue
         # A box that is off by a few pixels is a measurement, not a mistake:
         # only a real gap (a card measured into its neighbour) is worth a
         # second paint layer.  AtomGit's sub-cards move by 2-4px and three of
@@ -6687,11 +7119,22 @@ def _snap_containers_to_fill(
             abs(bx - x), abs(by - y),
             abs((bx + bw) - (x + w)), abs((by + bh) - (y + h)),
         )
-        if shift < SNAP_MIN_CHANGE:
-            continue
         from src.app.services.structure.fidelity.pixel_probe import (
             sample_container_decoration,
         )
+
+        if shift < SNAP_MIN_CHANGE:
+            # 盒子本身没量错，缺的只是那一圈 1px 轮廓：直接补样式，不再多画一层
+            # 同色底板（多一层会把卡片里的内容压住，也会把 a11y 树弄脏）。
+            style = element.setdefault("style", {})
+            if not int(style.get("borderWidth") or 0):
+                decoration = sample_container_decoration(
+                    image_path, (x, y, w, h), str(fill)
+                )
+                if decoration.get("borderColor"):
+                    style.update(decoration)
+                    snapped += 1
+            continue
 
         decoration = sample_container_decoration(image_path, (bx, by, bw, bh), str(fill))
         # Move the paint, not the structure.  Rewriting the container's box
@@ -6720,9 +7163,14 @@ def _snap_containers_to_fill(
         }
         index = elements.index(element)
         elements.insert(index, panel)
-        element.setdefault("style", {})["fillColor"] = _page_fill(elements, background)
+        # 容器自己不再画那块错误的底色：真盒已经由 panel 画在它下面，容器再涂
+        # 一次就会把 panel 盖掉，并把多出来的 61px 铺到邻卡上（两卡粘成一块）。
+        # 置为透明而不是页色：页色会把下面那张 panel 一起糊掉。
+        style = element.setdefault("style", {})
+        style["fillColor"] = "transparent"
+        element["transparent"] = True
         for key in ("borderColor", "borderWidth", "borderRadius"):
-            element["style"].pop(key, None)
+            style.pop(key, None)
         snapped += 1
     return snapped
 
@@ -11950,11 +12398,6 @@ def compile_scene_plan_to_design(
     # 页面最大的那行是展示标题：它按角色定字重，不按平均笔宽。
     _restore_display_weight(elements, image_path, width, height)
     _drop_page_coloured_shells(elements, background)
-    # 卡片内部那些"只有一圈细线"的芯片。
-    # 实测：这条规则在 AtomGit 上把按钮/输入框的描边也当成芯片，帧数 13→17 且
-    # within15 掉 7 个点，FluxWeaver 6→3。先关掉，只留判据与文档。
-    if _CHIP_OUTLINE_ENABLED:
-        _recover_chip_outlines(elements, image_path, width, height)
     # Icon captions the model invented have to go before the duplicate pass:
     # "search" over a magnifier looks like a label that a real one duplicates.
     _drop_icon_descriptor_labels(elements, ocr_observations)
@@ -11975,6 +12418,8 @@ def compile_scene_plan_to_design(
         _settle_pictures_and_controls(
             elements, image_path, width, height, ocr_observations
         )
+    # 倾斜的印章：角度从裁片上量，写到矢量字上，水平重复的那一份删掉。
+    _measure_stamp_rotations(elements, image_path, width, height)
     _separate_badge_icon_text(elements)
     # A chip whose word was absorbed by the row's own line prints empty; OCR
     # read that chip's word at the chip's coordinates.
@@ -11993,10 +12438,8 @@ def compile_scene_plan_to_design(
     # After the trimmers, before the frames: a container measured short of its
     # own paint leaves a band of page where the picture has colour — inventory's
     # header, sixteen rows of it.  Run any earlier and the trim passes take the
-    # grown edge straight back.
-    # The box the plan measured, replaced by the box the picture paints.
-    if _SNAP_FILL_ENABLED:
-        _snap_containers_to_fill(elements, image_path, width, height, background)
+    # grown edge straight back.  (_extend_solid_edges owns that job now; the
+    # card snap moved behind the frame lock and only paints.)
     _extend_solid_edges(elements, image_path, width, height, background)
     written_frames = attach_layout_frames(elements)
     # A frame's members must paint as one contiguous unit; an overlay that
@@ -12014,6 +12457,12 @@ def compile_scene_plan_to_design(
     # under.  Check the final order, not the one the boxes were authored in.
     _audit_filled_occluders(elements, background)
     layout_frames = _keep_renderable_frames(elements, written_frames)
+    # 帧结构已经锁定（谁是谁的成员、谁在第几帧，都不会再变）。装饰层从这里开始
+    # 只画不改结构：卡片的 1px 轮廓、被切开的两张卡之间的底板、芯片外那一圈细线。
+    # 放在锁之后，加多少笔都不会掉帧或增帧——这是之前 13→17 帧的真因。
+    decoration = _decorate_locked_frames(
+        elements, image_path, width, height, background
+    )
     # Last, and outside every frame: a patch is an overlay on the drawing, not a
     # member of it.  Joining a frame would change that frame's member list and,
     # with it, the paint order of everything the frame contains.
