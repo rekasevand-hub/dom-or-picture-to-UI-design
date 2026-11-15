@@ -3298,6 +3298,14 @@ PARAGRAPH_TAIL_LENGTH_MARGIN = 8
 PARAGRAPH_TAIL_MIN_DROP = 4
 PARAGRAPH_TAIL_REACH = 12
 PARAGRAPH_TAIL_HORIZONTAL_SHARE = 0.5
+#: Rebuilding a paragraph from its OCR lines: the seed has to sit on the node's
+#: own first line, the chain grows downwards in the same column, and the joined
+#: text has to agree with the model's wording this well before anything moves.
+PARAGRAPH_REFLOW_MIN_CHARS = 20
+PARAGRAPH_REFLOW_MAX_LINES = 6
+PARAGRAPH_REFLOW_MIN_SIMILARITY = 0.85
+PARAGRAPH_REFLOW_BAND_SHARE = 0.5
+PARAGRAPH_REFLOW_MAX_GAP = 1.8
 #: Channel distance under which text colour and surface are the same colour.
 INK_MIN_CONTRAST = 30
 
@@ -5321,6 +5329,224 @@ def _pill_radius(image, box, target, box_height: int) -> int:
     return int(max(2, min(box_height // 2, inset, 24)))
 
 
+def _reflow_key(text: str) -> str:
+    """Words comparable across OCR and the model, punctuation included.
+
+    OCR prints a half-width colon where the model wrote a full-width one, so the
+    punctuation is folded as well; everything else is the fold the duplicate
+    passes already use.  Whitespace is dropped: a line break is exactly what is
+    being reconstructed.
+    """
+    folded = _tail_key({"text": text})
+    return folded.translate(
+        str.maketrans({"：": ":", "，": ",", "。": ".", "；": ";", "（": "(", "）": ")", "、": ","})
+    )
+
+
+def _reflow_paragraphs(
+    elements: list[dict[str, Any]],
+    ocr_observations: Sequence[Mapping[str, Any]] | None,
+) -> int:
+    """Give a paragraph back the lines the picture actually has.
+
+    The plan models a card's description as one string in a one-line-tall box.
+    The picture wraps that string over two lines, so the browser prints one long
+    line, the patch pass fills the second line with a picture of it, and Figma —
+    which wraps inside the box — draws two lines on top of each other.  Three
+    renderers, three wrong answers, one cause: nobody went back to the OCR lines.
+
+    This pass does, and only when the lines agree with the node's own words: the
+    seed line has to overlap the box, the chain has to grow downwards in the same
+    horizontal band, and the joined text has to match the node at
+    ``PARAGRAPH_REFLOW_MIN_SIMILARITY``.  The node keeps the model's wording —
+    the OCR lines only say *where* to break it — because OCR misreads characters
+    ("Al" for "AI") and the model does not.
+    """
+    if not ocr_observations:
+        return 0
+    import numpy as np
+
+    lines = []
+    for observation in ocr_observations:
+        box = observation.get("bbox")
+        text = str(observation.get("text") or "").strip()
+        if not text or not isinstance(box, (list, tuple)) or len(box) != 4:
+            continue
+        try:
+            x, y, w, h = (float(value) for value in box)
+        except (TypeError, ValueError):
+            continue
+        if w <= 0 or h <= 0:
+            continue
+        lines.append({"text": text, "key": _reflow_key(text), "box": (x, y, w, h)})
+    if not lines:
+        return 0
+
+    reflowed = 0
+    for element in elements:
+        if element.get("type") != "text" or not element.get("text"):
+            continue
+        if element.get("lines"):
+            continue
+        style = element.get("style") or {}
+        size = float(style.get("fontSize") or 0)
+        height = float(element.get("height") or 0)
+        if size <= 0 or height <= 0 or height > size * 1.7:
+            continue
+        node_key = _reflow_key(str(element.get("text") or ""))
+        if len(node_key) < PARAGRAPH_REFLOW_MIN_CHARS:
+            continue
+        box = _layout_rect(element)
+        if box is None:
+            continue
+        seed = _reflow_seed(lines, box, node_key)
+        if seed is None:
+            continue
+        chain = _reflow_chain(lines, seed, box, node_key)
+        if len(chain) < 2:
+            continue
+        joined = "".join(line["key"] for line in chain)
+        from difflib import SequenceMatcher
+
+        if SequenceMatcher(None, joined, node_key).ratio() < PARAGRAPH_REFLOW_MIN_SIMILARITY:
+            continue
+        counts = [len(line["key"]) for line in chain]
+        parts = _split_by_lengths(str(element.get("text") or ""), counts)
+        if len(parts) < 2 or not all(parts):
+            continue
+        left = min(line["box"][0] for line in chain)
+        top = min(line["box"][1] for line in chain)
+        right = max(line["box"][0] + line["box"][2] for line in chain)
+        bottom = max(line["box"][1] + line["box"][3] for line in chain)
+        pitches = [
+            chain[index + 1]["box"][1] - chain[index]["box"][1]
+            for index in range(len(chain) - 1)
+        ]
+        pitch = float(np.median(pitches)) if pitches else float(height)
+        element["x"] = round(left, 1)
+        element["y"] = round(top, 1)
+        element["width"] = round(right - left, 1)
+        element["height"] = round(bottom - top, 1)
+        element["lines"] = parts
+        element["lineHeight"] = round(pitch, 1)
+        element["lineHeightPolicy"] = "observed"
+        element["textAnchor"] = "start"
+        element["reflowEvidence"] = {
+            "method": "ocr-lines",
+            "lines": len(chain),
+            "pitch": round(pitch, 1),
+            "similarity": round(
+                SequenceMatcher(None, joined, node_key).ratio(), 3
+            ),
+        }
+        reflowed += 1
+    return reflowed
+
+
+def _reflow_seed(
+    lines: Sequence[Mapping[str, Any]],
+    box: tuple[int, int, int, int],
+    node_key: str,
+) -> Mapping[str, Any] | None:
+    """The OCR line this node starts on: over the box's first line, first words agree."""
+    x, y, w, h = box
+    best = None
+    best_score = 0.0
+    for line in lines:
+        lx, ly, lw, lh = line["box"]
+        if ly > y + h * 0.8:
+            continue
+        if ly + lh < y + h * 0.2:
+            continue
+        overlap = min(x + w, lx + lw) - max(x, lx)
+        if overlap < min(w, lw) * PARAGRAPH_REFLOW_BAND_SHARE:
+            continue
+        key = str(line["key"])
+        if not key or not node_key.startswith(key[: max(4, len(key) // 2)]):
+            continue
+        score = len(key) / max(1, len(node_key))
+        if score > best_score:
+            best = line
+            best_score = score
+    return best
+
+
+def _reflow_chain(
+    lines: Sequence[Mapping[str, Any]],
+    seed: Mapping[str, Any],
+    box: tuple[int, int, int, int],
+    node_key: str,
+) -> list[Mapping[str, Any]]:
+    """Follow the seed downwards while the lines still spell the node's words.
+
+    Geometry alone would happily eat the meta row under the paragraph ("TSX ·
+    4 小时前"), so every step also has to be the next piece of the sentence:
+    the remaining text must start with the candidate's words.  That is what
+    makes the chain stop at the paragraph's last line instead of the card's.
+    """
+    x, _y, w, _h = box
+    chain = [seed]
+    cursor = seed
+    consumed = len(str(seed["key"]))
+    while consumed < len(node_key) and len(chain) < PARAGRAPH_REFLOW_MAX_LINES:
+        current_bottom = cursor["box"][1] + cursor["box"][3]
+        remaining = node_key[consumed:]
+        candidates = []
+        for line in lines:
+            if line in chain:
+                continue
+            lx, ly, lw, lh = line["box"]
+            gap = ly - current_bottom
+            if gap < -cursor["box"][3] * 0.4 or gap > cursor["box"][3] * PARAGRAPH_REFLOW_MAX_GAP:
+                continue
+            overlap = min(x + w, lx + lw) - max(x, lx)
+            if overlap < lw * PARAGRAPH_REFLOW_BAND_SHARE:
+                continue
+            candidates.append((gap, line))
+        if not candidates:
+            break
+        candidates.sort(key=lambda item: item[0])
+        picked = None
+        for _gap, line in candidates:
+            key = str(line["key"])
+            if key and remaining.startswith(key):
+                picked = line
+                break
+        if picked is None:
+            # The last line of the picture may hold more than the model wrote;
+            # accept it when the remaining words are its prefix.
+            for _gap, line in candidates:
+                key = str(line["key"])
+                if key and len(remaining) >= 4 and key.startswith(remaining[: max(4, len(remaining) - 2)]):
+                    picked = line
+                    break
+        if picked is None:
+            break
+        chain.append(picked)
+        cursor = picked
+        consumed += len(str(picked["key"]))
+    return chain
+
+
+def _split_by_lengths(text: str, counts: Sequence[int]) -> list[str]:
+    """Cut the model's own words at the character counts the picture used."""
+    parts: list[str] = []
+    position = 0
+    consumed = 0
+    start = 0
+    for index, limit in enumerate(counts):
+        last = index == len(counts) - 1
+        target = consumed + limit
+        while position < len(text) and (last or consumed < target):
+            char = text[position]
+            position += 1
+            if not char.isspace():
+                consumed += 1
+        parts.append(text[start:position].strip())
+        start = position
+    return parts
+
+
 def _recover_page_fill(
     elements: list[dict[str, Any]],
     image_path: str,
@@ -6902,6 +7128,10 @@ def compile_scene_plan_to_design(
         ocr_observations,
         _pixel_edges(image_path, width, height),
     )
+    # A description the plan flattened into one line is a paragraph in the
+    # picture; OCR still knows where its lines break.  Rebuild it before the
+    # snap, which would otherwise pin the node back onto its first line.
+    _reflow_paragraphs(elements, ocr_observations)
     # A sentence measured from the wrong origin prints through its own border.
     _snap_text_to_ocr(elements, ocr_observations)
     # Words the plan never carried: OCR read them, so they are on the page.

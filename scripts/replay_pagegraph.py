@@ -23,6 +23,7 @@ comparison honest: the only thing that changes between two runs is the compiler.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from dataclasses import replace
@@ -81,12 +82,160 @@ def _within30(truth_path: str | Path, render_path: str | Path) -> float:
     return round(float((np.abs(truth - drawn).max(axis=2) <= 30).mean()) * 100, 2)
 
 
+def _within30_box(truth_path: str | Path, render_path: str | Path, box) -> float:
+    """The same test, restricted to one candidate block."""
+    import numpy as np
+    from PIL import Image
+
+    truth = np.asarray(Image.open(truth_path).convert("RGB"), dtype=np.int16)
+    drawn = np.asarray(Image.open(render_path).convert("RGB"), dtype=np.int16)
+    if truth.shape != drawn.shape:
+        return 0.0
+    x, y, w, h = (int(value) for value in box)
+    height, width = truth.shape[:2]
+    block_truth = truth[max(0, y) : min(height, y + h), max(0, x) : min(width, x + w)]
+    block_drawn = drawn[max(0, y) : min(height, y + h), max(0, x) : min(width, x + w)]
+    if block_truth.size == 0:
+        return 0.0
+    return round(
+        float((np.abs(block_truth - block_drawn).max(axis=2) <= 30).mean()) * 100, 2
+    )
+
+
+def _patch_share(elements, canvas: tuple[int, int]) -> float:
+    """Patch area as a percentage of the canvas — the budget the plan allows."""
+    total = max(1, int(canvas[0]) * int(canvas[1]))
+    area = sum(
+        int(element["width"]) * int(element["height"])
+        for element in elements
+        if str(element.get("role") or "") == "patch"
+    )
+    return round(area / total * 100, 2)
+
+
+#: Accepted frames measured on the frozen designs; mirrors the regression test so
+#: a ticket cannot buy its way past a frame the sample is required to keep.
+FRAME_FLOORS = {
+    "AtomGit": 9,
+    "FluxWeaver": 6,
+    "inventory": 9,
+    "inventory2": 11,
+    "marketplace": 7,
+    "review": 3,
+    "wecom-modal": 6,
+}
+
+
+def _arbitrate(design: dict, picture: str | Path, out: Path, tag: str, render_path: Path) -> dict:
+    """Run the frozen tickets for this render, and gate every one of them.
+
+    The model never sees coordinates it can change: it sees numbered blocks and
+    answers with an index.  What it says is frozen to ``15_arbiter_tickets.json``
+    under a key built from the picture and the render, so a replay is the same
+    run every time.  Each ticket is then executed, re-rendered and measured; a
+    ticket that fails any of the four gates is rolled back on its own.
+    """
+    import copy
+
+    import numpy as np
+    from PIL import Image
+
+    from src.app.services.rendering.adapter_base import paint_order, resolve_frames
+    from src.app.services.structure.fidelity import vlm_arbiter as arbiter
+
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from visual_alignment import residual_regions  # noqa: PLC0415
+
+    elements = design["elements"]
+    truth = np.asarray(Image.open(picture).convert("RGB"), dtype=np.int16)
+    drawn = np.asarray(Image.open(render_path).convert("RGB"), dtype=np.int16)
+    texts = [
+        (int(e["x"]), int(e["y"]), int(e["width"]), int(e["height"]))
+        for e in elements
+        if e.get("type") == "text" and e.get("text")
+    ]
+    pictures = [
+        (int(e["x"]), int(e["y"]), int(e["width"]), int(e["height"]))
+        for e in elements
+        if e.get("imageBase64")
+    ]
+    candidates = arbiter.build_candidates(
+        truth, drawn, residual_regions(truth, drawn, texts, pictures)
+    )
+    canvas = (int(design["canvas"]["width"]), int(design["canvas"]["height"]))
+    image_sha = hashlib.sha256(Path(picture).read_bytes()).hexdigest()
+    key = arbiter.render_key(image_sha, render_path)
+    frozen_path = out / "15_arbiter_tickets.json"
+    frozen = arbiter.TicketFile.load(frozen_path, key)
+    report: dict = {
+        "key": key,
+        "candidates": len(candidates),
+        "tickets": len(frozen.tickets),
+        "applied": 0,
+        "rolledBack": [],
+        "source": "frozen",
+    }
+    if not frozen.tickets:
+        try:
+            frozen = arbiter.propose(
+                candidates,
+                [arbiter.side_by_side(truth, drawn, candidate) for candidate in candidates],
+                vision=None,
+            )
+        except arbiter.ArbiterUnavailable as exc:
+            report["note"] = str(exc)
+            return report
+        frozen.key = key
+        frozen.save(frozen_path)
+        report["source"] = "vlm"
+
+    floor = FRAME_FLOORS.get(tag, 0)
+    for ticket in frozen.tickets:
+        roi = ticket.roi_bbox or next(
+            (
+                list(candidate.box)
+                for candidate in candidates
+                if candidate.index == ticket.candidate
+            ),
+            [],
+        )
+        roi_before = _within30_box(picture, render_path, roi) if roi else 0.0
+        global_before = _within30(picture, render_path)
+        shadow = copy.deepcopy(elements)
+        if not arbiter.execute(ticket, elements, truth, drawn):
+            continue
+        _render(design, out)
+        reasons: dict = {}
+        written = sum(1 for element in elements if element.get("layoutChildren"))
+        accepted = resolve_frames(elements, paint_order(elements), reasons)
+        gate = arbiter.GateResult(
+            roi_before=roi_before,
+            roi_after=_within30_box(picture, render_path, roi) if roi else roi_before,
+            global_before=global_before,
+            global_after=_within30(picture, render_path),
+            frames=written,
+            frames_floor=max(floor, 0),
+            written_equals_accepted=len(accepted) == written,
+            patch_share=_patch_share(elements, canvas),
+        )
+        if gate.passed:
+            report["applied"] += 1
+            continue
+        elements[:] = shadow
+        _render(design, out)
+        report["rolledBack"].append({"type": ticket.type, "why": gate.failures})
+    if frozen.tickets:
+        frozen.save(frozen_path)
+    return report
+
+
 def replay(
     tag: str,
     out_prefix: str,
     out_dir: Path | None = None,
     patches: bool = True,
     calibrate_text: bool = True,
+    arbiter: bool = False,
 ) -> dict:
     source = ROOT / SAMPLES[tag] / "pipeline"
     reference = _read(source / "image_reference.json")
@@ -187,6 +336,10 @@ def replay(
                     )
                     _render(design, out)
 
+    arbitration: dict = {}
+    if arbiter:
+        arbitration = _arbitrate(design, _picture, out, tag, out / "render.png")
+
     elements = design.get("elements") or []
     return {
         "tag": tag,
@@ -201,6 +354,7 @@ def replay(
             1 for element in elements if str(element.get("role") or "") == "patch"
         ),
         "calibration": calibration,
+        "arbitration": arbitration,
     }
 
 
@@ -218,6 +372,11 @@ def main() -> int:
         action="store_true",
         help="skip the per-box text metric calibration",
     )
+    parser.add_argument(
+        "--arbiter",
+        action="store_true",
+        help="run the frozen visual-arbiter tickets (needs 15_arbiter_tickets.json or a key)",
+    )
     args = parser.parse_args()
     missing = 0
     for tag in args.tags or sorted(SAMPLES):
@@ -228,6 +387,7 @@ def main() -> int:
                     args.out_suffix,
                     patches=not args.no_patches,
                     calibrate_text=not args.no_calibrate,
+                    arbiter=args.arbiter,
                 ),
                 flush=True,
             )
