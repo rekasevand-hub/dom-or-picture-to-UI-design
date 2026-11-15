@@ -214,7 +214,7 @@ def _outside_color(image, bbox: Sequence[int]) -> RGB | None:
     """
     x, y, w, _h = (int(round(float(v))) for v in bbox)
     far = []
-    for offset in (9, 8, 7, 6):
+    for offset in (2, 3, 4):
         yy = y - offset
         if yy < 0:
             continue
