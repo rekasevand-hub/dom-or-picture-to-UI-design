@@ -436,6 +436,11 @@ CROP_ZOOM = 2
 CROP_LIMIT = 5
 #: 同色容器互相压住多少比例，才提名为"缝隙"候选。
 GAP_MIN_OVERLAP = 0.02
+#: 相邻容器之间的缺口到这么近才算"该有缝却没有"。
+GAP_MAX_PX = 24
+#: 内圈 1px 与填充色的差达到这个值，算看得见的边；四边里三边一致即可。
+EDGE_RIM_MIN_DELTA = 8
+EDGE_RIM_MAX_SPREAD = 16
 CROP_PAD = 12
 #: 目标端修复时把文字抬到这一层：比页面上任何内容都高。
 TARGET_TEXT_Z = 9999
@@ -463,6 +468,8 @@ class DesignTicket:
     dy: float = 0.0
     fix: str = ""
     note: str = ""
+    #: 模型回答的第几个候选（1 起）。真机回环靠它绑定，不靠 note 里的中文序号。
+    candidate: int = 0
 
     def validate(self) -> None:
         if self.type not in DESIGN_TICKETS:
@@ -586,6 +593,50 @@ def _resize(image, scale: float):
     return np.asarray(resized)
 
 
+def _edge_rim(image, box: Sequence[int], fill: str) -> str:
+    """A visible 1-2px rim that `detect_border` refuses, read from the inside.
+
+    `detect_border` wants four sides to agree on one colour and to be clearly
+    different from the page.  A card whose border sits on a shadow, or whose
+    stroke is blended with a gradient, fails that test while the eye still sees
+    an edge.  This reads the innermost pixel row/column of each side against the
+    fill: three agreeing sides are enough.
+    """
+    import numpy as np
+
+    from src.app.services.structure.fidelity.pixel_probe import hex_to_rgb
+
+    x, y, w, h = (int(value) for value in box)
+    height, width = image.shape[:2]
+    x0, y0 = max(0, x), max(0, y)
+    x1, y1 = min(width, x + w), min(height, y + h)
+    if x1 - x0 < 8 or y1 - y0 < 8:
+        return ""
+    crop = np.asarray(image[y0:y1, x0:x1], dtype=np.int16)
+    base = np.asarray(hex_to_rgb(fill), dtype=np.int16)
+    sides = {
+        "top": crop[0:1, 2:-2].reshape(-1, 3),
+        "bottom": crop[-1:, 2:-2].reshape(-1, 3),
+        "left": crop[2:-2, 0:1].reshape(-1, 3),
+        "right": crop[2:-2, -1:].reshape(-1, 3),
+    }
+    colours = []
+    for sample in sides.values():
+        if sample.size == 0:
+            continue
+        median = np.median(sample, axis=0)
+        if int(np.abs(median - base).max()) < EDGE_RIM_MIN_DELTA:
+            continue
+        colours.append(median)
+    if len(colours) < 3:
+        return ""
+    stack = np.stack(colours)
+    if int(np.abs(stack.max(axis=0) - stack.min(axis=0)).max()) > EDGE_RIM_MAX_SPREAD:
+        return ""
+    colour = np.median(stack, axis=0)
+    return "#{:02x}{:02x}{:02x}".format(*(int(value) for value in colour))
+
+
 def _rect(element: Mapping[str, Any]) -> tuple[int, int, int, int]:
     return (
         int(float(element.get("x") or 0)),
@@ -670,14 +721,23 @@ def probe_candidates(
         if border_width:
             continue
         found = pixel_probe.detect_border(truth, box, fill)
+        method = "border"
         if not found:
-            continue
+            rim = _edge_rim(truth, box, fill)
+            if not rim:
+                continue
+            found = {"color": rim, "width": 1}
+            method = "rim"
         candidates.append(
             ProbeCandidate(
                 kind="border",
                 ref=ref,
                 box=list(box),
-                note=f"原图有 {found['color']} 的 {found['width']}px 轮廓，方案里没有",
+                note=(
+                    f"原图有 {found['color']} 的 {found['width']}px 轮廓，方案里没有"
+                    if method == "border"
+                    else f"原图内圈有一圈 {found['color']} 的边（底差），方案里没有"
+                ),
             )
         )
     # 同色互叠：两张卡共用一种填充，盒又压在一起，看上去就是一块。
@@ -687,22 +747,49 @@ def probe_candidates(
                 continue
             # 任意方向压住对方 2% 就足够可疑：marketplace 那两张卡只互叠
             # 61/1243（4.9%），阈值定 25% 就永远看不见它们。
-            if _share(a, b) < GAP_MIN_OVERLAP and _share(b, a) < GAP_MIN_OVERLAP:
+            overlap = max(_share(a, b), _share(b, a))
+            if overlap >= GAP_MIN_OVERLAP:
+                box = [
+                    max(a[0], b[0]),
+                    max(a[1], b[1]),
+                    min(a[0] + a[2], b[0] + b[2]) - max(a[0], b[0]),
+                    min(a[1] + a[3], b[1] + b[3]) - max(a[1], b[1]),
+                ]
+                if box[2] < 8 or box[3] < 8:
+                    continue
+                candidates.append(
+                    ProbeCandidate(
+                        kind="gap",
+                        ref=ref_a,
+                        box=box,
+                        note=f"与 {ref_b} 同色互叠 {box[2]}x{box[3]}",
+                    )
+                )
                 continue
-            box = [
-                max(a[0], b[0]),
-                max(a[1], b[1]),
-                min(a[0] + a[2], b[0] + b[2]) - max(a[0], b[0]),
-                min(a[1] + a[3], b[1] + b[3]) - max(a[1], b[1]),
-            ]
-            if box[2] < 8 or box[3] < 8:
+            # 不重叠也可能缺缝：两块同色容器紧挨着，而原图在这条缝里是页色。
+            # 这正是"底色差 + 间距缺口"那类边界，1px 描边探针看不见它。
+            horizontal = abs((a[0] + a[2]) - b[0]) if a[0] <= b[0] else abs((b[0] + b[2]) - a[0])
+            vertical = abs((a[1] + a[3]) - b[1]) if a[1] <= b[1] else abs((b[1] + b[3]) - a[1])
+            if min(horizontal, vertical) > GAP_MAX_PX:
+                continue
+            if not pixel_probe.separated_by_page(truth, background, a, b, min_width=2):
+                continue
+            if horizontal <= vertical:
+                low = a[0] + a[2] if a[0] <= b[0] else b[0] + b[2]
+                box = [int(low), max(a[1], b[1]), max(2, int(min(horizontal, GAP_MAX_PX))),
+                       min(a[1] + a[3], b[1] + b[3]) - max(a[1], b[1])]
+            else:
+                low = a[1] + a[3] if a[1] <= b[1] else b[1] + b[3]
+                box = [max(a[0], b[0]), int(low), min(a[0] + a[2], b[0] + b[2]) - max(a[0], b[0]),
+                       max(2, int(min(vertical, GAP_MAX_PX)))]
+            if box[2] < 2 or box[3] < 2:
                 continue
             candidates.append(
                 ProbeCandidate(
                     kind="gap",
                     ref=ref_a,
                     box=box,
-                    note=f"与 {ref_b} 同色互叠 {box[2]}x{box[3]}",
+                    note=f"与 {ref_b} 同色相邻，原图这条缝是页色",
                 )
             )
     # 控件压字：画在文字之后、又没有 OCR 支撑的按钮/输入框。
@@ -903,12 +990,13 @@ def target_prompt(candidates: Sequence[ProbeCandidate]) -> str:
         f"候选清单：\n{candidate_digest(candidates)}\n"
         "逐条判断候选是否成立，只输出 JSON：\n"
         '{"tickets":[\n'
-        '{"type":"TEXT_COLLISION_OR_DRIFT","ref":"<文字的 contentRef>","fix":"nudge",'
-        '"dx":0,"dy":0,"note":"导出图把这段字吞了/盖住了"},\n'
-        '{"type":"BORDER_OR_SEPARATION","ref":"<容器的 contentRef>","fix":"border",'
-        '"note":"导出图没画这圈 1px 轮廓"}\n'
+        '{"type":"TEXT_COLLISION_OR_DRIFT","candidate":1,"ref":"<文字的 contentRef>",'
+        '"fix":"nudge","dx":0,"dy":0,"note":"导出图把这段字吞了/盖住了"},\n'
+        '{"type":"BORDER_OR_SEPARATION","candidate":2,"ref":"<容器的 contentRef>",'
+        '"fix":"border","note":"导出图没画这圈 1px 轮廓"}\n'
         "]}\n"
-        "不成立就不要报；ref 必须从下面这几个字符串里原样挑一个，"
+        "candidate 填这张图是候选清单里的第几个（1 起），ref 可留空由它绑定；"
+        "不成立就不要报；ref 若填，必须从下面这几个字符串里原样挑一个，"
         "不要写 None、不要写 null、不要自己编：\n"
         + "\n".join(f"- {candidate.ref}" for candidate in candidates)
         + f"\n最多 {BAND_QUOTA} 条。"
@@ -978,6 +1066,7 @@ def parse_design_tickets(payload: Mapping[str, Any]) -> list[DesignTicket]:
                 dy=float(raw.get("dy") or 0.0),
                 fix=str(raw.get("fix") or ""),
                 note=str(raw.get("note") or ""),
+                candidate=int(raw.get("candidate") or raw.get("candidate_id") or 0),
             )
             ticket.validate()
         except (TypeError, ValueError):
@@ -1190,7 +1279,12 @@ def _design_border(
         return {"ref": ticket.ref, "action": "already-bordered"}
     found = pixel_probe.detect_border(truth, box, fill)
     if not found:
-        return None
+        # 没有独立 1px 描边，但有"底差边"：卡片压在阴影上、或描边被渐变压掉时
+        # 就是这种情形。规则要求支持底差与间距缺口，这里补上底差这一半。
+        rim = _edge_rim(truth, box, fill)
+        if not rim:
+            return None
+        found = {"color": rim, "width": 1}
     style["borderColor"] = found["color"]
     style["borderWidth"] = max(1, int(found["width"]))
     radius = pixel_probe.estimate_corner_radius(truth, box, fill=fill)

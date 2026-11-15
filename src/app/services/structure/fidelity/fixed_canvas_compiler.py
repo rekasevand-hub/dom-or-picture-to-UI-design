@@ -9422,6 +9422,10 @@ def _drop_unbacked_labels(
     support at its own box, no OCR line overlapping it at all, and no text-like
     ink underneath.
     """
+    if not ocr_observations:
+        # 没有 OCR 就没有"字符支撑"这回事：这条规则的前提是 OCR 跑过且这一带
+        # 一个字都没读到。离线样本没有 OCR 时必须整体跳过，否则会把正常文字删光。
+        return 0
     try:
         import numpy as np
         from PIL import Image
@@ -12808,6 +12812,10 @@ def compile_scene_plan_to_design(
     # A control measured over a table belongs to the words OCR read for it,
     # which are somewhere else entirely.
     _resolve_misfiled_controls(elements, ocr_observations, image_path)
+    # 晚段再互斥一次：芯片标签（`text:chip-*`）与 OCR 提升是**在第一次 NMS 之后**
+    # 才进列表的，Gmail 的"50"就是这么压在主题行首字上的。规则是幂等的，跑两次
+    # 只是把后进的这批也纳进来。
+    _spatial_text_nms(elements, ocr_observations, background)
     # Nothing may stick out of the box that owns it.
     _constrain_children(elements, background)
     # A member standing on the page's own surface was never inside the dialog

@@ -163,7 +163,9 @@ class TestStampRotation:
         from PIL import Image, ImageDraw
 
         source = tmp_path / "seal.png"
-        image = Image.new("RGB", (300, 240), "white")
+        # 页面按真实比例给（1600x1200）：印花只占 1%，才符合"孤立小徽章"的前提；
+        # 300x240 的画布里一个 140px 方章占 27%，新的面积闸会（正确地）拒绝它。
+        image = Image.new("RGB", (1600, 1200), "white")
         draw = ImageDraw.Draw(image)
         # 画一个绕中心转 6° 的实心方块：四个角自己算，别让 rotate(expand) 把
         # 形状甩出裁片边界，那会让轮廓贴到画面边缘而被判成背景。
@@ -210,11 +212,58 @@ class TestStampRotation:
                 "style": {"fontSize": 28},
             },
         ]
-        turned = _measure_stamp_rotations(elements, str(source), 300, 240)
+        turned = _measure_stamp_rotations(elements, str(source), 1600, 1200)
         assert turned == 1
         words = next(element for element in elements if element["id"] == "words")
         assert abs(float(words["rotation"])) >= 2.0
         assert all(element["id"] != "twin" for element in elements)
+
+
+class TestRotationGuard:
+    def _seal(self, tmp_path: Path, angle_deg: float, size=(1600, 1200)):
+        import math
+
+        from PIL import Image, ImageDraw
+
+        source = tmp_path / f"seal{angle_deg}.png"
+        image = Image.new("RGB", size, "white")
+        draw = ImageDraw.Draw(image)
+        cx, cy, half, angle = 150.0, 130.0, 62.0, math.radians(angle_deg)
+        corners = []
+        for dx, dy in ((-half, -half), (half, -half), (half, half), (-half, half)):
+            corners.append(
+                (
+                    cx + dx * math.cos(angle) - dy * math.sin(angle),
+                    cy + dx * math.sin(angle) + dy * math.cos(angle),
+                )
+            )
+        draw.polygon(corners, fill=(40, 40, 40))
+        image.save(source)
+        return source
+
+    def _elements(self):
+        return [
+            {"id": "seal", "type": "image", "x": 80, "y": 60, "width": 140, "height": 140,
+             "imageBase64": "stub"},
+            {"id": "words", "type": "text", "text": "5.8 折", "x": 96, "y": 96,
+             "width": 90, "height": 60, "style": {"fontSize": 28}},
+        ]
+
+    def test_a_shallow_tilt_is_left_alone(self, tmp_path: Path) -> None:
+        # 3° 的抖动不足以让印章"看起来是斜的"，转它只会把字弄糊。
+        source = self._seal(tmp_path, 3.0)
+        elements = self._elements()
+        assert _measure_stamp_rotations(elements, str(source), 1600, 1200) == 0
+        assert not elements[1].get("rotation")
+
+    def test_a_menu_item_inside_the_sidebar_is_left_alone(self, tmp_path: Path) -> None:
+        source = self._seal(tmp_path, 8.0)
+        elements = self._elements()
+        elements.append(
+            {"id": "side", "type": "container", "role": "sidebar", "x": 40, "y": 40,
+             "width": 400, "height": 600, "style": {"fillColor": "#ffffff"}}
+        )
+        assert _measure_stamp_rotations(elements, str(source), 1600, 1200) == 0
 
 
 class TestTicketBudget:

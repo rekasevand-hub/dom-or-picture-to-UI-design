@@ -287,6 +287,12 @@ def _bind_target_tickets(tickets, candidates) -> list:
         if ref in refs:
             bound.append(ticket)
             continue
+        # 显式 candidate 优先：序号是模型自己写的，中文"第 N 个"是从 note 里猜的。
+        ordinal = int(getattr(ticket, "candidate", 0) or 0)
+        if 0 < ordinal <= len(candidates):
+            ticket.ref = candidates[ordinal - 1].ref
+            bound.append(ticket)
+            continue
         match = re.search(r"第\s*(\d+)\s*个", str(ticket.note or ""))
         if match:
             index = int(match.group(1)) - 1
