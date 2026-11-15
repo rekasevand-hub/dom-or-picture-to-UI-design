@@ -155,6 +155,68 @@ def text_health(design) -> dict:
         "outlierFonts": outliers,
     }
 
+def occlusion_health(design) -> dict:
+    """How many words are buried under something opaque that paints later.
+
+    The third failure mode the holdout exposed: the tree has the node, the
+    picture does not show it, and no ticket can find it.  Counted here with the
+    renderer's own paint order, so the number matches what the export does.
+    """
+    from src.app.services.rendering.adapter_base import paint_order
+
+    elements = list(design.get("elements") or [])
+    ranks = {index: rank for rank, (index, _item) in enumerate(paint_order(elements))}
+
+    def rect(element):
+        return (
+            float(element.get("x") or 0),
+            float(element.get("y") or 0),
+            float(element.get("width") or 0),
+            float(element.get("height") or 0),
+        )
+
+    texts = [
+        index
+        for index, element in enumerate(elements)
+        if element.get("type") == "text" and str(element.get("text") or "").strip()
+    ]
+    buried = []
+    for index in texts:
+        box = rect(elements[index])
+        area = max(1.0, box[2] * box[3])
+        for other, element in enumerate(elements):
+            if other == index or element.get("type") == "text":
+                continue
+            opaque = bool(element.get("imageBase64")) or (
+                not element.get("transparent")
+                and str((element.get("style") or {}).get("fillColor") or "").lower()
+                not in ("", "transparent", "none")
+            )
+            if not opaque:
+                continue
+            if ranks.get(other, 0) <= ranks.get(index, 0):
+                continue
+            cover = rect(element)
+            width = min(cover[0] + cover[2], box[0] + box[2]) - max(cover[0], box[0])
+            height = min(cover[1] + cover[3], box[1] + box[3]) - max(cover[1], box[1])
+            if width <= 0 or height <= 0:
+                continue
+            if (width * height) / area >= 0.5:
+                buried.append(
+                    {
+                        "text": str(elements[index].get("text") or "")[:16],
+                        "by": str(element.get("id") or element.get("role") or "")[:24],
+                        "cover": round((width * height) / area, 2),
+                    }
+                )
+                break
+    return {
+        "coveredTexts": len(buried),
+        "coveredShare": round(len(buried) / max(1, len(texts)) * 100, 1),
+        "samples": buried[:4],
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("tag")
@@ -192,6 +254,7 @@ def main() -> int:
         "patchShare": round(patch_area / area * 100, 2),
     }
     report["text"] = text_health(design)
+    report["occlusion"] = occlusion_health(design)
     run = out / "holdout_report.json"
     if run.is_file():
         report["seconds"] = json.loads(run.read_text(encoding="utf-8")).get("seconds")

@@ -6407,6 +6407,8 @@ def _recover_chip_outlines(
                     "borderRadius": min(14, max(8, bh // 3)),
                 },
                 "name": "Chip outline",
+                # 装饰层的笔：画在标签下面，不是任何帧的成员，也不是外人。
+                "paintBackdrop": True,
                 "contentRef": f"chip-outline:{ax}:{ay}",
                 "imageMVP": {
                     "source": "pixel-recovery",
@@ -7185,6 +7187,9 @@ def _snap_containers_to_fill(
             "text": "",
             "style": {"fillColor": fill, **decoration},
             "name": f"{str(element.get('role') or 'panel')} paint",
+            # 这是"补画在帧下面的一层漆"，不是帧的成员，也不是外人。帧准入
+            # 检查要放它过去，否则每补一层漆就有一个帧被拒（wecom 6→4）。
+            "paintBackdrop": True,
             "contentRef": f"paint:{element.get('id') or len(elements)}",
             "edgeEvidence": {
                 "method": "fill-flood",
@@ -12407,6 +12412,607 @@ def _trim_to_fill_boundary(
 PATCH_Z_INDEX = 5
 
 
+# ── 背景层合并 / 分层 / 遮挡守卫 ────────────────────────────────────────────
+#
+# 盲测暴露的第三类问题不是"少画了什么"，而是"画了两遍、后画的那遍把前一遍盖住
+# 了"。两个来源：同一块面板被两套感知各建了一个容器；残差补丁压在矢量字上。
+# VLM 仲裁看不见它——设计树里节点明明在，只是被埋了。
+#
+# 三条规则按"结构 → 层序 → 守卫"的顺序落地：合并改结构（必须在成帧前），分层
+# 写 paintDepth（纯排序），守卫只降层或裁补丁（不改帧）。
+
+#: 两个背景块重合到这个 IoU，就是同一块区域量了两遍。
+CONTAINER_MERGE_IOU = 0.70
+#: 小盒 85% 落在大盒里也算——但必须面积相近：卡片落在面板里同样是 100% 包含，
+#: 那是层级不是重复。面积比把两者分开（见 `_merge_duplicate_containers`）。
+CONTAINER_MERGE_CONTAIN = 0.85
+CONTAINER_MERGE_AREA_RATIO = 0.70
+#: 四条边都差在这个像素内，才是"同一块量了两遍"。差得更多的是两层结构——
+#: 列表区嵌在页面卡里、表格节点嵌在区块里——合掉任何一层都会少一个帧。
+CONTAINER_MERGE_EDGE = 12
+#: 小于画布这个比例的盒子不参与：小徽章互相压着是设计，不是双测。
+CONTAINER_MERGE_MIN_SHARE = 0.02
+#: 两次测量必须是同一种漆。色差更大说明是两层不同材质（玻璃压卡片）。
+CONTAINER_MERGE_FILL_DELTA = 6
+
+#: 层序分层：每层留这么多个槽位，同层内按面积降序。
+LAYER_STRIDE = 1000
+#: 不透明的东西盖住文本框这么多，就算"吞字"。
+OCCLUSION_TEXT_COVER = 0.5
+#: 文本框里墨迹占到这个比例，说明原图这个位置确实有字。
+TEXT_VISIBLE_INK = 0.008
+#: 补丁被裁到只剩这么点，就不值得留了——整块删掉比留个碎片更干净。
+PATCH_KEEP_SHARE = 0.3
+
+
+def _background_fill(element: Mapping[str, Any]) -> str:
+    style = element.get("style") or {}
+    fill = str(style.get("fillColor") or "")
+    if element.get("transparent") or fill.lower() in ("", "transparent", "none"):
+        return ""
+    return fill
+
+
+def _owned_between(
+    elements: Sequence[Mapping[str, Any]],
+    first: int,
+    second: int,
+    first_box: tuple[int, int, int, int],
+    second_box: tuple[int, int, int, int],
+) -> tuple[int, int]:
+    """How many elements each of the two boxes would own, smallest box wins.
+
+    The frame pass gives a member to the smallest container that holds it, with
+    the earlier index breaking ties — the same rule here, so "owns members"
+    means exactly what it will mean when frames are built.
+    """
+    first_area = first_box[2] * first_box[3]
+    second_area = second_box[2] * second_box[3]
+    owned_first = owned_second = 0
+    for index, element in enumerate(elements):
+        if index in (first, second):
+            continue
+        box = _layout_rect(element)
+        if box is None:
+            continue
+        in_first = _rect_contains(first_box, box, tolerance=2)
+        in_second = _rect_contains(second_box, box, tolerance=2)
+        if in_first and in_second:
+            if first_area <= second_area:
+                owned_first += 1
+            else:
+                owned_second += 1
+        elif in_first:
+            owned_first += 1
+        elif in_second:
+            owned_second += 1
+    return owned_first, owned_second
+
+
+def _merge_duplicate_containers(
+    elements: list[dict[str, Any]],
+    ocr_observations: Sequence[Mapping[str, Any]] | None,
+    canvas: tuple[int, int],
+) -> int:
+    """One panel measured twice: merge the boxes instead of painting twice.
+
+    Two perception paths describe the same card — one as a ``card``, one as a
+    ``panel`` — and both reach the list.  The later one paints over the first,
+    which is how a card ends up a flat block with its own words buried under it.
+    The VLM cannot repair that: the tree already has a node at that coordinate.
+
+    Merging is not "delete the poorer one".  Its children would go with it, and
+    ownership is derived from geometry.  The survivor takes the **union** box,
+    so nothing that lived inside the loser falls outside the winner; the text
+    passes that follow dedupe the words.  A patch that duplicates a container is
+    the one case that is deleted outright: pixels of the very panel that is
+    already drawn, sitting on top of its editable content.
+    """
+    width, height = canvas
+    floor = max(1, width * height) * CONTAINER_MERGE_MIN_SHARE
+
+    def mergeable(element: Mapping[str, Any]) -> bool:
+        role = str(element.get("role") or "")
+        if role == "patch":
+            return True
+        if str(element.get("type") or "") != "container":
+            return False
+        if element.get("imageBase64"):
+            return False
+        if str(element.get("text") or "").strip():
+            return False
+        return role not in ("page", "page-ground", "page-background", "mark")
+
+    pool = [
+        (index, _layout_rect(element))
+        for index, element in enumerate(elements)
+        if mergeable(element)
+    ]
+    pool = [
+        (index, box)
+        for index, box in pool
+        if box and box[2] * box[3] >= floor
+    ]
+    if len(pool) < 2:
+        return 0
+
+    def carried(box: tuple[int, int, int, int]) -> tuple[int, int]:
+        supported = total = 0
+        for element in elements:
+            if element.get("type") != "text":
+                continue
+            text = str(element.get("text") or "").strip()
+            inner = _layout_rect(element) if text else None
+            if inner is None:
+                continue
+            cx = inner[0] + inner[2] / 2.0
+            cy = inner[1] + inner[3] / 2.0
+            if not (
+                box[0] <= cx <= box[0] + box[2] and box[1] <= cy <= box[1] + box[3]
+            ):
+                continue
+            total += 1
+            if _ocr_supported(text, inner, ocr_observations):
+                supported += 1
+        return supported, total
+
+    doomed: set[int] = set()
+    merged = 0
+    for position, (first, first_box) in enumerate(pool):
+        if first in doomed:
+            continue
+        for second, second_box in pool[position + 1 :]:
+            if second in doomed:
+                continue
+            first_area = first_box[2] * first_box[3]
+            second_area = second_box[2] * second_box[3]
+            ratio = min(first_area, second_area) / max(1, max(first_area, second_area))
+            edges = max(
+                abs(first_box[0] - second_box[0]),
+                abs(first_box[1] - second_box[1]),
+                abs((first_box[0] + first_box[2]) - (second_box[0] + second_box[2])),
+                abs((first_box[1] + first_box[3]) - (second_box[1] + second_box[3])),
+            )
+            same = (
+                _iou(first_box, second_box) >= CONTAINER_MERGE_IOU
+                or (
+                    _overlap_over_smaller(first_box, second_box)
+                    >= CONTAINER_MERGE_CONTAIN
+                    and ratio >= CONTAINER_MERGE_AREA_RATIO
+                )
+            ) and edges <= CONTAINER_MERGE_EDGE
+            if not same:
+                continue
+            first_element, second_element = elements[first], elements[second]
+            first_patch = str(first_element.get("role") or "") == "patch"
+            second_patch = str(second_element.get("role") or "") == "patch"
+            # 两边都自带成员时不合并：那不是"同一块量了两遍"，是两层结构
+            # （列表区嵌在页面卡里、表格节点嵌在区块里）。删掉任何一层都会
+            # 少一个帧，而帧数是硬约束。谁"自带"成员按最小包含盒算，与成帧
+            # 时的归属规则一致：完全重合的两个盒子，成员只会归其中一个。
+            if not first_patch and not second_patch:
+                owned_first, owned_second = _owned_between(
+                    elements, first, second, first_box, second_box
+                )
+                if owned_first >= 2 and owned_second >= 2:
+                    continue
+            if not first_patch and not second_patch:
+                first_fill = _background_fill(first_element)
+                second_fill = _background_fill(second_element)
+                if first_fill and second_fill and not _same_fill(
+                    first_fill, second_fill, CONTAINER_MERGE_FILL_DELTA
+                ):
+                    # 两层不同的漆：这是玻璃压在卡片上，不是同一块量了两遍。
+                    continue
+            # 谁当主体：装得下更多 OCR 确认文字的那一版；打平则选可编辑的容器，
+            # 再打平选面积大的。补丁永远输给容器——它是像素，不是结构。
+            first_score = (carried(first_box), 0 if first_patch else 1, first_area)
+            second_score = (carried(second_box), 0 if second_patch else 1, second_area)
+            loser = first if first_score < second_score else second
+            winner = second if loser == first else first
+            loser_box = first_box if loser == first else second_box
+            winner_box = second_box if loser == first else first_box
+            winner_element = elements[winner]
+            if str(winner_element.get("role") or "") != "patch":
+                union = (
+                    min(winner_box[0], loser_box[0]),
+                    min(winner_box[1], loser_box[1]),
+                    max(winner_box[0] + winner_box[2], loser_box[0] + loser_box[2])
+                    - min(winner_box[0], loser_box[0]),
+                    max(winner_box[1] + winner_box[3], loser_box[1] + loser_box[3])
+                    - min(winner_box[1], loser_box[1]),
+                )
+                winner_element["x"], winner_element["y"] = union[0], union[1]
+                winner_element["width"], winner_element["height"] = union[2], union[3]
+            winner_element.setdefault("mergeEvidence", {}).setdefault(
+                "absorbed", []
+            ).append(
+                {
+                    "id": str(elements[loser].get("id") or ""),
+                    "iou": round(_iou(first_box, second_box), 3),
+                    "box": list(loser_box),
+                }
+            )
+            doomed.add(loser)
+            merged += 1
+            if loser == first:
+                break
+    if not doomed:
+        return 0
+    elements[:] = [
+        element for index, element in enumerate(elements) if index not in doomed
+    ]
+    return merged
+
+
+def _layer_category(element: Mapping[str, Any], canvas_area: float) -> int:
+    """Which band of the stack this element belongs to.
+
+    0 page surface · 1 panels and cards · 2 pictures · 3 controls · 4 words and
+    icons · 5 bitmap patches.  Panels sort by area inside their band, so a big
+    frame is always under the small cards it contains.
+    """
+    role = str(element.get("role") or "")
+    kind = str(element.get("type") or "")
+    if role in ("page", "page-ground", "page-background"):
+        return 0
+    if role == "patch":
+        return 5
+    if kind == "text" or role in ("mark", "icon"):
+        return 4
+    if kind in ("button", "input", "control", "switch", "checkbox", "tab"):
+        return 3
+    if str(element.get("text") or "").strip():
+        return 3
+    area = float(element.get("width") or 0) * float(element.get("height") or 0)
+    if kind in ("image", "picture", "video"):
+        return 0 if area >= canvas_area * 0.5 else 2
+    if kind == "container":
+        return 1
+    return 3
+
+
+def _merge_control_labels(
+    elements: list[dict[str, Any]],
+    ocr_observations: Sequence[Mapping[str, Any]] | None,
+) -> int:
+    """A control and a text node printing in the same box.
+
+    An input carries its own label, and the OCR pass carries a text node for the
+    characters it read.  Both print.  ERP's "在制" dropdown came out twice — a
+    20px regular in the control, a 22px bold on top — and a phantom input whose
+    label read "10" drew its border around the words "产品版本".
+
+    Two outcomes, both decided by what the picture reads:
+
+    * same words — the control keeps its box, the label goes to whoever OCR
+      supports (the text node wins a tie: it has the measured type);
+    * different words, only the text node is supported — the control is a
+      mis-typed duplicate of that label, so it goes.
+    """
+    if not ocr_observations:
+        return 0
+    controls = [
+        element
+        for element in elements
+        if str(element.get("type") or "") in ("button", "input")
+        and str(element.get("text") or "").strip()
+    ]
+    if not controls:
+        return 0
+    texts = [
+        element
+        for element in elements
+        if element.get("type") == "text" and str(element.get("text") or "").strip()
+    ]
+    doomed: set[str] = set()
+    changed = 0
+    for control in controls:
+        control_box = _layout_rect(control)
+        if control_box is None:
+            continue
+        control_text = _fold_homoglyphs(str(control.get("text") or "").strip())
+        if not control_text:
+            continue
+        supported_control = _ocr_supported(
+            str(control.get("text") or ""), control_box, ocr_observations
+        )
+        for text in texts:
+            if str(text.get("id") or "") in doomed:
+                continue
+            box = _layout_rect(text)
+            if box is None or not _texts_collide(control_box, box):
+                continue
+            words = _fold_homoglyphs(str(text.get("text") or "").strip())
+            if not words:
+                continue
+            supported_text = _ocr_supported(
+                str(text.get("text") or ""), box, ocr_observations
+            )
+            same = words == control_text or words in control_text or control_text in words
+            if same and (supported_text or not supported_control):
+                control["text"] = ""
+                control.setdefault("style", {}).pop("textColor", None)
+                control.setdefault("mergeEvidence", {})["labelGivenTo"] = str(
+                    text.get("id") or ""
+                )
+                changed += 1
+                break
+            if not same and supported_text and not supported_control:
+                doomed.add(str(control.get("id") or ""))
+                text.setdefault("mergeEvidence", {})["absorbed"] = str(
+                    control.get("id") or ""
+                )
+                changed += 1
+                break
+    if doomed:
+        elements[:] = [
+            element
+            for element in elements
+            if str(element.get("id") or "") not in doomed
+        ]
+    return changed
+
+
+def _order_layers(elements: list[dict[str, Any]]) -> int:
+    """Emit the tree in paint order: page → panels → pictures → controls → words.
+
+    The renderer derives that order from geometry already — a big panel is
+    covered by more boxes than the small card on top of it, so it sorts first.
+    What was missing is that the **design tree** was emitted in measurement
+    order, so opening the file showed a text node before the card it belongs to.
+    Sorting the list by the renderer's own key materialises the rule without
+    inventing a second ordering that the frame pass would then have to fight:
+    the sorted result paints exactly the same pixels, because a stable sort by
+    the key the renderer already uses is that order.
+    """
+    from src.app.services.rendering.adapter_base import paint_order
+
+    ordered = [element for _index, element in paint_order(elements)]
+    if len(ordered) != len(elements):
+        return 0
+    moved = sum(1 for before, after in zip(elements, ordered) if before is not after)
+    elements[:] = ordered
+    return moved
+
+
+def _paint_ranks(elements: list[dict[str, Any]]) -> dict[int, int]:
+    """Flat paint rank per element, computed by the renderer's own rule."""
+    from src.app.services.rendering.adapter_base import paint_order
+
+    return {index: rank for rank, (index, _item) in enumerate(paint_order(elements))}
+
+
+def _opaque(element: Mapping[str, Any]) -> bool:
+    if element.get("imageBase64"):
+        return True
+    return bool(_background_fill(element))
+
+
+def _cover_share(
+    outer: tuple[int, int, int, int], inner: tuple[int, int, int, int]
+) -> float:
+    width = min(outer[0] + outer[2], inner[0] + inner[2]) - max(outer[0], inner[0])
+    height = min(outer[1] + outer[3], inner[1] + inner[3]) - max(outer[1], inner[1])
+    if width <= 0 or height <= 0:
+        return 0.0
+    return (width * height) / max(1, inner[2] * inner[3])
+
+
+def _text_visible(image, box: tuple[int, int, int, int]) -> bool:
+    """Whether the picture itself has strokes inside this box.
+
+    The surface is read from a ring *outside* the box: a text box measured tight
+    around a dark word has no background of its own, and taking the median of
+    its interior would call the word the background.
+    """
+    import numpy as np
+
+    x, y, width, height = box
+    rows, columns = image.shape[:2]
+    x0, y0 = max(0, x), max(0, y)
+    x1, y1 = min(columns, x + width), min(rows, y + height)
+    if x1 - x0 < 4 or y1 - y0 < 4:
+        return False
+    crop = image[y0:y1, x0:x1]
+    ring = []
+    for top, bottom in ((y0 - 3, y0), (y1, min(rows, y1 + 3))):
+        if bottom > top:
+            ring.append(image[top:bottom, x0:x1].reshape(-1, crop.shape[2]))
+    for left, right in ((x0 - 3, x0), (x1, min(columns, x1 + 3))):
+        if right > left:
+            ring.append(image[y0:y1, left:right].reshape(-1, crop.shape[2]))
+    background = (
+        np.median(np.concatenate(ring), axis=0)
+        if ring
+        else np.median(crop.reshape(-1, crop.shape[2]), axis=0)
+    )
+    ink = np.abs(crop - background).max(axis=2) >= 40
+    return float(ink.mean()) >= TEXT_VISIBLE_INK
+
+
+def _largest_free_rect(
+    box: tuple[int, int, int, int],
+    blockers: Sequence[tuple[int, int, int, int]],
+) -> tuple[int, int, int, int] | None:
+    """The biggest part of ``box`` that touches none of ``blockers``."""
+    x, y, width, height = box
+    options = [(x, y, width, height)]
+    for bx, by, bw, bh in blockers:
+        options.append((x, y, width, max(0, by - y)))
+        options.append((x, by + bh, width, max(0, y + height - (by + bh))))
+        options.append((x, y, max(0, bx - x), height))
+        options.append((bx + bw, y, max(0, x + width - (bx + bw)), height))
+    best: tuple[int, int, int, int] | None = None
+    for candidate in options:
+        if candidate[2] < 4 or candidate[3] < 4:
+            continue
+        if any(_rects_overlap(candidate, blocker) for blocker in blockers):
+            continue
+        if best is None or candidate[2] * candidate[3] > best[2] * best[3]:
+            best = candidate
+    return best
+
+
+def _accepted_frames(elements: list[dict[str, Any]]) -> int:
+    """How many frames the renderer would accept right now."""
+    from src.app.services.rendering.adapter_base import paint_order, resolve_frames
+
+    return len(resolve_frames(elements, paint_order(elements), {}))
+
+
+def _guard_text_occlusion(
+    elements: list[dict[str, Any]],
+    image_path: str,
+    canvas: tuple[int, int],
+    ocr_observations: Sequence[Mapping[str, Any]] | None,
+) -> dict[str, int]:
+    """Nothing opaque may paint over a word the picture actually has.
+
+    A patch is cut from the screenshot and wins every tie by construction; a
+    duplicated background panel paints after the text it was measured around.
+    Both read as "the words are missing" to a reviewer while the tree insists
+    they are there.
+
+    Who counts as protected: OCR read characters in that box, or the picture
+    itself has ink there.  A protected word wins — the patch is cut back to the
+    largest part that misses it (deleted if that is a fragment), and a container
+    is demoted one tier below the lowest word it buries.  Elements whose box has
+    no ink and no OCR are left alone: those are the invented labels, and
+    `_drop_unbacked_labels` already owns them.
+    """
+    report = {"clipped": 0, "demoted": 0, "lifted": 0, "deleted": 0, "unresolved": 0}
+    texts = [
+        index
+        for index, element in enumerate(elements)
+        if element.get("type") == "text" and str(element.get("text") or "").strip()
+    ]
+    if not texts:
+        return report
+    image = None
+    try:
+        import numpy as np
+        from PIL import Image
+
+        image = np.asarray(Image.open(image_path).convert("RGB"), dtype=np.int16)
+        if image.shape[1] != canvas[0] or image.shape[0] != canvas[1]:
+            image = None
+    except Exception:  # pragma: no cover - imaging stack is a hard dependency
+        image = None
+
+    protected: dict[int, str] = {}
+    for index in texts:
+        box = _layout_rect(elements[index])
+        if box is None:
+            continue
+        text = str(elements[index].get("text") or "")
+        if _ocr_supported(text, box, ocr_observations):
+            protected[index] = "ocr"
+        elif image is not None and _text_visible(image, box):
+            protected[index] = "ink"
+    if not protected:
+        return report
+
+    # 帧内元素不能往下压：成员必须排在帧之后，压到帧下面会让整个帧被拒。
+    # 这些位置改成"把字抬上来"——同帧内两个成员的先后是自由的。
+    framed: set[str] = set()
+    for element in elements:
+        for child in element.get("layoutChildren") or []:
+            if isinstance(child, dict):
+                framed.add(str(child.get("id") or ""))
+        if element.get("layoutChildren"):
+            framed.add(str(element.get("id") or ""))
+
+    doomed: set[int] = set()
+    for _round in range(3):
+        ranks = _paint_ranks(elements)
+        changed = False
+        for text_index, _why in protected.items():
+            if text_index in doomed or text_index not in ranks:
+                continue
+            text_box = _layout_rect(elements[text_index])
+            if text_box is None:
+                continue
+            for other, element in enumerate(elements):
+                if other == text_index or other in doomed:
+                    continue
+                if element.get("type") == "text" or not _opaque(element):
+                    continue
+                if ranks.get(other, -1) <= ranks[text_index]:
+                    continue
+                box = _layout_rect(element)
+                if box is None or _cover_share(box, text_box) < OCCLUSION_TEXT_COVER:
+                    continue
+                role = str(element.get("role") or "")
+                if element.get("imageBase64") and role in ("patch", "mark"):
+                    blockers = [
+                        candidate
+                        for candidate in (
+                            _layout_rect(elements[index]) for index in protected
+                        )
+                        if candidate and _rects_overlap(candidate, box)
+                    ]
+                    keep = _largest_free_rect(box, blockers)
+                    original = max(1, box[2] * box[3])
+                    if keep is not None and keep[2] * keep[3] >= original * PATCH_KEEP_SHARE:
+                        element["x"], element["y"] = keep[0], keep[1]
+                        element["width"], element["height"] = keep[2], keep[3]
+                        element.setdefault("occlusionEvidence", {})["clippedOff"] = str(
+                            elements[text_index].get("id") or ""
+                        )
+                        report["clipped"] += 1
+                    else:
+                        doomed.add(other)
+                        report["deleted"] += 1
+                    changed = True
+                    continue
+                # 容器/背景：降到它埋住的那颗字下面；帧内元素则反过来把字抬上来。
+                # 但**不许拿帧换可见**：改完若少了一个帧，这次改动回退，如实计入
+                # unresolved。帧数是硬约束，遮挡是软的。
+                word_z = int(elements[text_index].get("zIndex") or 0)
+                own_z = int(element.get("zIndex") or 0)
+                if own_z < word_z:
+                    report["unresolved"] += 1
+                    continue
+                in_frames = (
+                    element.get("layoutChildren")
+                    or str(element.get("id") or "") in framed
+                    or str(elements[text_index].get("id") or "") in framed
+                )
+                before = _accepted_frames(elements) if framed else 0
+                if in_frames:
+                    elements[text_index]["zIndex"] = own_z + 1
+                    evidence = elements[text_index].setdefault("occlusionEvidence", {})
+                    evidence["liftedAbove"] = str(element.get("id") or "")
+                    key = "lifted"
+                else:
+                    element["zIndex"] = word_z - 1
+                    evidence = element.setdefault("occlusionEvidence", {})
+                    evidence["demotedBelow"] = str(elements[text_index].get("id") or "")
+                    key = "demoted"
+                if framed and _accepted_frames(elements) < before:
+                    if in_frames:
+                        elements[text_index]["zIndex"] = word_z
+                    else:
+                        element["zIndex"] = own_z
+                    evidence.pop("liftedAbove", None)
+                    evidence.pop("demotedBelow", None)
+                    if not evidence:
+                        elements[text_index].pop("occlusionEvidence", None)
+                        element.pop("occlusionEvidence", None)
+                    report["unresolved"] += 1
+                    continue
+                report[key] += 1
+                changed = True
+        if not changed:
+            break
+    if doomed:
+        elements[:] = [
+            element for index, element in enumerate(elements) if index not in doomed
+        ]
+    return report
+
+
 def _apply_residual_patches(
     elements: list[dict[str, Any]],
     image_path: str,
@@ -12733,6 +13339,11 @@ def compile_scene_plan_to_design(
     )
     if right_rail is not None:
         elements.append(right_rail)
+    # 结构阶段最后一件事：同一块面板被两套感知各建一次、补丁复制了整张卡，
+    # 都在这里并成一个。必须在成帧之前——合并要改盒与成员归属。
+    merged_backgrounds = _merge_duplicate_containers(
+        elements, ocr_observations, (width, height)
+    )
     _anchor_table_text(elements, ocr_observations)
     _repartition_table_rows(elements, ocr_observations)
     _fit_table_text(
@@ -12816,6 +13427,8 @@ def compile_scene_plan_to_design(
     # 才进列表的，Gmail 的"50"就是这么压在主题行首字上的。规则是幂等的，跑两次
     # 只是把后进的这批也纳进来。
     _spatial_text_nms(elements, ocr_observations, background)
+    # 控件自带标签，OCR 也带一份：同一个盒子里两遍印刷，这里只留一遍。
+    _merge_control_labels(elements, ocr_observations)
     # Nothing may stick out of the box that owns it.
     _constrain_children(elements, background)
     # A member standing on the page's own surface was never inside the dialog
@@ -12858,6 +13471,16 @@ def compile_scene_plan_to_design(
     _apply_residual_patches(elements, image_path, (width, height), residual_regions)
     # 补丁是从原图裁的像素，它盖住的矢量文字就是第二遍印刷。
     _drop_text_under_patches(elements)
+    # 然后把"仍然压在字上的不透明块"清掉：补丁裁开、容器降层。VLM 仲裁看不见
+    # 这一类缺陷——树里节点在，只是被埋了。
+    occlusion = _guard_text_occlusion(
+        elements, image_path, (width, height), ocr_observations
+    )
+    # 降层可能让某个帧不再是"成员都排在它之后"，复核一次，别让计数说谎。
+    layout_frames = _keep_renderable_frames(elements, layout_frames)
+    # 设计树按绘制序输出：打开文件看到的第一层就是页面底色，最后一层是文字
+    # 与补丁。纯排序，不改任何几何或 zIndex。
+    layers_written = _order_layers(elements)
     text_count = sum(
         element.get("type") == "text" and bool(element.get("text"))
         for element in elements
@@ -12891,8 +13514,15 @@ def compile_scene_plan_to_design(
                 "counts": {
                     "text": text_count,
                     "images": image_count,
-                    "containers": len(containers),
+                    "containers": sum(
+                        1 for element in elements if element.get("type") == "container"
+                    ),
                     "layoutFrames": layout_frames,
+                },
+                "layers": {
+                    "backgroundsMerged": merged_backgrounds,
+                    "depthsWritten": layers_written,
+                    "occlusion": dict(occlusion),
                 },
                 "assetClaim": "display-replacement-only",
                 "originalAssetClaimed": False,

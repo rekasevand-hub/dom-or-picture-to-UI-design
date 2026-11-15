@@ -365,3 +365,146 @@ class TestArbitrationStore:
         (tmp_path / "12_design.json").write_text(json.dumps({"elements": []}), encoding="utf-8")
         assert load_arbitrated(tmp_path) is None
         assert resolve_design(tmp_path).name == "12_design.json"
+
+
+class TestBackgroundMergeAndOcclusion:
+    """同一块面板量了两遍、补丁压住矢量字：树里有节点，画面上没有。"""
+
+    def _panel(self, ident, box, fill="#1a1917", role="card"):
+        x, y, w, h = box
+        return {
+            "id": ident,
+            "type": "container",
+            "role": role,
+            "x": x,
+            "y": y,
+            "width": w,
+            "height": h,
+            "text": "",
+            "style": {"fillColor": fill},
+        }
+
+    def _text(self, ident, box, words="任务编号"):
+        x, y, w, h = box
+        return {
+            "id": ident,
+            "type": "text",
+            "x": x,
+            "y": y,
+            "width": w,
+            "height": h,
+            "text": words,
+            "style": {"fontSize": 14},
+        }
+
+    def test_duplicate_panel_is_merged_instead_of_stacked(self) -> None:
+        from src.app.services.structure.fidelity.fixed_canvas_compiler import (
+            _merge_duplicate_containers,
+        )
+
+        elements = [
+            self._panel("card:a", (100, 100, 600, 400)),
+            self._text("t1", (140, 140, 120, 22)),
+            self._text("t2", (140, 180, 120, 22)),
+            self._panel("card:b", (104, 98, 604, 404)),
+        ]
+        ocr = [
+            {"text": "任务编号", "bbox": [140, 140, 120, 22]},
+            {"text": "计划开始", "bbox": [140, 180, 120, 22]},
+        ]
+        merged = _merge_duplicate_containers(elements, ocr, (2560, 1280))
+        assert merged == 1
+        panels = [element for element in elements if element["type"] == "container"]
+        assert len(panels) == 1
+        survivor = panels[0]
+        # 合并是取并集：被删那份的子节点不能掉到盒外去。
+        assert survivor["x"] <= 100 and survivor["x"] + survivor["width"] >= 708
+        assert survivor["mergeEvidence"]["absorbed"]
+
+    def test_a_card_inside_a_panel_is_not_a_duplicate(self) -> None:
+        from src.app.services.structure.fidelity.fixed_canvas_compiler import (
+            _merge_duplicate_containers,
+        )
+
+        elements = [
+            self._panel("panel", (0, 0, 1200, 800), fill="#ffffff"),
+            self._panel("card", (100, 120, 300, 200), fill="#161618"),
+        ]
+        assert _merge_duplicate_containers(elements, [], (2560, 1280)) == 0
+        assert len([e for e in elements if e["type"] == "container"]) == 2
+
+    def test_layers_put_panels_under_words_and_controls_between(self) -> None:
+        from src.app.services.structure.fidelity.fixed_canvas_compiler import (
+            _order_layers,
+        )
+
+        elements = [
+            self._text("t", (66, 66, 60, 20)),
+            self._panel("big", (0, 0, 800, 600)),
+            self._panel("small", (20, 20, 200, 100)),
+            {"id": "btn", "type": "button", "text": "保存", "x": 60, "y": 60,
+             "width": 80, "height": 32, "role": "button"},
+        ]
+        assert _order_layers(elements) >= 3
+        # 输出序就是绘制序：大面板在最前，文字在最后。
+        order = [element["id"] for element in elements]
+        assert order.index("big") < order.index("small") < order.index("btn") < order.index("t")
+
+    def test_a_patch_over_a_real_word_is_cut_back(self, tmp_path: Path) -> None:
+        import numpy as np
+        from PIL import Image, ImageDraw
+
+        from src.app.services.structure.fidelity.fixed_canvas_compiler import (
+            _guard_text_occlusion,
+        )
+
+        source = tmp_path / "page.png"
+        image = Image.new("RGB", (400, 300), "white")
+        draw = ImageDraw.Draw(image)
+        # 一段真墨迹：这条规则只保护"画面上确实有字"的位置。
+        draw.rectangle((60, 60, 200, 84), fill=(20, 20, 20))
+        image.save(source)
+
+        elements = [
+            self._text("words", (60, 60, 140, 24), "计划开始"),
+            {
+                "id": "patch:x",
+                "type": "image",
+                "role": "patch",
+                "x": 40,
+                "y": 40,
+                "width": 240,
+                "height": 80,
+                "imageBase64": "stub",
+                "zIndex": 5,
+            },
+        ]
+        report = _guard_text_occlusion(elements, str(source), (400, 300), [])
+        assert report["clipped"] + report["deleted"] >= 1
+        patch = next(element for element in elements if element["id"] == "patch:x")
+        assert not (
+            patch["x"] <= 60 < patch["x"] + patch["width"]
+            and patch["y"] <= 60 < patch["y"] + patch["height"]
+            and patch["x"] + patch["width"] >= 200
+        )
+
+    def test_arbiter_unburies_a_word_instead_of_calling_it_present(self) -> None:
+        elements = [
+            self._panel("dup", (40, 40, 300, 120), fill="#ffffff", role="panel"),
+            self._text("words", (60, 60, 120, 24), "计划开始"),
+            self._panel("cover", (40, 40, 300, 120), fill="#ffffff", role="panel"),
+        ]
+        # 后画的那份同色面板把字盖住了：仲裁器此前只看到"节点在"。
+        elements[2]["zIndex"] = 2
+        ticket = vlm_arbiter.DesignTicket(
+            type="MISSING_TEXT_BLOCK",
+            # ROI 比字本身大一圈：真实的工单框总是框得松一点，
+            # `_design_missing_text` 也从框边取底色。
+            roi_bbox=[50, 50, 160, 44],
+            text="计划开始",
+        )
+        truth = __import__("numpy").full((300, 400, 3), 255, dtype=__import__("numpy").int16)
+        truth[60:84, 60:180] = 20
+        change = vlm_arbiter._design_missing_text(ticket, elements, truth)
+        assert change is not None
+        assert change["action"].startswith("uncovered")

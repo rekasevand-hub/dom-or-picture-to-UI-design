@@ -915,7 +915,13 @@ def _flat_paint_order(elements: list[dict]) -> list[tuple[int, dict]]:
     # 彩色按钮之后。按唯一几何矩形统计「被谁覆盖」，消除该膨胀。
     seen: set[tuple[int, int, int, int]] = set()
     unique_geoms = []
-    for rect in rects:
+    for index, rect in enumerate(rects):
+        # A residual patch is cut from the screenshot and painted last; letting
+        # its rectangle count as "something covering me" reorders every element
+        # underneath it, and the frame pass then sees members in a different
+        # order than the one it approved.  Overlays do not vote on depth.
+        if str(elements[index].get("role") or "") == "patch":
+            continue
         if rect is not None and rect not in seen:
             seen.add(rect)
             unique_geoms.append(rect)
@@ -1279,6 +1285,17 @@ def resolve_frames(
             for k in seq[pos_of[i] + 1 : end + 1]:
                 rect = rect_of[k]
                 if rect is None or k in closure:
+                    continue
+                # A residual patch is an overlay on the drawing, not a member of
+                # it.  It is cut from the screenshot and painted after every
+                # frame by construction, so wrapping the frame cannot change a
+                # pixel it covers — but the overlap test below would veto the
+                # frame and silently flatten it.  That is how wecom-modal
+                # reported six frames and the export drew four.
+                if str(elements[k].get("role") or "") == "patch":
+                    continue
+                # 补画在容器下面的那一层漆同理：它是帧的底，不是帧的外人。
+                if elements[k].get("paintBackdrop"):
                     continue
                 # Only an overlap with a member can change a pixel.  A
                 # stranger inside the frame's rectangle that touches no member

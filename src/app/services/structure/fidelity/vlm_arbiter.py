@@ -1313,6 +1313,202 @@ def _design_border(
     }
 
 
+#: 不透明块盖住目标这么多，才算"被埋了"。
+OCCLUSION_COVER = 0.5
+
+
+def paint_ranks(elements: Sequence[dict[str, Any]]) -> dict[int, int]:
+    """Flat paint rank per element, by the renderer's own ordering rule."""
+    from src.app.services.rendering.adapter_base import paint_order
+
+    return {index: rank for rank, (index, _item) in enumerate(paint_order(elements))}
+
+
+def _cover_share(outer: Sequence[float], inner: Sequence[float]) -> float:
+    width = min(outer[0] + outer[2], inner[0] + inner[2]) - max(outer[0], inner[0])
+    height = min(outer[1] + outer[3], inner[1] + inner[3]) - max(outer[1], inner[1])
+    if width <= 0 or height <= 0:
+        return 0.0
+    return (width * height) / max(1.0, inner[2] * inner[3])
+
+
+def _is_opaque(element: Mapping[str, Any]) -> bool:
+    if element.get("imageBase64"):
+        return True
+    style = element.get("style") or {}
+    fill = str(style.get("fillColor") or "")
+    if element.get("transparent") or fill.lower() in ("", "transparent", "none"):
+        return False
+    return True
+
+
+def occluders_above(
+    elements: Sequence[dict[str, Any]],
+    box: Sequence[float],
+    host: dict[str, Any] | None = None,
+    share: float = OCCLUSION_COVER,
+) -> list[dict[str, Any]]:
+    """Opaque nodes painted after this box that cover half of it or more.
+
+    This is the question the arbiter was missing.  "Is there a node at these
+    coordinates" answered yes, and the ticket was closed as a false positive —
+    while the words were sitting under a duplicated panel or a pixel patch.
+    """
+    ranks = paint_ranks(list(elements))
+    text_rank = None
+    if host is not None:
+        for index, element in enumerate(elements):
+            if element is host:
+                text_rank = ranks.get(index)
+                break
+    if text_rank is None:
+        for index, element in enumerate(elements):
+            rect = _rect(element)
+            if [int(value) for value in rect] == [int(value) for value in box]:
+                text_rank = ranks.get(index)
+                break
+    found: list[dict[str, Any]] = []
+    for index, element in enumerate(elements):
+        if str(element.get("type") or "") == "text" or not _is_opaque(element):
+            continue
+        rect = _rect(element)
+        if _cover_share(rect, box) < share:
+            continue
+        rank = ranks.get(index, 0)
+        if text_rank is not None and rank <= text_rank:
+            continue
+        found.append(
+            {
+                "index": index,
+                "element": element,
+                "ref": str(element.get("contentRef") or element.get("id") or ""),
+                "z": int(element.get("zIndex") or 0),
+                "rank": rank,
+                "cover": round(_cover_share(rect, box), 3),
+            }
+        )
+    found.sort(key=lambda item: item["cover"], reverse=True)
+    return found
+
+
+def _drop_element(elements: list[dict[str, Any]], target: dict[str, Any]) -> None:
+    """Remove one element, and its id from any frame that lists it."""
+    target_id = str(target.get("id") or "")
+    elements[:] = [element for element in elements if element is not target]
+    if not target_id:
+        return
+    for element in elements:
+        children = element.get("layoutChildren")
+        if not children:
+            continue
+        kept = [
+            child
+            for child in children
+            if not (isinstance(child, dict) and str(child.get("id") or "") == target_id)
+        ]
+        if len(kept) != len(children):
+            element["layoutChildren"] = kept
+
+
+def _duplicate_background(
+    elements: Sequence[dict[str, Any]],
+    entry: Mapping[str, Any],
+    ranks: Mapping[int, int],
+) -> bool:
+    """A panel that paints the same area twice — safe to delete, not to demote.
+
+    Demoting a duplicate panel just moves the double paint one layer down.  It
+    only counts as duplicate when another container with the same fill covers
+    it almost completely and paints below it: that is a second copy, not a
+    legitimate overlay.
+    """
+    element = entry["element"]
+    role = str(element.get("role") or "")
+    if role in ("page", "page-ground", "page-background"):
+        return True
+    style = element.get("style") or {}
+    fill = str(style.get("fillColor") or "").lower()
+    if not fill or fill in ("transparent", "none"):
+        return False
+    own = _rect(element)
+    own_rank = ranks.get(int(entry.get("index") or 0))
+    for index, other in enumerate(elements):
+        if other is element or str(other.get("type") or "") != "container":
+            continue
+        other_fill = str((other.get("style") or {}).get("fillColor") or "").lower()
+        if other_fill != fill:
+            continue
+        rect = _rect(other)
+        if _cover_share(rect, own) < 0.85:
+            continue
+        rank = ranks.get(index)
+        if own_rank is None or rank is None or rank < own_rank:
+            return True
+    return False
+
+
+def _uncover_text(
+    elements: list[dict[str, Any]],
+    host: dict[str, Any],
+    box: Sequence[float],
+) -> dict[str, Any] | None:
+    """Make a buried node visible: drop the duplicate, or lift the words.
+
+    Deleting is only for a genuine second copy of the same background.  Anything
+    else — a patch, a real overlay — is left alone and the word is lifted above
+    it, because the pixels there are carrying something the vector tree does not
+    have.  Ranks are recomputed after every deletion: an index into a list that
+    just got shorter is a wrong answer waiting for the next ticket.
+    """
+    if not occluders_above(elements, box, host):
+        return None
+    removed: list[str] = []
+    for _round in range(3):
+        entries = occluders_above(elements, box, host)
+        if not entries:
+            break
+        ranks = paint_ranks(list(elements))
+        target = next(
+            (
+                entry
+                for entry in entries
+                if _duplicate_background(elements, entry, ranks)
+            ),
+            None,
+        )
+        if target is None:
+            break
+        _drop_element(elements, target["element"])
+        removed.append(target["ref"])
+    if removed:
+        host.setdefault("designEvidence", {})["occlusionRepair"] = {
+            "action": "removed-duplicate",
+            "removed": removed,
+        }
+        return {
+            "ref": str(host.get("contentRef") or host.get("id") or ""),
+            "action": "uncovered:removed-duplicate",
+            "detail": ",".join(removed),
+        }
+    entries = occluders_above(elements, box, host)
+    if not entries:
+        return None
+    top = max(entry["z"] for entry in entries)
+    word_z = int(host.get("zIndex") or 0)
+    if word_z > top:
+        return None
+    host["zIndex"] = top + 1
+    host.setdefault("designEvidence", {})["occlusionRepair"] = {
+        "action": "lifted",
+        "above": [entry["ref"] for entry in entries],
+    }
+    return {
+        "ref": str(host.get("contentRef") or host.get("id") or ""),
+        "action": "uncovered:lifted",
+        "detail": ",".join(entry["ref"] for entry in entries),
+    }
+
+
 def _design_missing_text(ticket: DesignTicket, elements: list[dict[str, Any]], truth):
     """Make the words appear where the model says they are missing.
 
@@ -1347,6 +1543,11 @@ def _design_missing_text(ticket: DesignTicket, elements: list[dict[str, Any]], t
 
     host = _text_near(elements, ink_box)
     if host is not None:
+        # 节点在，但可能被压住了：先解遮挡再谈颜色与字号。这一步以前没有，
+        # 于是"被重复面板埋掉的文字"整类工单都被判成误报。
+        uncovered = _uncover_text(elements, host, ink_box)
+        if uncovered is not None:
+            return uncovered
         return _restyle_in_place(host, foreground, size, ticket.text, ink_box)
 
     digest = hashlib.sha1(
@@ -1470,6 +1671,15 @@ def _design_widget(ticket: DesignTicket, elements: list[dict[str, Any]], truth):
     x1, y1 = min(width, x + w), min(height, y + h)
     if x1 - x0 < 12 or y1 - y0 < 12:
         return None
+    # 这块 ROI 上已经有字了：那缺的只是它下面那块底色，不是这行字。补一块
+    # 不透明胶囊只会把字盖掉（ERP 的"生产任务"就是这么被吞的），而帧内元素
+    # 的层序不能靠抬 zIndex 解决——所以宁可不要这块胶囊。
+    for element in elements:
+        if element.get("type") != "text" or not str(element.get("text") or "").strip():
+            continue
+        if _cover_share(_rect(element), (x0, y0, x1 - x0, y1 - y0)) >= 0.5:
+            element.setdefault("designEvidence", {})["widgetSkipped"] = ticket.note or ticket.type
+            return None
     crop = truth[y0:y1, x0:x1]
     corners = np.concatenate(
         [
