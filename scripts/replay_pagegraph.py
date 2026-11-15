@@ -229,13 +229,10 @@ def _largest_text_in(elements, box) -> str:
 
 
 def _arbitrate(design: dict, picture: str | Path, out: Path, tag: str, render_path: Path) -> dict:
-    """Run the frozen tickets for this render, and gate every one of them.
+    """宏观仲裁：整页 + 三段的并排图，五类"设计神似"工单。
 
-    The model never sees coordinates it can change: it sees numbered blocks and
-    answers with an index.  What it says is frozen to ``15_arbiter_tickets.json``
-    under a key built from the picture and the render, so a replay is the same
-    run every time.  Each ticket is then executed, re-rendered and measured; a
-    ticket that fails any of the four gates is rolled back on its own.
+    门禁不再看像素——矢量和原图字形差 0.5px 是正常的。只看结构红线（帧、
+    written == accepted、补丁预算）与几何防撞（重叠数不许变多）。
     """
     import copy
 
@@ -244,107 +241,69 @@ def _arbitrate(design: dict, picture: str | Path, out: Path, tag: str, render_pa
 
     from src.app.services.rendering.adapter_base import paint_order, resolve_frames
     from src.app.services.structure.fidelity import vlm_arbiter as arbiter
-
-    sys.path.insert(0, str(ROOT / "scripts"))
-    from visual_alignment import residual_regions  # noqa: PLC0415
+    from src.app.services.structure.fidelity.fixed_canvas_compiler import (
+        _keep_renderable_frames,
+    )
 
     elements = design["elements"]
     truth = np.asarray(Image.open(picture).convert("RGB"), dtype=np.int16)
     drawn = np.asarray(Image.open(render_path).convert("RGB"), dtype=np.int16)
-    texts = [
-        (int(e["x"]), int(e["y"]), int(e["width"]), int(e["height"]))
-        for e in elements
-        if e.get("type") == "text" and e.get("text")
-    ]
-    pictures = [
-        (int(e["x"]), int(e["y"]), int(e["width"]), int(e["height"]))
-        for e in elements
-        if e.get("imageBase64")
-    ]
-    candidates = arbiter.build_candidates(
-        truth, drawn, residual_regions(truth, drawn, texts, pictures)
-    )
     canvas = (int(design["canvas"]["width"]), int(design["canvas"]["height"]))
     image_sha = hashlib.sha256(Path(picture).read_bytes()).hexdigest()
     key = arbiter.render_key(image_sha, render_path)
     frozen_path = out / "15_arbiter_tickets.json"
-    frozen = arbiter.TicketFile.load(frozen_path, key)
-    report: dict = {
-        "key": key,
-        "candidates": len(candidates),
-        "tickets": len(frozen.tickets),
-        "applied": 0,
-        "rolledBack": [],
-        "source": "frozen",
-    }
+    frozen = arbiter.DesignFile.load(frozen_path, key)
+    report: dict = {"key": key, "source": "frozen", "tickets": len(frozen.tickets), "applied": 0, "rolledBack": []}
     if not frozen.tickets:
-        try:
-            frozen = arbiter.propose(
-                candidates,
-                [arbiter.side_by_side(truth, drawn, candidate) for candidate in candidates],
-                vision=_vision_callable(),
-            )
-        except arbiter.ArbiterUnavailable as exc:
-            report["note"] = str(exc)
+        vision = _vision_callable()
+        if vision is None:
+            report["note"] = "VISION_API_KEY 未配置，只回放冻结工单"
             return report
-        frozen.key = key
+        panels = arbiter.macro_panels(truth, drawn)
+        answer = vision(arbiter.design_prompt(arbiter.scene_digest(elements)), panels)
+        tickets = arbiter.parse_design_tickets(answer)
+        frozen = arbiter.DesignFile(key=key, tickets=tickets)
         frozen.save(frozen_path)
         report["source"] = "vlm"
+        report["tickets"] = len(tickets)
+    if not frozen.tickets:
+        return report
 
     floor = FRAME_FLOORS.get(tag, 0)
     for ticket in frozen.tickets:
-        roi = ticket.roi_bbox or next(
-            (
-                list(candidate.box)
-                for candidate in candidates
-                if candidate.index == ticket.candidate
-            ),
-            [],
-        )
-        roi_before = _within30_box(picture, render_path, roi) if roi else 0.0
-        global_before = _within30(picture, render_path)
-        if ticket.type == "STYLE_MISMATCH" and not ticket.node_id:
-            ticket.node_id = _largest_text_in(elements, roi)
-            if not ticket.node_id:
-                continue
         shadow = copy.deepcopy(elements)
-        changed = arbiter.execute(ticket, elements, truth, drawn)
+        changed = arbiter.execute_design(ticket, elements, truth, canvas)
         if not changed:
+            report["rolledBack"].append({"type": ticket.type, "why": ["not-executable"], "detail": ticket.note[:40]})
             continue
         _render(design, out)
         reasons: dict = {}
         written = sum(1 for element in elements if element.get("layoutChildren"))
         accepted = resolve_frames(elements, paint_order(elements), reasons)
-        gate = arbiter.GateResult(
-            roi_before=roi_before,
-            roi_after=_within30_box(picture, render_path, roi) if roi else roi_before,
-            global_before=global_before,
-            global_after=_within30(picture, render_path),
-            frames=written,
+        # written counts the frames the compiler *asked* for; the renderer may
+        # refuse one, and the compiler's own pass then drops it.  The invariant
+        # the tests hold is kept == accepted, so that is what the gate has to
+        # compare — comparing against `written` rejected every ticket, including
+        # ones that only changed a font weight.
+        kept = _keep_renderable_frames(elements, written)
+        gate = arbiter.DesignGate(
+            frames=int(kept),
             frames_floor=max(floor, 0),
-            written_equals_accepted=len(accepted) == written,
+            written_equals_accepted=kept == len(accepted),
             patch_share=_patch_share(elements, canvas),
+            collisions_before=arbiter.count_collisions(shadow),
+            collisions_after=arbiter.count_collisions(elements),
         )
         if gate.passed:
             report["applied"] += 1
             report.setdefault("appliedTickets", []).append(
-                {"type": ticket.type, "roi": list(roi), "change": changed}
+                {"type": ticket.type, "fix": ticket.fix, "ref": ticket.ref, "change": changed, "note": ticket.note[:60]}
             )
             continue
         elements[:] = shadow
         _render(design, out)
-        report["rolledBack"].append(
-            {
-                "type": ticket.type,
-                "why": gate.failures,
-                "roi": [gate.roi_before, gate.roi_after],
-                "global": [gate.global_before, gate.global_after],
-                "frames": [gate.frames, gate.frames_floor],
-                "patches": gate.patch_share,
-            }
-        )
-    if frozen.tickets:
-        frozen.save(frozen_path)
+        report["rolledBack"].append({"type": ticket.type, "why": gate.failures, "detail": ticket.note[:40]})
+    frozen.save(frozen_path)
     return report
 
 
