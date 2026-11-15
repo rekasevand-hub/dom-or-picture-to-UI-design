@@ -282,3 +282,42 @@ wecom-modal 6。`inventory2` 曾经因为"纯像素成员（mark/patch/chip）�
    尚未恢复的图形），再谈文本。
 2. 因此 P1（无字胶囊 / 圆角底色确定性检测）不是"锦上添花"，而是**唯一能抬高
    天花板的一类工作**；文本校准应停在"副作用最小"，不再作为主攻方向。
+
+---
+
+## 10. S0 已跑：Figma 导出链路的天花板是 100%
+
+bridge 起来后（`python -m src.app.services.bridge_server`，插件自动重连，`auth` 通过）
+先做了 S0：把原图整张作为 image fill 写进一个 frame、用 Figma 原生 `exportAsync`
+导出，再量它与原图的差异。**这是"设计稿完全正确"时的上界。**
+
+| 测试 | within30 | within15 | mean error |
+|---|---|---|---|
+| AtomGit 原图 → Figma frame → 导出 | **100.00** | 100.00 | 0.00 |
+
+导出链路零损耗：没有重采样、没有色彩偏移。历史那份 87.71 的导出不是 Figma 的问题，
+是当时编译器的状态。
+
+随后把校准后的设计稿（S1 产物）真机写入并导出，三张一起看：
+
+| 样本 | SVG | Figma | 差 | Figma within15 |
+|---|---|---|---|---|
+| AtomGit | 92.95 | 92.67 | −0.28 | 90.27 |
+| inventory | 93.30 | 92.86 | −0.44 | 91.74 |
+| wecom-modal | 96.62 | 96.41 | −0.21 | 95.08 |
+
+结论：**两条渲染路径只差 0.2~0.4 个点**，之前"Figma 比 SVG 低 2~5 分"的估计作废。
+所以"Figma 真机 ≥95%"和"SVG ≥95%"难度相同，门禁口径可以双轨而不互相打架；
+真正的约束仍然是第 9 节那条零文本天花板（94.27 / 94.68），也就是说：
+**先把非文本像素抬上去，两条路径会一起过线。**
+
+复跑方式（bridge 起着即可）：
+
+```bash
+python scripts/figma_ceiling.py AtomGit            # S0 天花板，默认跑完即删对照 frame
+python scripts/figma_replay.py --out output/_cal_<tag>/pipeline --design 12_design.json
+```
+
+注意 `figma_replay.py` 每次会按 `--screen-name Screen` 清掉上一次的帧，所以同一次
+会话里它只保留最后一张；每次导出的 PNG 都落在各自的 `pipeline/figma_render.png`，
+度量不受影响。`figma_ceiling.py` 的对照 frame 默认删除（`--keep` 可保留）。
