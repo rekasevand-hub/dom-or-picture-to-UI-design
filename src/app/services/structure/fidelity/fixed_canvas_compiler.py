@@ -3298,6 +3298,11 @@ PARAGRAPH_TAIL_LENGTH_MARGIN = 8
 PARAGRAPH_TAIL_MIN_DROP = 4
 PARAGRAPH_TAIL_REACH = 12
 PARAGRAPH_TAIL_HORIZONTAL_SHARE = 0.5
+#: 文本落在补丁里的面积超过这个比例，它就是在给同一句话做第二次印刷。
+PATCH_TEXT_COVER = 0.55
+#: 小框被大框包含到这个比例，且用词对得上，就判为重影。
+CONTAINED_TEXT_IOA = 0.55
+CONTAINED_TEXT_SIMILARITY = 0.45
 #: Rebuilding a paragraph from its OCR lines: the seed has to sit on the node's
 #: own first line, the chain grows downwards in the same column, and the joined
 #: text has to agree with the model's wording this well before anything moves.
@@ -4275,6 +4280,137 @@ def _drop_paragraph_tails(elements: list[dict[str, Any]]) -> int:
         element for index, element in enumerate(elements) if index not in doomed
     ]
     return tails
+
+
+def _drop_text_under_patches(elements: list[dict[str, Any]]) -> int:
+    """Delete vector text that a picture patch already prints.
+
+    A patch is cut from the screenshot, so any vector node inside it is a second
+    print of the same words — the discount stamps were exactly that: a bitmap of
+    "5.8 折" with a text node on top of it.  The patch wins because it carries the
+   真实像素; the node only adds a ghost.
+
+    Frame members are referenced by id, so removing an element is safe once the
+    id is also removed from any frame that lists it.
+    """
+    patches = [
+        _layout_rect(element)
+        for element in elements
+        if str(element.get("role") or "") == "patch"
+    ]
+    patches = [box for box in patches if box]
+    if not patches:
+        return 0
+    doomed: set[str] = set()
+    for element in elements:
+        if element.get("type") != "text" or not str(element.get("text") or "").strip():
+            continue
+        box = _layout_rect(element)
+        if box is None:
+            continue
+        area = max(1, box[2] * box[3])
+        for patch in patches:
+            overlap_w = min(box[0] + box[2], patch[0] + patch[2]) - max(box[0], patch[0])
+            overlap_h = min(box[1] + box[3], patch[1] + patch[3]) - max(box[1], patch[1])
+            if overlap_w <= 0 or overlap_h <= 0:
+                continue
+            if (overlap_w * overlap_h) / area >= PATCH_TEXT_COVER:
+                doomed.add(str(element.get("id") or element.get("contentRef") or ""))
+                break
+    if not doomed:
+        return 0
+    elements[:] = [
+        element
+        for element in elements
+        if str(element.get("id") or element.get("contentRef") or "") not in doomed
+    ]
+    for element in elements:
+        members = element.get("layoutChildren")
+        if isinstance(members, list):
+            element["layoutChildren"] = [
+                member
+                for member in members
+                if str(member.get("id") or "") not in doomed
+            ]
+    return len(doomed)
+
+
+def _drop_contained_texts(elements: list[dict[str, Any]]) -> int:
+    """Delete a text node that is the ghost of a bigger one in the same place.
+
+    "11月 &日更新" sat inside "价目牌 · 82 个模型 · 11 月 8 日更新" and printed on
+    top of it; "Kimi" sat inside "Kimi K3"; "¥8.00" inside "¥4.64 ¥8.00".  The
+    overlap test upstream compares coverage and wording and lets these through
+    because the words differ.  Containment is the signal: when the smaller box
+    lives inside the larger one and the two share the words they do have, the
+    smaller is a second model of the same line.
+    """
+    from difflib import SequenceMatcher
+
+    texts = [
+        element
+        for element in elements
+        if element.get("type") == "text" and str(element.get("text") or "").strip()
+    ]
+    doomed: set[str] = set()
+    for small in texts:
+        small_key = str(small.get("id") or "")
+        if not small_key or small_key in doomed:
+            continue
+        small_box = _layout_rect(small)
+        if small_box is None:
+            continue
+        small_area = max(1, small_box[2] * small_box[3])
+        for big in texts:
+            if big is small:
+                continue
+            big_box = _layout_rect(big)
+            if big_box is None:
+                continue
+            if big_box[2] * big_box[3] <= small_area:
+                continue
+            overlap_w = min(small_box[0] + small_box[2], big_box[0] + big_box[2]) - max(
+                small_box[0], big_box[0]
+            )
+            overlap_h = min(small_box[1] + small_box[3], big_box[1] + big_box[3]) - max(
+                small_box[1], big_box[1]
+            )
+            if overlap_w <= 0 or overlap_h <= 0:
+                continue
+            if (overlap_w * overlap_h) / small_area < CONTAINED_TEXT_IOA:
+                continue
+            one = _tail_key(small)
+            two = _tail_key(big)
+            if not one or not two:
+                continue
+            # 用词对得上：相似度够、或互相包含、或短的那句的字符几乎都在长句里
+            # （OCR 把 "8" 读成 "&" 时，"11月 &日更新" 与 "…11 月 8 日更新" 的
+            # 相似度只有 0.45，但字符覆盖是 0.83）。
+            covered = set(one) & set(two)
+            char_cover = len(covered) / max(1, len(set(one)))
+            if (
+                SequenceMatcher(None, one, two).ratio() >= CONTAINED_TEXT_SIMILARITY
+                or one in two
+                or two in one
+                or _shared_affix(one, two) >= 4
+                or char_cover >= 0.8
+            ):
+                doomed.add(small_key)
+                break
+    if not doomed:
+        return 0
+    elements[:] = [
+        element
+        for element in elements
+        if str(element.get("id") or element.get("contentRef") or "") not in doomed
+    ]
+    for element in elements:
+        members = element.get("layoutChildren")
+        if isinstance(members, list):
+            element["layoutChildren"] = [
+                member for member in members if str(member.get("id") or "") not in doomed
+            ]
+    return len(doomed)
 
 
 def _separate_badge_icon_text(elements: list[dict[str, Any]]) -> int:
@@ -7355,6 +7491,8 @@ def compile_scene_plan_to_design(
     # the paragraph, so it survives and both get printed — in the browser as an
     # overflowing line, in Figma as two lines on top of each other.
     _drop_paragraph_tails(elements)
+    # 一个框被另一个更大的框包住、用词还对得上：同一行的第二次建模。
+    _drop_contained_texts(elements)
     _separate_badge_icon_text(elements)
     # A chip whose word was absorbed by the row's own line prints empty; OCR
     # read that chip's word at the chip's coordinates.
@@ -7395,6 +7533,8 @@ def compile_scene_plan_to_design(
     # member of it.  Joining a frame would change that frame's member list and,
     # with it, the paint order of everything the frame contains.
     _apply_residual_patches(elements, image_path, (width, height), residual_regions)
+    # 补丁是从原图裁的像素，它盖住的矢量文字就是第二遍印刷。
+    _drop_text_under_patches(elements)
     text_count = sum(
         element.get("type") == "text" and bool(element.get("text"))
         for element in elements
