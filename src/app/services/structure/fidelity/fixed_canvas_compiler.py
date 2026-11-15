@@ -5312,6 +5312,12 @@ PAGE_BAND_MIN_DELTA = 6
 #: A solid container that stops short of its own paint: how far to follow
 #: colour continuity, and how much of a row has to agree before it counts.
 CONTAINER_GROW_MAX = 32
+#: A card's box is routinely a few pixels short of its own paint; the cap is
+#: smaller than the page chrome's because a card has neighbours close by.
+CONTAINER_GROW_CARD_MAX = 16
+#: A card's own rows carry words, so 90% of a row is never the card's colour.
+#: Half is enough to tell "still this card" from "the page underneath".
+CONTAINER_GROW_CARD_SHARE = 0.5
 CONTAINER_GROW_TOLERANCE = 12
 CONTAINER_GROW_SHARE = 0.9
 #: Consecutive off-colour rows a growth may step over (an antialiased seam).
@@ -5729,6 +5735,8 @@ def _reflow_key(text: str) -> str:
 def _reflow_paragraphs(
     elements: list[dict[str, Any]],
     ocr_observations: Sequence[Mapping[str, Any]] | None,
+    image_path: str | Path | None = None,
+    background: str | None = None,
 ) -> int:
     """Give a paragraph back the lines the picture actually has.
 
@@ -5747,6 +5755,25 @@ def _reflow_paragraphs(
     """
     if not ocr_observations:
         return 0
+    # A column of page colour between two blocks is the geometry that says they
+    # are not the same paragraph.  Read from the picture, so a three-column table
+    # or a single centred card behaves the same way.
+    picture = None
+    if image_path and background:
+        try:
+            import numpy as _np
+            from PIL import Image as _Image
+
+            picture = _np.asarray(_Image.open(image_path).convert("RGB"), dtype=_np.int16)
+        except (OSError, ValueError):
+            picture = None
+
+    def _separated(one: Sequence[int], two: Sequence[int]) -> bool:
+        if picture is None or not background:
+            return False
+        from src.app.services.structure.fidelity.pixel_probe import separated_by_page
+
+        return separated_by_page(picture, str(background), one, two)
     import numpy as np
 
     lines = []
@@ -5785,7 +5812,7 @@ def _reflow_paragraphs(
         seed = _reflow_seed(lines, box, node_key)
         if seed is None:
             continue
-        chain = _reflow_chain(lines, seed, box, node_key)
+        chain = _reflow_chain(lines, seed, box, node_key, separated=_separated)
         if len(chain) < 2:
             continue
         joined = "".join(line["key"] for line in chain)
@@ -5859,6 +5886,7 @@ def _reflow_chain(
     seed: Mapping[str, Any],
     box: tuple[int, int, int, int],
     node_key: str,
+    separated: Any = None,
 ) -> list[Mapping[str, Any]]:
     """Follow the seed downwards while the lines still spell the node's words.
 
@@ -5884,6 +5912,10 @@ def _reflow_chain(
                 continue
             overlap = min(x + w, lx + lw) - max(x, lx)
             if overlap < lw * PARAGRAPH_REFLOW_BAND_SHARE:
+                continue
+            # Two columns of a layout are not one paragraph, whatever the words
+            # say: a strip of page between them is enough to say no.
+            if separated is not None and separated(cursor["box"], line["box"]):
                 continue
             candidates.append((gap, line))
         if not candidates:
@@ -6166,11 +6198,16 @@ def _extend_solid_edges(
     for element in elements:
         if element.get("type") != "container":
             continue
-        # Only the page's own chrome: these are the containers whose edges the
-        # picture can contradict.  Growing a card or a dialog edge instead moves a
-        # frame's members out from under it — wecom-modal lost two frames to it.
-        if str(element.get("role") or "") not in ("header", "sidebar", "main-content"):
+        # Page chrome only.  Growing a card was tried and reverted: marketplace's
+        # two model cards overlap each other by 61px, so the guard refused them
+        # and the growth did nothing, while inventory2 lost two frames to the
+        # relaxation.  A card whose box is short of its paint needs the box fixed
+        # at plan time, not a pass that guesses at its neighbour.
+        role = str(element.get("role") or "")
+        if role not in ("header", "sidebar", "main-content"):
             continue
+        budget_max = CONTAINER_GROW_MAX
+        share_min = CONTAINER_GROW_SHARE
         fill = _solid_fill(element)
         if not fill:
             continue
@@ -6201,7 +6238,7 @@ def _extend_solid_edges(
             cursor = start
             misses = 0
             furthest = start
-            budget = CONTAINER_GROW_MAX + CONTAINER_GROW_BRIDGE
+            budget = budget_max + CONTAINER_GROW_BRIDGE
             while 0 <= cursor < limit and abs(cursor - start) <= budget:
                 line = getter(cursor)
                 if line.size and float(
@@ -6217,21 +6254,21 @@ def _extend_solid_edges(
             return furthest
 
         top = y0
-        for _step in range(CONTAINER_GROW_MAX):
+        for _step in range(budget_max):
             if top <= 0:
                 break
             row = image[top - 1, x0:x1]
-            if float((np.abs(row - colour).max(axis=1) <= CONTAINER_GROW_TOLERANCE).mean()) < CONTAINER_GROW_SHARE:
+            if float((np.abs(row - colour).max(axis=1) <= CONTAINER_GROW_TOLERANCE).mean()) < share_min:
                 break
             top -= 1
         bottom = contiguity(lambda y: image[y, x0:x1], y1, height, 1)
         right = contiguity(lambda x: image[y0:max(y0 + 1, y1), x], x1, width, 1)
         left = x0
-        for _step in range(CONTAINER_GROW_MAX):
+        for _step in range(budget_max):
             if left <= 0:
                 break
             column = image[top:bottom, left - 1]
-            if float((np.abs(column - colour).max(axis=1) <= CONTAINER_GROW_TOLERANCE).mean()) < CONTAINER_GROW_SHARE:
+            if float((np.abs(column - colour).max(axis=1) <= CONTAINER_GROW_TOLERANCE).mean()) < share_min:
                 break
             left -= 1
         if (top, bottom, left, right) == (y0, y1, x0, x1):
@@ -6245,6 +6282,15 @@ def _extend_solid_edges(
                 continue
             ox, oy = int(other.get("x") or 0), int(other.get("y") or 0)
             ow, oh = int(other.get("width") or 0), int(other.get("height") or 0)
+            # A frame that was already inside this container is its own child:
+            # the card's inner button row overlaps every inset of the card, and
+            # reading that as a collision kept every card at its measured box.
+            inside_before = (
+                ox >= x0 - 1 and oy >= y0 - 1
+                and ox + ow <= x1 + 1 and oy + oh <= y1 + 1
+            )
+            if inside_before:
+                continue
             if min(right, ox + ow) > max(left, ox) and min(bottom, oy + oh) > max(top, oy):
                 touches_frame = True
                 break
@@ -6258,6 +6304,20 @@ def _extend_solid_edges(
             "method": "colour-continuation",
             "grew": [top - y0, bottom - y1, left - x0, right - x1],
         }
+        # The paint just moved, so its decoration has to be read again: a border
+        # probe on the short box finds two sides out of four and gives up, which
+        # is why the cards came out with no edge at all.
+        from src.app.services.structure.fidelity.pixel_probe import (
+            sample_container_decoration,
+        )
+
+        decoration = sample_container_decoration(
+            image_path,
+            (left, top, right - left, bottom - top),
+            str(fill),
+        )
+        if decoration:
+            element.setdefault("style", {}).update(decoration)
         grown += 1
     return grown
 
@@ -7732,7 +7792,7 @@ def compile_scene_plan_to_design(
     # A description the plan flattened into one line is a paragraph in the
     # picture; OCR still knows where its lines break.  Rebuild it before the
     # snap, which would otherwise pin the node back onto its first line.
-    _reflow_paragraphs(elements, ocr_observations)
+    _reflow_paragraphs(elements, ocr_observations, image_path, background)
     # A sentence measured from the wrong origin prints through its own border.
     _snap_text_to_ocr(elements, ocr_observations)
     # Words the plan never carried: OCR read them, so they are on the page.

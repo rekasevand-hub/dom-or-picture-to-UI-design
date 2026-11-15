@@ -157,14 +157,20 @@ def detect_border(image, bbox: Sequence[int], fill: str) -> dict | None:
     """
     fill_rgb = hex_to_rgb(fill)
     background = _outside_color(image, bbox)
-    inner = _side_bands(bbox, inset=0, thickness=3)
-    outer = _side_bands(bbox, inset=-1, thickness=2)
-    if not inner or not outer:
+    # The ladder walks outwards because a plan box is routinely one to three
+    # pixels inside the stroke the picture draws: a 1px border at y=585 with the
+    # box at y=588 is invisible to a probe that only looks at y-0 and y-1.
+    ladders = [
+        _side_bands(bbox, inset=inset, thickness=2)
+        for inset in (0, -1, -2, -3)
+    ]
+    ladders = [bands for bands in ladders if bands]
+    if not ladders:
         return None
     sides: list[RGB] = []
     for side in ("top", "bottom", "left", "right"):
         chosen: RGB | None = None
-        for bands in (inner, outer):
+        for bands in ladders:
             box = bands.get(side)
             if not box:
                 continue
@@ -194,15 +200,35 @@ def detect_border(image, bbox: Sequence[int], fill: str) -> dict | None:
 
 
 def _outside_color(image, bbox: Sequence[int]) -> RGB | None:
-    """Sample just outside the top edge; fall back to the bbox corner pixel."""
+    """Sample the surface around a box, from far enough out to miss its border.
+
+    Reading y-2..y-4 was wrong for every container whose box is measured to the
+    *inside* of its own 1px stroke: those three rows are the border, so "outside"
+    came back as the border colour, `detect_border` then rejected it as
+    background, and the card was painted with no edge at all.  marketplace's four
+    model cards are exactly that case — #2c2b27 border, #1a1917 fill, #100f0d page.
+
+    Six to nine pixels out is past a 1px stroke and its antialiasing, and still
+    short enough not to reach a neighbour in ordinary layouts.  The near ring is
+    kept only as a fallback for boxes that sit at the very top of the canvas.
+    """
     x, y, w, _h = (int(round(float(v))) for v in bbox)
-    probes = []
+    far = []
+    for offset in (9, 8, 7, 6):
+        yy = y - offset
+        if yy < 0:
+            continue
+        far.append((x, yy, x + w, yy + 1))
+    color = _median_rgb(image, far)
+    if color is not None:
+        return color
+    near = []
     for offset in (2, 3, 4):
         yy = y - offset
         if yy < 0:
             continue
-        probes.append((x, yy, x + w, yy + 1))
-    color = _median_rgb(image, probes)
+        near.append((x, yy, x + w, yy + 1))
+    color = _median_rgb(image, near)
     if color is not None:
         return color
     if 0 <= y < image.shape[0] and 0 <= x < image.shape[1]:
@@ -216,6 +242,7 @@ def estimate_corner_radius(
     bbox: Sequence[int],
     *,
     max_radius: int = 28,
+    fill: str | None = None,
 ) -> int:
     """Estimate a corner radius in source pixels and quantise to Figma steps.
 
@@ -235,7 +262,18 @@ def estimate_corner_radius(
     crop = image[y : y + h, x : x + w]
     if crop.size == 0:
         return 0
-    inside = np.abs(crop - np.asarray(outside, dtype=np.int16)).max(axis=2) > _CORNER_TOLERANCE
+    # A dark card is ten channels off its page, not two hundred: a fixed
+    # tolerance either calls the whole card background (10 < 12) or the whole
+    # page corner a surface.  Half the measured gap, bounded by the old constant,
+    # separates the two without knowing either colour.
+    tolerance = _CORNER_TOLERANCE
+    if fill:
+        fill_rgb = hex_to_rgb(fill)
+        if fill_rgb is not None:
+            gap = color_distance(fill_rgb, outside)
+            if gap > 0:
+                tolerance = max(3.0, min(float(_CORNER_TOLERANCE), gap / 2.0))
+    inside = np.abs(crop - np.asarray(outside, dtype=np.int16)).max(axis=2) > tolerance
     limit = int(min(max_radius, w // 2, h // 2))
     if limit < 2:
         return 0
@@ -296,7 +334,7 @@ def sample_container_decoration(
     if border:
         result["borderColor"] = border["color"]
         result["borderWidth"] = border["width"]
-    radius = estimate_corner_radius(image, bbox)
+    radius = estimate_corner_radius(image, bbox, fill=fill)
     if radius:
         result["borderRadius"] = radius
     return result
@@ -371,3 +409,103 @@ def line_metrics(bands: Sequence[Sequence[int]]) -> dict:
         "medianLineHeight": median_height,
         "linePitch": pitch,
     }
+
+
+def detect_vertical_gutters(
+    image,
+    width: int,
+    height: int,
+    background: str,
+    *,
+    min_width: int = 8,
+    min_share: float = 0.97,
+) -> list[tuple[int, int]]:
+    """Columns that are page colour from top to bottom: the gaps between cards.
+
+    A two-column layout has a vertical strip of nothing between the columns, and
+    that strip is the only geometry that says "these two blocks are not related".
+    Reading it from the picture — rather than assuming a centre line — is what
+    keeps the guard working on a three-column table or a single centred card.
+
+    ``min_width`` is what separates a gutter from the gap between two words: a
+    real gutter is a run of empty columns, not one blank pixel.
+    """
+    import numpy as np
+
+    if image is None or not background:
+        return []
+    page = np.asarray(hex_to_rgb(background), dtype=np.int16)
+    frame = np.asarray(image[:height, :width], dtype=np.int16)
+    if frame.ndim != 3 or frame.shape[2] != 3:
+        return []
+    empty = (np.abs(frame - page).max(axis=2) <= _BORDER_TOLERANCE).mean(axis=0)
+    runs: list[tuple[int, int]] = []
+    start = None
+    for x in range(frame.shape[1]):
+        if empty[x] >= min_share:
+            if start is None:
+                start = x
+        elif start is not None:
+            if x - start >= min_width:
+                runs.append((start, x))
+            start = None
+    if start is not None and frame.shape[1] - start >= min_width:
+        runs.append((start, frame.shape[1]))
+    return runs
+
+
+def crosses_gutter(
+    left: tuple[int, int, int, int],
+    right: tuple[int, int, int, int],
+    gutters: Sequence[tuple[int, int]],
+) -> bool:
+    """Whether a column gap sits between two boxes (either order)."""
+    if not gutters:
+        return False
+    a0, a1 = left[0], left[0] + left[2]
+    b0, b1 = right[0], right[0] + right[2]
+    low, high = (a1, b0) if a1 <= b0 else (b1, a0)
+    if high <= low:
+        return False
+    return any(start < high and end > low for start, end in gutters)
+
+
+def separated_by_page(
+    image,
+    background: str,
+    left: Sequence[int],
+    right: Sequence[int],
+    *,
+    min_width: int = 6,
+    share: float = 0.95,
+) -> bool:
+    """Whether a column of page colour stands between two boxes.
+
+    The strip is measured only across the rows the two boxes share, so a card's
+    own white footer or the page above the cards cannot be mistaken for the gap
+    between them.  This is the geometric half of "do not merge across columns";
+    the semantic half is the caller's own text test.
+    """
+    import numpy as np
+
+    if image is None or not background:
+        return False
+    try:
+        page = np.asarray(hex_to_rgb(background), dtype=np.int16)
+        a = [int(round(float(value))) for value in left]
+        b = [int(round(float(value))) for value in right]
+    except (TypeError, ValueError):
+        return False
+    a0, a1 = a[0], a[0] + a[2]
+    b0, b1 = b[0], b[0] + b[2]
+    strip_low, strip_high = (a1, b0) if a1 <= b0 else (b1, a0)
+    if strip_high - strip_low < min_width:
+        return False
+    top = max(0, max(a[1], b[1]))
+    bottom = min(int(image.shape[0]), min(a[1] + a[3], b[1] + b[3]))
+    if bottom - top < 2:
+        return False
+    frame = np.asarray(image[top:bottom, strip_low:strip_high], dtype=np.int16)
+    if frame.size == 0:
+        return False
+    return float((np.abs(frame - page).max(axis=2) <= _BORDER_TOLERANCE).mean()) >= share
