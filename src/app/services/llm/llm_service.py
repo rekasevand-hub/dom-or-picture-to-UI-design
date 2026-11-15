@@ -186,8 +186,10 @@ def call_vlm(messages: list[dict], cfg) -> str:
     import openai
     client = openai.OpenAI(base_url=cfg.vision_base_url, api_key=cfg.vision_api_key,
                            timeout=cfg.vision_timeout)
+    # 温度必须走配置：盲测要可复现，调用点却把它写死成 0.1，属于配置了没用上。
     resp = client.chat.completions.create(model=cfg.vision_model, messages=messages,
-                                          temperature=0.1, max_tokens=cfg.vision_max_tokens)
+                                          temperature=float(getattr(cfg, "vision_temperature", 0.1)),
+                                          max_tokens=cfg.vision_max_tokens)
     return resp.choices[0].message.content or ""
 
 

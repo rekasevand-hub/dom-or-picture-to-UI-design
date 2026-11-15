@@ -5457,6 +5457,12 @@ STAMP_HOST_SHARE = 0.25
 OUTLINE_IMPOSTOR_GAP = 12
 #: 旋转后的四角允许超出宿主这么多像素（印章是斜的，盒子是正的）。
 STAMP_ROTATION_SLACK = 8
+#: 小于这个角度不转：手写印章也不会只歪 3°，而 3° 足以把导航文字转糊。
+STAMP_MIN_ANGLE = 5.0
+#: 会转的宿主必须小而成块：整屏的插图不是徽章。
+STAMP_MAX_AREA_SHARE = 0.03
+#: 徽章的长宽比范围，超出就说明它是个条形装饰。
+STAMP_MAX_ASPECT = 2.0
 PICTURE_GROW_PAD = 96
 PICTURE_GROW_TOLERANCE = 48
 #: 只有描边、没有独立填充的芯片：内芯是卡片色，边缘一圈比卡片亮 8 个通道以上。
@@ -6780,6 +6786,21 @@ def _rotated_bbox(
     return min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys)
 
 
+def _in_navigation(
+    elements: Sequence[Mapping[str, Any]], box: tuple[int, int, int, int]
+) -> bool:
+    """Whether this box sits inside a sidebar / menu / nav container."""
+    for element in elements:
+        if element.get("type") != "container":
+            continue
+        role = str(element.get("role") or "")
+        if role not in ("sidebar", "sidebar-menu", "nav", "menu", "navigation"):
+            continue
+        outer = _layout_rect(element)
+        if outer is not None and _rect_contains(outer, box, tolerance=2):
+            return True
+    return False
+
 def _measure_stamp_rotations(
     elements: list[dict[str, Any]],
     image_path: str,
@@ -6840,8 +6861,18 @@ def _measure_stamp_rotations(
         if host is None or host_share < STAMP_HOST_SHARE:
             continue
         host_box = _layout_rect(host)
+        # 只有"孤立的倾斜徽章"才转。侧边栏菜单项、普通小图标旁边也可能有
+        # 一块深色裁片，一转就把整行导航拧歪（盲测里 worklog 的"个人信息"、
+        # gmail 的"推广"标签都是这么被转坏的）。
+        if _in_navigation(elements, box):
+            continue
+        if host_box[2] * host_box[3] > width * height * STAMP_MAX_AREA_SHARE:
+            continue
+        ratio = host_box[2] / max(1.0, float(host_box[3]))
+        if not (1.0 / STAMP_MAX_ASPECT <= ratio <= STAMP_MAX_ASPECT):
+            continue
         angle = estimate_rotation(image, host_box)
-        if not angle:
+        if not angle or abs(angle) < STAMP_MIN_ANGLE:
             continue
         turned = _rotated_bbox(box, angle)
         # 文字的中心必须落在这张印章里，否则就是把旁边的字也转了。旋转后 AABB
@@ -9149,6 +9180,345 @@ def _drop_nested_texts(
                 member for member in members if str(member.get("id") or "") not in doomed
             ]
     return len(doomed)
+
+
+# ---------------------------------------------------------------------------
+# 文本融合的三道闸：无据标签、同页重复、空间互斥
+#
+# 盲测（ERP / 日工时 / Gmail）暴露的不是"某条阈值不准"，而是**判据的维度错了**：
+# 去重按字符串相似度判断，而同一块内容被 grounding 与 OCR 各描述一次时，两份的
+# 字符串本来就不同（"新建" vs "+ 新建"）；冲突按覆盖率判断，而两份往往是一大一小
+# 叠在一起。物理界面上两块文本不可能同时占同一片区域，所以这里改成按**位置**判，
+# 字符串只用来决定谁留下。
+# ---------------------------------------------------------------------------
+
+#: 两个文本框的交并比到这个程度，就是同一块内容的两次建模。
+TEXT_NMS_IOU = 0.35
+#: 或者：小框被大框吃掉这么多（一整个单元格 vs 里面那行字）。
+TEXT_NMS_IOA = 0.55
+#: 重复表头里，没被 OCR 支撑的那一份最多比有支撑的那份大这么多倍才允许删。
+DUPLICATE_LABEL_MAX_SLACK = 4
+#: 表格正文字号上限：同表行字号中位数 + 这么多像素。
+TABLE_FONT_SLACK = 2.0
+#: 行分带的粒度：单元格高度在 24~40px 之间，取 24 刚好一行一带。
+TABLE_ROW_BAND = 24
+#: 字号最多占单元格高度的这个比例，再大就溢出到邻行了。
+TABLE_FONT_FIT = 0.95
+
+
+def _rect_overlap(
+    a: tuple[int, int, int, int], b: tuple[int, int, int, int]
+) -> tuple[float, float]:
+    """(IoU, share of the smaller box that is covered)."""
+    width = min(a[0] + a[2], b[0] + b[2]) - max(a[0], b[0])
+    height = min(a[1] + a[3], b[1] + b[3]) - max(a[1], b[1])
+    if width <= 0 or height <= 0:
+        return 0.0, 0.0
+    inter = width * height
+    union = a[2] * a[3] + b[2] * b[3] - inter
+    smaller = min(a[2] * a[3], b[2] * b[3])
+    return inter / max(1, union), inter / max(1, smaller)
+
+
+def _texts_collide(
+    a: tuple[int, int, int, int], b: tuple[int, int, int, int]
+) -> bool:
+    iou, ioa = _rect_overlap(a, b)
+    return iou >= TEXT_NMS_IOU or ioa >= TEXT_NMS_IOA
+
+
+def _ocr_supported(
+    text: str,
+    box: tuple[int, int, int, int] | None,
+    ocr_observations: Sequence[Mapping[str, Any]] | None,
+) -> bool:
+    if box is None:
+        return False
+    return bool(_ocr_carries(text, box, ocr_observations))
+
+
+def _spatial_text_nms(
+    elements: list[dict[str, Any]],
+    ocr_observations: Sequence[Mapping[str, Any]] | None = None,
+    background: str = "",
+) -> int:
+    """Two text boxes cannot occupy one patch of a screen. Keep one, by position.
+
+    The old pass asked "do these two strings look alike"; a label the VLM wrote
+    as "新建" and OCR read as "+ 新建" is the same words on the page and scored
+    0.5.  The question that actually has a physical answer is "do these two boxes
+    cover the same area" — and it does not care what the strings say.
+
+    Who survives: the reading the picture supports (OCR read characters inside
+    its own box), then the one that can actually be seen (ink contrast), then
+    the one whose box fits its own rendered span.  Losing a member can cost a
+    frame, so this runs before the frame pass and `_keep_renderable_frames`
+    still has the last word.
+    """
+    texts = [
+        index
+        for index, element in enumerate(elements)
+        if element.get("type") == "text" and str(element.get("text") or "").strip()
+    ]
+    if len(texts) < 2:
+        return 0
+    rects = {index: _layout_rect(elements[index]) for index in texts}
+
+    def score(index: int) -> tuple:
+        element = elements[index]
+        supported = _ocr_supported(
+            str(element.get("text") or ""), rects[index], ocr_observations
+        )
+        contrast = _ink_contrast(element, elements, background)
+        rect = rects[index]
+        fit = 0.0
+        if rect is not None:
+            left, right = _rendered_span(element)
+            span = max(1, right - left)
+            fit = min(rect[2], span) / span
+        return (1 if supported else 0, 1 if contrast >= INK_MIN_CONTRAST else 0, contrast, fit)
+
+    doomed: set[int] = set()
+    for position, first in enumerate(texts):
+        if first in doomed or rects[first] is None:
+            continue
+        for second in texts[position + 1 :]:
+            if second in doomed or rects[second] is None:
+                continue
+            if not _texts_collide(rects[first], rects[second]):
+                continue
+            loser = first if score(first) < score(second) else second
+            winner = second if loser == first else first
+            # 字体差三倍以上、又没有 OCR 支撑的那份，几乎一定是把装饰字当正文。
+            doomed.add(loser)
+            elements[winner].setdefault("nmsEvidence", {})["absorbed"] = (
+                str(elements[loser].get("text") or "")[:20]
+            )
+            if loser == first:
+                break
+    if not doomed:
+        return 0
+    elements[:] = [
+        element for index, element in enumerate(elements) if index not in doomed
+    ]
+    return len(doomed)
+
+
+def _drop_unsupported_duplicate_labels(
+    elements: list[dict[str, Any]],
+    ocr_observations: Sequence[Mapping[str, Any]] | None,
+) -> int:
+    """Same words twice on one page: the copy the picture does not read goes.
+
+    ERP's item-table header cells were synthesised a second time inside the form
+    area, 350px above the real row.  Both copies are internally consistent, so
+    no similarity test can arbitrate — but only one of them sits where the
+    picture has those characters, and OCR already knows which.
+    """
+    if not ocr_observations:
+        return 0
+    groups: dict[str, list[int]] = {}
+    for index, element in enumerate(elements):
+        if element.get("type") != "text":
+            continue
+        text = str(element.get("text") or "").strip()
+        if len(text) < 2:
+            continue
+        # 表格单元格也进组：ERP 那份浮动表头正是 `table-header:` 与普通 `text:`
+        # 各一份。同名多行（两行都写"广东特拓MOM"）不会误删——它们每一份都有
+        # OCR 支撑，规则要求"有的有支撑、有的没有"才动手。
+        groups.setdefault(_fold_homoglyphs(text), []).append(index)
+    doomed: set[int] = set()
+    for members in groups.values():
+        if not 2 <= len(members) <= DUPLICATE_LABEL_MAX_SLACK:
+            continue
+        supported = [
+            index
+            for index in members
+            if _ocr_supported(
+                str(elements[index].get("text") or ""),
+                _layout_rect(elements[index]),
+                ocr_observations,
+            )
+        ]
+        if not supported or len(supported) == len(members):
+            continue
+        for index in members:
+            if index in supported:
+                continue
+            box = _layout_rect(elements[index])
+            twin = _layout_rect(elements[supported[0]])
+            if box is None or twin is None:
+                continue
+            # 只处理"同一行、位置不同"的副本；叠在一起的那种归空间互斥管。
+            if _texts_collide(box, twin):
+                continue
+            doomed.add(index)
+    if not doomed:
+        return 0
+    elements[:] = [
+        element for index, element in enumerate(elements) if index not in doomed
+    ]
+    return len(doomed)
+
+
+def _text_like_ink(image, box: tuple[int, int, int, int]) -> bool:
+    """Whether the picture at this box looks like words rather than a glyph/icon.
+
+    One connected blob the size of the box is an icon (a star, a chevron, a "?").
+    Words are several small components with thin strokes.  The test is only ever
+    used to *reject* a label, so an ambiguous crop counts as text and the label
+    survives.
+    """
+    import cv2
+    import numpy as np
+
+    x, y, w, h = box
+    height, width = image.shape[:2]
+    x0, y0 = max(0, x), max(0, y)
+    x1, y1 = min(width, x + w), min(height, y + h)
+    if x1 - x0 < 6 or y1 - y0 < 6:
+        return True
+    crop = np.asarray(image[y0:y1, x0:x1], dtype=np.int16)
+    ring = np.concatenate(
+        [
+            crop[0:1].reshape(-1, 3),
+            crop[-1:].reshape(-1, 3),
+            crop[:, 0:1].reshape(-1, 3),
+            crop[:, -1:].reshape(-1, 3),
+        ]
+    )
+    surface = np.median(ring, axis=0)
+    ink = (np.abs(crop - surface).max(axis=2) > 40).astype(np.uint8)
+    share = float(ink.mean())
+    if share < 0.01 or share > 0.45:
+        return False
+    count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(ink, 8)
+    area = max(1, (x1 - x0) * (y1 - y0))
+    small = 0
+    for index in range(1, count):
+        component = int(stats[index][4])
+        if component < 3:
+            continue
+        if component <= area * 0.25:
+            small += 1
+    return small >= 2
+
+
+def _drop_unbacked_labels(
+    elements: list[dict[str, Any]],
+    image_path: str,
+    width: int,
+    height: int,
+    ocr_observations: Sequence[Mapping[str, Any]] | None,
+) -> int:
+    """A name the VLM gave an icon is not text on the page.
+
+    Gmail came back with nine `星标` buttons down a column of star icons, plus
+    "设置 / 帮助 / 上一页 / 下一页" floating over glyphs.  Each is a label the
+    model attached to a shape: OCR read nothing at that box and the picture has
+    one blob there, not characters.  Three things must all hold before dropping,
+    because losing a real label is worse than keeping a hallucinated one: no OCR
+    support at its own box, no OCR line overlapping it at all, and no text-like
+    ink underneath.
+    """
+    try:
+        import numpy as np
+        from PIL import Image
+    except Exception:  # pragma: no cover
+        return 0
+    try:
+        image = np.asarray(Image.open(image_path).convert("RGB"), dtype=np.int16)
+    except (OSError, ValueError):
+        return 0
+    image = image[:height, :width]
+    lines = [
+        (str(item.get("text") or ""), tuple(int(v) for v in item.get("bbox") or []))
+        for item in ocr_observations or []
+        if len(item.get("bbox") or []) == 4
+    ]
+    doomed: set[int] = set()
+    for index, element in enumerate(elements):
+        if element.get("type") not in ("text", "button", "input"):
+            continue
+        label = str(element.get("text") or "").strip()
+        if not label:
+            continue
+        if str(element.get("id") or "").startswith("table-"):
+            continue
+        box = _layout_rect(element)
+        if box is None or box[2] < 6 or box[3] < 6:
+            continue
+        if _ocr_supported(label, box, ocr_observations):
+            continue
+        if any(
+            _rect_overlap(box, other)[1] >= 0.3 for _text, other in lines if len(other) == 4
+        ):
+            # 这一带 OCR 读到过字（哪怕读成别的），说明画面里确实有文字。
+            continue
+        if element.get("type") in ("button", "input"):
+            style = element.get("style") or {}
+            if int(style.get("borderWidth") or 0) > 0:
+                continue
+        if _text_like_ink(image, box):
+            continue
+        doomed.add(index)
+    if not doomed:
+        return 0
+    elements[:] = [
+        element for index, element in enumerate(elements) if index not in doomed
+    ]
+    return len(doomed)
+
+
+def _clamp_table_fonts(elements: list[dict[str, Any]]) -> int:
+    """A table's body copy cannot be twice the size of its own rows.
+
+    The worklog table came back with 34px cells next to 30.5px ones; in a 30px
+    row that overflows the cell and prints over its neighbours.  The cap is the
+    table's own row median + 2px — a per-page constant would be wrong on a 2x
+    screenshot and on a 1x one alike.
+    """
+    groups: dict[Any, list[int]] = {}
+    for index, element in enumerate(elements):
+        if element.get("type") != "text":
+            continue
+        if not str(element.get("text") or "").strip():
+            continue
+        if not str(element.get("id") or "").startswith(("table-cell:", "table-header:")):
+            continue
+        box = _layout_rect(element)
+        if box is None:
+            continue
+        # 按**行**分组，不是按整张表：规则说的是"该表行字号中位数"，
+        # 一行的单元格字号本来就该一致；按整表取中位数会把标题行的高字号
+        # 也算进正文里，34px 的离群永远压不下来。
+        band = int(round(float(box[1]) / TABLE_ROW_BAND))
+        groups.setdefault(band, []).append(index)
+    changed = 0
+    for members in groups.values():
+        sizes = sorted(
+            float((elements[index].get("style") or {}).get("fontSize") or 0)
+            for index in members
+        )
+        sizes = [size for size in sizes if size > 0]
+        if len(sizes) < 3:
+            continue
+        median = sizes[len(sizes) // 2]
+        ceiling = median + TABLE_FONT_SLACK
+        for index in members:
+            style = elements[index].setdefault("style", {})
+            size = float(style.get("fontSize") or 0)
+            box = _layout_rect(elements[index])
+            # 第二个上限来自盒子本身：字号大于单元格高度，字就印到邻行上去了。
+            # 行中位数只能防"比同行大"，防不了"比自己的格子还高"。
+            limit = ceiling
+            if box is not None and box[3] >= 8:
+                limit = min(limit, box[3] * TABLE_FONT_FIT)
+            if size > limit:
+                style["fontSize"] = max(TABLE_FONT_MIN, round(limit * 2) / 2)
+                changed += 1
+    return changed
 
 
 def _restore_display_weight(
@@ -12412,6 +12782,17 @@ def compile_scene_plan_to_design(
     # 同一带里被更大文本框整个盖住、而原图在它自己的位置没有任何 OCR 支撑的，
     # 是方案把一句话放错了地方（marketplace 那四个价格就是）。
     _drop_nested_texts(elements, ocr_observations)
+    # 三张盲测图暴露的共同根因：同一块内容被 grounding 与 OCR 各描述了一次。
+    # 这三道闸都按**位置与画面证据**判，不按字符串像不像：
+    #   1 画面里那块地方本来就没有字（图标被起了个名字）→ 删掉那个名字；
+    #   2 同一页同一句出现两次、只有一处有 OCR 支撑 → 删没有支撑的那份；
+    #   3 两块文本框压在同一片区域 → 只留一份（空间互斥，与字符串无关）。
+    _drop_unbacked_labels(elements, image_path, width, height, ocr_observations)
+    _drop_unsupported_duplicate_labels(elements, ocr_observations)
+    _spatial_text_nms(elements, ocr_observations, background)
+    # 表格正文字号不许超过同表行中位数 + 2px：盲测里日工时的 34px 单元格
+    # 在 30px 行高里直接印到了邻行上。
+    _clamp_table_fonts(elements)
     # 图片裁片与它旁边的文字：补全被切断的形状 / 把裁片裁到文字开始处，
     # 并清掉落在文字上的冒名控件。
     if _SETTLE_PICTURES_ENABLED:
