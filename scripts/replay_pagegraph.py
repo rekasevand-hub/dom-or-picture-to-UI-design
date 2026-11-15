@@ -66,11 +66,27 @@ def _render(design: dict, out: Path, name: str = "render.png") -> Path:
     return out / name
 
 
+def _within30(truth_path: str | Path, render_path: str | Path) -> float:
+    """Share of pixels within 30 channels — the gate's own definition.
+
+    Local, so a correction can be judged before the caller re-measures the world.
+    """
+    import numpy as np
+    from PIL import Image
+
+    truth = np.asarray(Image.open(truth_path).convert("RGB"), dtype=np.int16)
+    drawn = np.asarray(Image.open(render_path).convert("RGB"), dtype=np.int16)
+    if truth.shape != drawn.shape:
+        return 0.0
+    return round(float((np.abs(truth - drawn).max(axis=2) <= 30).mean()) * 100, 2)
+
+
 def replay(
     tag: str,
     out_prefix: str,
     out_dir: Path | None = None,
     patches: bool = True,
+    calibrate_text: bool = True,
 ) -> dict:
     source = ROOT / SAMPLES[tag] / "pipeline"
     reference = _read(source / "image_reference.json")
@@ -103,8 +119,33 @@ def replay(
     design = build()
     _render(design, out)
 
+    calibration: dict = {}
+    if calibrate_text:
+        # Pass two: every text box is measured against the ink it should have
+        # covered.  The picture is the only authority on where a word sits, and
+        # the render is the only way to know what the renderer drew.  A page
+        # that gets worse is a page whose correction is thrown away.
+        import copy
+
+        from src.app.services.structure.fidelity.text_metrics import (  # noqa: PLC0415
+            calibrate as calibrate_metrics,
+        )
+
+        kept = copy.deepcopy(design["elements"])
+        before = _within30(_picture, out / "render.png")
+        report = calibrate_metrics(design["elements"], _picture, out / "render.png")
+        calibration = report.as_dict()
+        if report.corrected:
+            _render(design, out)
+            after = _within30(_picture, out / "render.png")
+            calibration["within30"] = {"before": before, "after": after}
+            if after < before:
+                design["elements"][:] = kept
+                _render(design, out)
+                calibration["reverted"] = True
+
     if patches:
-        # Pass two: look at what the render got wrong and give the worst small
+        # Pass three: look at what the render got wrong and give the worst small
         # blocks back as pictures.  Everything else already had its chance.
         import numpy as np
         from PIL import Image
@@ -127,8 +168,24 @@ def replay(
             ]
             regions = residual_regions(truth, drawn, texts, pictures)
             if regions:
-                design = build(regions)
-                _render(design, out)
+                # Painted onto the design that was just calibrated: rebuilding
+                # from scratch here would quietly throw the calibration away.
+                from src.app.services.structure.fidelity.fixed_canvas_compiler import (  # noqa: PLC0415
+                    _apply_residual_patches,
+                )
+
+                canvas = design.get("canvas") or {}
+                added = _apply_residual_patches(
+                    design["elements"],
+                    str(_picture),
+                    (int(canvas.get("width") or 0), int(canvas.get("height") or 0)),
+                    regions,
+                )
+                if added:
+                    (out / "12_design.json").write_text(
+                        json.dumps(design, ensure_ascii=False, indent=1), encoding="utf-8"
+                    )
+                    _render(design, out)
 
     elements = design.get("elements") or []
     return {
@@ -143,6 +200,7 @@ def replay(
         "patches": sum(
             1 for element in elements if str(element.get("role") or "") == "patch"
         ),
+        "calibration": calibration,
     }
 
 
@@ -155,11 +213,24 @@ def main() -> int:
         action="store_true",
         help="skip the residual-patch pass",
     )
+    parser.add_argument(
+        "--no-calibrate",
+        action="store_true",
+        help="skip the per-box text metric calibration",
+    )
     args = parser.parse_args()
     missing = 0
     for tag in args.tags or sorted(SAMPLES):
         try:
-            print(replay(tag, args.out_suffix, patches=not args.no_patches), flush=True)
+            print(
+                replay(
+                    tag,
+                    args.out_suffix,
+                    patches=not args.no_patches,
+                    calibrate_text=not args.no_calibrate,
+                ),
+                flush=True,
+            )
         except MissingScreenshot as exc:
             # One gone picture must not stop the other six from replaying, but
             # the run is incomplete and says so in its exit code.
