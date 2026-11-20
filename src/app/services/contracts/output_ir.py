@@ -308,6 +308,65 @@ def project_for_output(
     }
 
 
+def degradations_for(
+    ir: Mapping[str, Any],
+    projection: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Every feature this target cannot carry, with the nodes that asked for it.
+
+    One ledger, two callers: ``plan_axure_route`` records it in the route, and the
+    production gate writes it to ``13_degradations.json``.  The rows are sorted by
+    feature so two runs over the same design produce the same bytes.
+    """
+    fallbacks = {
+        str(item).split("->", 1)[0]: str(item).split("->", 1)[1]
+        for item in projection.get("degraded") or []
+        if "->" in str(item)
+    }
+    nodes = [
+        node
+        for frame in ir.get("frames") or []
+        for node in frame.get("nodes") or []
+        if isinstance(node, Mapping)
+    ]
+    rows = []
+    for feature in projection.get("unsupported_features") or []:
+        affected = sorted(
+            str(node.get("source_node_id") or node.get("node_id") or "")
+            for node in nodes
+            if feature in (node.get("required_features") or [])
+        )
+        rows.append(
+            {
+                "feature": str(feature),
+                "fallback": fallbacks.get(str(feature), "not-implemented"),
+                "source_node_ids": affected,
+            }
+        )
+    return sorted(rows, key=lambda row: row["feature"])
+
+
+def target_gaps(target: str) -> list[dict[str, Any]]:
+    """Every capability the target lacks, whether or not this design needs it.
+
+    A page that needs none of them should still say which gaps were checked —
+    otherwise an empty ledger reads like an unchecked one.
+    """
+    capabilities = output_capabilities(target)
+    fallbacks = _DEGRADED_FALLBACKS[str(capabilities["target"])]
+    return sorted(
+        (
+            {
+                "feature": feature,
+                "fallback": fallbacks.get(feature, "not-implemented"),
+            }
+            for feature, supported in capabilities["features"].items()
+            if not supported
+        ),
+        key=lambda row: row["feature"],
+    )
+
+
 def _frame(
     page: Mapping[str, Any],
     *,
@@ -395,14 +454,14 @@ def _node(
         required.add("gradient")
     if "visible" in element:
         required.add("visibility")
-    if str(layout.get("mode") or "").lower() not in {
-        "fixed-coordinate",
-        "none",
-        "",
-    } and str(layout.get("status") or "").lower() in {
-        "verified",
-        "pass",
-    }:
+    # 只要节点带着一份真的布局规格（竖向/横向/网格），它**要求**的就是 auto-layout。
+    # 以前只在 status=verified 时才记，于是 Axure 把 7 个帧排成固定坐标这件事
+    # 从来没进过降级账本——账本是空的，读起来像"没有任何降级"。
+    layout_mode = str(layout.get("mode") or "").lower()
+    if layout_mode not in {"fixed-coordinate", "none", ""} and (
+        element.get("layoutChildren")
+        or str(layout.get("status") or "").lower() in {"verified", "pass"}
+    ):
         required.add("auto-layout")
     image_meta = (
         element.get("imageMVP") if isinstance(element.get("imageMVP"), Mapping) else {}

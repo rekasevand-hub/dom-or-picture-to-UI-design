@@ -61,8 +61,8 @@ class CVProvider(BaseProvider):
 
     def __init__(self, cfg: "Config | None" = None, *, strict: bool = False) -> None:
         self.cfg = cfg
-        # strict 供 --route physical 使用：物理感知失败就报错，不悄悄退回旧链路。
-        # 非 strict 保留旧的兜底语义，供 auto/cv 使用。
+        # strict 供 --route omni-cv 使用：物理感知失败就报错，不悄悄退回旧链路。
+        # 非 strict 保留旧的兜底语义，供 auto 链使用。
         self.strict = strict
 
     def run(self, ctx: ProviderContext) -> dict:
@@ -94,7 +94,9 @@ class CVProvider(BaseProvider):
             width=ctx.image_w,
             height=ctx.image_h,
         )
-        graph = new_graph(ctx.image_path, ctx.image_w, ctx.image_h, "physical")
+        # 图上的 route 写规范名：它就是 `--route omni-cv` 这条链，历史名 `physical`
+        # 只活在 CLI 别名层。`presentation` 等派生字段跟着它走，产物里不再出现两套。
+        graph = new_graph(ctx.image_path, ctx.image_w, ctx.image_h, "omni-cv")
         # 必须把 plan 原样挂成 scenePlan：build_image_design 只有看到它才会走
         # compile_scene_plan_to_design（新编译器 + 成帧）。少了这一行，生产入口
         # 会退回"逐个元素平铺"的老分支——产出没有一帧，五套标尺与容器树全不生效。

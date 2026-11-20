@@ -146,26 +146,33 @@ def select_ocr_languages(graph: Mapping[str, Any]) -> list[str]:
 OCR_BACKEND = (os.environ.get("OCR_BACKEND") or "rapidocr").strip().lower()
 _RAPIDOCR_ENGINE: Any = None
 
+#: 识别（rec）阶段丢掉的字，重读一次。
+#:
+#: RapidOCR 的检测器对"12px 高、满行标点的长串"是能出框的：FluxWeaver 表格
+#: ``执行结果`` 列五行全都有框，但其中三行的识别结果退化成 ``SSOnSaeessa...``
+#: （置信度 0.30~0.34），被 ``text_score=0.5`` 滤掉。同一块像素**单独**再读一次
+#: 就恢复成 0.94~0.97 —— 批内宽度对齐（``max_wh_ratio`` 取整批最大值）让这几行
+#: 的归一化尺寸跟着邻居走，是它退化的来源。所以修复是确定性的：把被判低的框
+#: 按原坐标裁出来、一次一个地重读。
+OCR_RETRY_BELOW = 0.5
+#: 重读结果要够确信才算数：0.6 是"比原来那次明显更可信"，同时挡住同一块噪声
+#: 换个批次又回一个 0.4 的假字。
+OCR_RETRY_ACCEPT = 0.6
+#: 重读的框数上限。正常页面只有个位数，定 24 只是为了不让一张坏图把耗时拖垮。
+OCR_RETRY_MAX = 24
+#: 框的四角高差超过这么多像素就不重读：那是斜排文字，轴对齐裁剪会切掉字头。
+OCR_RETRY_MAX_SKEW = 4
 
-def _rapidocr(image_path: str | Path) -> list[dict[str, Any]] | None:
-    """Read the page with RapidOCR, or ``None`` when it is not installed."""
-    global _RAPIDOCR_ENGINE
-    try:
-        from rapidocr_onnxruntime import RapidOCR
-    except Exception:  # noqa: BLE001 - optional dependency
-        return None
-    import cv2
+
+def _rapidocr_polygons(
+    result: Any,
+    *,
+    width: int | None = None,
+    height: int | None = None,
+) -> list[dict[str, Any]]:
+    """Convert one RapidOCR result into the observation contract."""
     import numpy as np
 
-    if _RAPIDOCR_ENGINE is None:
-        _RAPIDOCR_ENGINE = RapidOCR()
-    image = cv2.imread(str(image_path))
-    if image is None:
-        return []
-    try:
-        result, _elapse = _RAPIDOCR_ENGINE(image)
-    except Exception:  # noqa: BLE001 - a broken engine must not kill the run
-        return None
     observations: list[dict[str, Any]] = []
     for item in result or []:
         try:
@@ -177,8 +184,14 @@ def _rapidocr(image_path: str | Path) -> list[dict[str, Any]] | None:
             continue
         x0 = int(max(0, np.floor(points[:, 0].min())))
         y0 = int(max(0, np.floor(points[:, 1].min())))
-        x1 = int(min(image.shape[1], np.ceil(points[:, 0].max())))
-        y1 = int(min(image.shape[0], np.ceil(points[:, 1].max())))
+        x1 = int(np.ceil(points[:, 0].max()))
+        y1 = int(np.ceil(points[:, 1].max()))
+        if width is not None:
+            x1 = min(width, x1)
+            x0 = min(x0, width)
+        if height is not None:
+            y1 = min(height, y1)
+            y0 = min(y0, height)
         normalized = str(text or "").strip()
         if not normalized or x1 - x0 < 2 or y1 - y0 < 2:
             continue
@@ -190,6 +203,125 @@ def _rapidocr(image_path: str | Path) -> list[dict[str, Any]] | None:
                 "engine": "rapidocr",
             }
         )
+    return observations
+
+
+def _rapidocr_reread(
+    engine: Any,
+    image: Any,
+    result: Any,
+) -> list[dict[str, Any]]:
+    """Re-read the boxes whose recognition score sank below the floor.
+
+    ``engine`` is called once per crop on purpose: the failure being repaired is
+    batch-dependent, so re-reading inside another batch can reproduce it.  Boxes
+    that are clearly rotated are left alone — an axis-aligned crop would shear a
+    diagonal line of type — and a re-read only counts when it clears
+    ``OCR_RETRY_ACCEPT``, otherwise the page keeps the honest "no text here".
+    """
+    import numpy as np
+
+    height, width = image.shape[:2]
+    dropped: list[tuple[float, int, int, int, int]] = []
+    for item in result or []:
+        try:
+            polygon, _text, confidence = item[0], item[1], item[2]
+        except (IndexError, TypeError):
+            continue
+        if float(confidence) >= OCR_RETRY_BELOW:
+            continue
+        points = np.asarray(polygon, dtype=float).reshape(-1, 2)
+        if points.size < 8:
+            continue
+        top = points[:, 1].min()
+        bottom = points[:, 1].max()
+        # 只看上下沿是否平：``p0-p1`` 是上沿、``p2-p3`` 是下沿，高差超过几个像素
+        # 就是斜排字。别拿"框高"当判据——12px 的字检出 23px 的框是常态。
+        if abs(points[0][1] - points[1][1]) > OCR_RETRY_MAX_SKEW and abs(
+            points[2][1] - points[3][1]
+        ) > OCR_RETRY_MAX_SKEW:
+            continue
+        x0 = max(0, int(np.floor(points[:, 0].min())))
+        y0 = max(0, int(np.floor(top)))
+        x1 = min(width, int(np.ceil(points[:, 0].max())))
+        y1 = min(height, int(np.ceil(bottom)))
+        if x1 - x0 < 8 or y1 - y0 < 6:
+            continue
+        dropped.append((float(confidence), x0, y0, x1, y1))
+    if not dropped:
+        return []
+    dropped.sort(key=lambda item: -((item[3] - item[1]) * (item[4] - item[2])))
+    recovered: list[dict[str, Any]] = []
+    for _confidence, x0, y0, x1, y1 in dropped[:OCR_RETRY_MAX]:
+        crop = image[y0:y1, x0:x1]
+        if crop.size == 0:
+            continue
+        try:
+            reread, _elapse = engine.text_rec([crop])
+        except Exception:  # noqa: BLE001 - a failed re-read is not a page failure
+            continue
+        if not reread:
+            continue
+        text, score = str(reread[0][0] or "").strip(), float(reread[0][1])
+        if score < OCR_RETRY_ACCEPT or not text:
+            continue
+        recovered.append(
+            {
+                "text": text,
+                "bbox": [x0, y0, x1 - x0, y1 - y0],
+                "confidence": score,
+                "engine": "rapidocr",
+            }
+        )
+    return recovered
+
+
+def _ocr_engine_label(observations: Sequence[Mapping[str, Any]]) -> str:
+    """Which engine actually produced these observations."""
+    for observation in observations:
+        engine = str(observation.get("engine") or "").strip().lower()
+        if engine:
+            return engine
+    return (OCR_BACKEND or "rapidocr").strip().lower() or "rapidocr"
+
+
+def _rapidocr(image_path: str | Path) -> list[dict[str, Any]] | None:
+    """Read the page with RapidOCR, or ``None`` when it is not installed."""
+    global _RAPIDOCR_ENGINE
+    try:
+        from rapidocr_onnxruntime import RapidOCR
+    except Exception:  # noqa: BLE001 - optional dependency
+        return None
+    import cv2
+
+    if _RAPIDOCR_ENGINE is None:
+        _RAPIDOCR_ENGINE = RapidOCR()
+    image = cv2.imread(str(image_path))
+    if image is None:
+        return []
+    engine = _RAPIDOCR_ENGINE
+    # 先拿到**所有**框（含被置信度门槛滤掉的那些），才看得见"检测到了但读糊了"。
+    # 引擎把 text_score 写在实例上，所以这里改完必须还原，否则后面整条链路都
+    # 顶着 0 阈值跑，垃圾字会一起进来。
+    floor = getattr(engine, "text_score", OCR_RETRY_BELOW)
+    engine.text_score = 0.0
+    try:
+        result, _elapse = engine(image)
+    except Exception:  # noqa: BLE001 - a broken engine must not kill the run
+        return None
+    finally:
+        engine.text_score = floor
+    observations = [
+        observation
+        for observation in _rapidocr_polygons(
+            result, width=image.shape[1], height=image.shape[0]
+        )
+        if observation["confidence"] >= OCR_RETRY_BELOW
+    ]
+    recovered = _rapidocr_reread(engine, image, result)
+    if recovered:
+        observations.extend(recovered)
+        observations.sort(key=lambda item: (item["bbox"][1], item["bbox"][0]))
     return observations
 
 
@@ -671,14 +803,20 @@ def recover_image_text_candidates(
         return fallback, {
             "schema_version": "image-ocr-supplement/1.0",
             "status": "unavailable",
-            "source": "ocr-supplement:easyocr",
+            "source": f"ocr-supplement:{(OCR_BACKEND or 'rapidocr').strip().lower()}",
             "error": f"{type(exc).__name__}: {exc}",
             "observation_count": 0,
             "added_count": 0,
             "added": [],
             "languages": languages,
         }
-    merged, report = merge_ocr_candidates(graph, observations)
+    merged, report = merge_ocr_candidates(
+        graph,
+        observations,
+        # 标签写实际读字的那个引擎：之前固定写 easyocr，RapidOCR 上线后所有产物
+        # 都在说谎，排查"这行是谁漏的"时第一步就被带错。
+        source=f"ocr-supplement:{_ocr_engine_label(observations)}",
+    )
     report["observations"] = observations
     report["languages"] = languages
     return merged, report

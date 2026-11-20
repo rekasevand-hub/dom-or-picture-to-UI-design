@@ -1009,6 +1009,7 @@ def candidate_digest(candidates: Sequence[ProbeCandidate]) -> str:
         lines.append(
             f"{index}. [{candidate.kind}] ref={candidate.ref} bbox={candidate.box} {candidate.note}"
         )
+    return "\n".join(lines)
 def design_prompt(digest: str, candidates: Sequence[ProbeCandidate] = ()) -> str:
     """The one prompt.  Whole page for layout, 2x crops for hairlines.
 
@@ -1791,8 +1792,19 @@ PATCH_LIMITS: dict[str, tuple[float, float]] = {
     "fontWeight": (-400.0, 400.0),
     "letterSpacing": (-2.0, 8.0),
 }
+#: 单行文本能动的字段。**没有 dw/dh**：这一版发射出去的文本是自动宽度的，
+#: 改框不改墨——上一轮 A/B 的 8 条补丁里 5 条是 dw，全部 ROI 一模一样
+#: （25.84→25.84）后回滚。文字看着比原图宽，可改的是 fontSize / letterSpacing。
+TEXT_PATCH_FIELDS = ("dx", "dy", "fontSize", "letterSpacing", "fontWeight")
+#: 尺寸自由度只属于"画出来的盒子"：容器、图片、矩形。按钮和输入框的盒子跟着
+#: 标签与内边距走，改宽高等于替它们重排。
+SIZE_PATCH_TYPES = ("container", "image", "rectangle")
 #: 单条工单允许改的字段上限：一次动七个字段就是在重画，不是在修。
 PATCH_MAX_FIELDS = 3
+#: 语义工具：改文案、改字色/底色、改层序。都是"轻"操作，不移动任何成员。
+TEXT_EDIT_LIMIT = 120
+HEX_COLOUR_RE = r"^#[0-9a-fA-F]{6}$"
+Z_INDEX_MAX = 9999
 #: 局部误差要"真的"下降才算数。浮点噪声级别的改善（< 0.02 个灰度级）说明这条
 #: 补丁对画面没有作用，收下它只会在报告里写下一个并不存在的修复。
 ROI_MIN_GAIN = 0.02
@@ -1814,15 +1826,60 @@ class WorkOrder:
     patch: dict[str, float] = field(default_factory=dict)
     note: str = ""
     status: str = ""
+    #: 节点的 type（text/container/image/button/rectangle…）。字段分权看的是它。
+    element_type: str = ""
+    #: 巡检给出的语义提示（"这里缺按钮文字"、"疑似错字，应为…"）。写进 prompt，
+    #: 让模型知道这条不是纯几何偏移。
+    hint: str = ""
+
+    @property
+    def single_line(self) -> bool:
+        return self.kind == "text"
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "index": self.index,
             "ref": self.ref,
             "bbox": list(self.box),
             "kind": self.kind,
             "error": round(self.error, 1),
         }
+        if self.hint:
+            payload["hint"] = self.hint
+        return payload
+
+
+def _work_order_kind(element: Mapping[str, Any]) -> str:
+    """``text`` for a single line of type, ``text-block`` for a wrapped block.
+
+    Only the difference matters: a single line is auto-sized by the renderer, so
+    its box width and height are outputs, not inputs.
+    """
+    if str(element.get("type") or "") != "text":
+        return "geometry"
+    text = str(element.get("text") or "")
+    style = element.get("style") or {}
+    size = float(style.get("fontSize") or 0)
+    height = float(element.get("height") or 0)
+    lines = text.count("\n") + 1
+    if lines <= 1 and (size <= 0 or height <= size * 1.9):
+        return "text"
+    return "text-block"
+
+
+def patch_fields_for(order: WorkOrder) -> tuple[str, ...]:
+    """Which incremental fields this node may be given.
+
+    A single line of text is the one shape where ``dw``/``dh`` is guaranteed to be
+    wasted: the box follows the glyphs.  Everything else may use the size axes,
+    but only surfaces may use them at all — a button's box is its label plus
+    padding, not a free rectangle.
+    """
+    if order.single_line:
+        return TEXT_PATCH_FIELDS
+    if order.element_type in SIZE_PATCH_TYPES:
+        return tuple(PATCH_LIMITS)
+    return TEXT_PATCH_FIELDS
 
 
 def _array(image) -> Any:
@@ -1976,14 +2033,224 @@ def nominate_rounds(
                 ref=str(element.get("contentRef") or element.get("id") or ""),
                 box=list(box),
                 element_id=str(element.get("id") or ""),
-                kind="text" if element.get("type") == "text" else "geometry",
+                kind=_work_order_kind(element),
                 error=round(float(block.mean()), 1),
+                element_type=str(element.get("type") or ""),
             )
         )
     orders.sort(key=lambda item: -item.error)
     for position, order in enumerate(orders):
         order.index = position
     return orders
+
+
+# --------------------------------------------------------------------------
+# 全图语义巡检：像素 Top-K 看不见的那一类
+#
+# 前两层都按"误差总量"排队，于是三件事永远排不到前面：一个漏掉的按钮文字
+# （面积小）、一处被盖住的图标、一个错字（差几个像素）。这些恰恰是眼睛第一
+# 眼就看见的。所以每轮开始先做**一次**整页并排巡检，让模型直接点名最多三处
+# 硬伤、给个大概 bbox；系统把它吸附到最近的节点，再走同一套 2× 标尺裁片、
+# 定量补丁、四重回滚——巡检只负责"指哪"，不负责"怎么改"。
+# --------------------------------------------------------------------------
+
+#: 巡检最多点名几处。三处是"最显眼的"还能排得出来的上限，再多就变成罗列。
+SWEEP_MAX_DEFECTS = 3
+#: 巡检认的缺陷类别。宽一点没关系：它只用来写 hint，真正落笔的是后面的补丁。
+SWEEP_KINDS = (
+    "missing-text",
+    "overlap",
+    "typo",
+    "missing-icon",
+    "color",
+    "layout",
+)
+#: 缺陷框与节点框的重叠达到这个比例，就算"在说这个节点"。
+SWEEP_MATCH_SHARE = 0.2
+#: 重叠不够时，按中心点距离兜底（原图像素）。小图标、单字常常贴不上框。
+SWEEP_MATCH_RADIUS = 48
+
+
+def sweep_prompt(digest: str, *, max_defects: int = SWEEP_MAX_DEFECTS) -> str:
+    """One look at the whole page, three named flaws, no numbers.
+
+    Deliberately *not* a per-block question: the pixel nominator already owns
+    "this block is off by k pixels".  This asks the other question — "what would
+    a reviewer point at" — which is the only way a missing button label or a
+    swapped glyph ever gets a work order.
+    """
+    return (
+        "图 1 是整页并排对比（左原图、右当前渲染），图 2/3/4 是上/中/下三段 1:1。\n"
+        "请只看**最显眼的观感硬伤**，最多 " + str(max_defects) + " 处，按严重程度排序：\n"
+        "1 整块缺失的文字或按钮文案（渲染里是空白/少字）；2 文字互相重叠或被遮住；"
+        "3 明显错别字/乱码（OCR 误识残留）；4 该有的图标/Logo 不见了或残缺；"
+        "5 白底白字、深底深字这类对比度错误。\n"
+        "允许字形有细微差别、允许 ±2px 的位置误差，这些都不要报。\n"
+        f"当前页面骨架（节点 ref/bbox/文字）：{digest}\n"
+        "只输出 JSON，不要解释：\n"
+        '{"defects":[{"kind":"missing-text|overlap|typo|missing-icon|color|layout",'
+        '"bbox":[x,y,w,h],"expected_text":"这里应该是什么字（typo 时填正确文案）",'
+        '"note":"一句话说清现象"}]}\n'
+        "bbox 用原图像素，只要「大概在哪」，系统会自己吸附到节点；看不清就少答，不要凑数。"
+    )
+
+
+def parse_sweep_defects(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Keep the well-formed defects, in the order the model ranked them."""
+    found: list[dict[str, Any]] = []
+    for raw in payload.get("defects") or []:
+        if len(found) >= SWEEP_MAX_DEFECTS:
+            break
+        if not isinstance(raw, Mapping):
+            continue
+        try:
+            box = [int(value) for value in (raw.get("bbox") or [])]
+        except (TypeError, ValueError):
+            continue
+        if len(box) != 4 or box[2] <= 0 or box[3] <= 0:
+            continue
+        kind = str(raw.get("kind") or "").strip().lower()
+        if kind not in SWEEP_KINDS:
+            continue
+        found.append(
+            {
+                "kind": kind,
+                "bbox": box,
+                "expected_text": str(raw.get("expected_text") or "").strip()[:TEXT_EDIT_LIMIT],
+                "note": str(raw.get("note") or "").strip()[:120],
+            }
+        )
+    return found
+
+
+def sweep_work_orders(
+    elements: Sequence[Mapping[str, Any]],
+    defects: Sequence[Mapping[str, Any]],
+    *,
+    start: int = 0,
+    exclude: set[str] | None = None,
+) -> list[WorkOrder]:
+    """Turn "somewhere around here" into "this node", or drop it.
+
+    Overlap first, nearest centre second — a missing button label has no box of
+    its own, so its bbox lands on the button, and a swapped glyph lands on the
+    word.  A defect that matches nothing is dropped rather than guessed: a work
+    order on the wrong node costs a real edit.
+    """
+    orders: list[WorkOrder] = []
+    seen: set[str] = set()
+    for defect in defects:
+        box = list(defect["bbox"])
+        ranked: list[tuple[float, float, Mapping[str, Any]]] = []
+        for element in elements:
+            if str(element.get("type") or "") in ("patch", ""):
+                continue
+            if str(element.get("role") or "") in ("patch", "mark", "page-ground"):
+                continue
+            rect = _rect(element)
+            if rect[2] <= 0 or rect[3] <= 0:
+                continue
+            share = max(_share(box, rect), _share(rect, box))
+            if share >= SWEEP_MATCH_SHARE:
+                ranked.append((share, float(rect[2]) * float(rect[3]), element))
+        best = None
+        if ranked:
+            # 重叠一样时**取最小的那个**：一个错字所在的行容器和那个字都 100%
+            # 盖住缺陷框，只有字能改文案。大的那个是"这一带"，不是"这个节点"。
+            top_share = max(item[0] for item in ranked)
+            near = [item for item in ranked if item[0] >= top_share - 0.05]
+            best = min(near, key=lambda item: item[1])[2]
+        else:
+            best, _distance = _nearest_centre(elements, box)
+        # 文案类缺陷经常被框成"整列/整段"：这时框套住的是一个行容器，而能改字的
+        # 只有里面的文本节点。取**完全落在缺陷框里**、面积最大的那个字。
+        if best is not None and defect["kind"] in ("typo", "missing-text"):
+            if str(best.get("type") or "") != "text":
+                alternative = _text_inside(elements, box)
+                if alternative is not None:
+                    best = alternative
+        if best is None:
+            continue
+        node_id = str(best.get("id") or "")
+        if not node_id or node_id in seen or (exclude and node_id in exclude):
+            continue
+        seen.add(node_id)
+        rect = _rect(best)
+        hint = defect["kind"].replace("-", " ")
+        note = str(defect.get("note") or "")
+        expected = str(defect.get("expected_text") or "")
+        if note:
+            hint += f": {note}"
+        if expected:
+            hint += f" (应为「{expected}」)"
+        orders.append(
+            WorkOrder(
+                index=start + len(orders),
+                ref=str(best.get("contentRef") or node_id),
+                box=[
+                    max(0, rect[0] - ROUND_PAD),
+                    max(0, rect[1] - ROUND_PAD),
+                    rect[2] + 2 * ROUND_PAD,
+                    rect[3] + 2 * ROUND_PAD,
+                ],
+                element_id=node_id,
+                kind=_work_order_kind(best),
+                error=0.0,
+                note=note,
+                element_type=str(best.get("type") or ""),
+                hint=hint,
+            )
+        )
+    return orders
+
+
+def _text_inside(
+    elements: Sequence[Mapping[str, Any]],
+    box: Sequence[int],
+) -> Mapping[str, Any] | None:
+    """The text node that sits inside a flagged band, largest first.
+
+    A defect framed around a whole column has no single owner; the words do.  The
+    node has to be *inside* the band (over 60% of it inside the box), or this
+    would happily hand a "missing label" to the caption next door.
+    """
+    best = None
+    best_area = 0.0
+    for element in elements:
+        if str(element.get("type") or "") != "text":
+            continue
+        if not str(element.get("text") or "").strip():
+            continue
+        rect = _rect(element)
+        if rect[2] <= 0 or rect[3] <= 0:
+            continue
+        if _share(rect, box) < 0.6:
+            continue
+        area = float(rect[2]) * float(rect[3])
+        if area > best_area:
+            best, best_area = element, area
+    return best
+
+
+def _nearest_centre(
+    elements: Sequence[Mapping[str, Any]],
+    box: Sequence[int],
+) -> tuple[Mapping[str, Any] | None, float]:
+    """Fallback binding: the closest node centre inside ``SWEEP_MATCH_RADIUS``."""
+    cx = box[0] + box[2] / 2.0
+    cy = box[1] + box[3] / 2.0
+    best = None
+    best_distance = float(SWEEP_MATCH_RADIUS)
+    for element in elements:
+        if str(element.get("type") or "") not in ("text", "container", "image", "button", "icon"):
+            continue
+        rect = _rect(element)
+        if rect[2] <= 0 or rect[3] <= 0:
+            continue
+        distance = ((rect[0] + rect[2] / 2.0 - cx) ** 2 + (rect[1] + rect[3] / 2.0 - cy) ** 2) ** 0.5
+        if distance < best_distance:
+            best, best_distance = element, distance
+    return best, best_distance
 
 
 def ruler_panel(truth, drawn, box: Sequence[int], *, zoom: int = ROUND_ZOOM,
@@ -2064,23 +2331,124 @@ def _wrap_ruler(panel, *, zoom: int = ROUND_ZOOM, tick: int = RULER_TICK):
 def round_prompt(orders: Sequence[WorkOrder]) -> str:
     """The one question this layer asks, and the only shapes an answer may take."""
     listing = json.dumps([order.as_dict() for order in orders], ensure_ascii=False)
+    text_orders = [order for order in orders if order.single_line]
+    size_orders = [order for order in orders if order.element_type in SIZE_PATCH_TYPES]
+    rules = [
+        "只回答这些区域该怎么微调，不要解释。所有数值都是**增量**，可以为负：",
+        "优先级：从刻度上读得出偏差就填 dx/dy/fontSize/fontWeight/letterSpacing —— "
+        "这是本层的主职；setText/textColor/fillColor/zIndex 只在 hint 点名要改文字、"
+        "改对比度或解遮挡时使用，别拿它替代坐标读数。",
+        '{"patches":[{"index":0,"dx":0,"fontSize":0,"setText":"",'
+        '"textColor":"","fillColor":"","zIndex":null,"note":"..."}]}',
+        "模板里的 0、空字符串、null 都是「这一项不改」，**不要照抄**："
+        "一条补丁里只出现你真正要改的字段，其余整个键都不要写。",
+        "dx/dy 正数向右向下；fontSize 是**磅值增量**（1px 字高约 0.75pt）；"
+        "fontWeight 是 100 的倍数增量；letterSpacing 是绝对像素值。",
+        "**单行文字（kind=text）禁止填 dw/dh**：文本框宽高由字自动决定，改框不改墨，"
+        "上一轮 5/8 条补丁就是这么空转的。文字看着比原图宽或窄，请改 fontSize 或 "
+        "letterSpacing。dw/dh 只对 kind=geometry 且 type 是 container/image/rectangle 的节点开放。",
+        "setText 只在**确实读错了字**（错字、乱码、OCR 误识）时使用，填原文该有的文字；"
+        "textColor/fillColor 用于修白底白字、深底深字这类对比度错误；zIndex 用于把被"
+        "装饰块盖住的节点抬到遮挡者之上（填目标层号，不是增量）。",
+        "一行最多填 3 个数**值**字段；读不出来就不要报这一处——报错一条，整轮都会被回滚。",
+    ]
+    if text_orders:
+        rules.append(
+            "本次工单里的单行文字："
+            + "、".join(f"#{order.index}" for order in text_orders)
+            + " 只能改 " + "/".join(TEXT_PATCH_FIELDS) + "。"
+        )
+    if size_orders:
+        rules.append(
+            "可改框大小的节点："
+            + "、".join(f"#{order.index}" for order in size_orders)
+            + "。"
+        )
+    # 巡检给的那几条要单独交代：它们不是"偏了几像素"，是"这里该有字/这是个错字"。
+    # 不点明的话，模型会照着像素差去调颜色——上一轮 6 条补丁里 4 条是 #000000。
+    for order in orders:
+        if not order.hint:
+            continue
+        if order.hint.startswith(("typo", "missing text")):
+            rules.append(
+                f"工单 #{order.index} 是巡检点名的文案问题（{order.hint}）："
+                "请用 setText 填上正确的文字；文字不缺就不要硬改，也不要改颜色。"
+            )
+        elif order.hint.startswith(("missing icon", "overlap")):
+            rules.append(
+                f"工单 #{order.index} 是巡检点名的结构/遮挡问题（{order.hint}）："
+                "能用 zIndex 把被盖住的东西抬出来就用 zIndex；否则跳过。"
+            )
     return (
         f"图 1..{len(orders)} 是{len(orders)}处误差最大区域的 2× 对照（左原图、右当前渲染），"
         "每张外围有刻度：**单位是原图像素**，每小格 10px。\n"
-        f"工单清单：{listing}\n"
-        "只回答这些区域该怎么按像素微调，不要解释。所有数值都是**增量**，可以为负：\n"
-        '{"patches":[{"index":0,"dx":0,"dy":0,"dw":0,"dh":0,'
-        '"fontSize":0,"fontWeight":0,"letterSpacing":0,"note":"..."}]}\n'
-        "dx/dy 正数向右向下；dw/dh 是宽高增量；fontSize 是**磅值增量**（1px 字高约 0.75pt）；"
-        "fontWeight 是 100 的倍数增量；letterSpacing 是绝对像素值。\n"
-        "只填你从刻度上读得出的那几个字段，其余省略。一行最多填 3 个字段。"
-        "读不出来就不要报这一处——报错一条，整轮都会被回滚。"
+        f"工单清单（hint 是整页巡检给的语义线索，不是结论）：{listing}\n"
+        + "\n".join(rules)
     )
 
 
-def parse_round_patches(payload: Mapping[str, Any]) -> dict[int, dict[str, float]]:
-    """Clamp and keep only the quantitative fields, per work order."""
-    out: dict[int, dict[str, float]] = {}
+def parse_round_patches(
+    payload: Mapping[str, Any],
+    *,
+    orders: Sequence[WorkOrder] = (),
+) -> dict[int, dict[str, float]]:
+    """Clamp and keep only the quantitative fields, per work order.
+
+    Without ``orders`` there is no node type to consult, so every field is kept —
+    the historical behaviour, still used by callers that only want the numbers.
+    With them, a single line of text loses ``dw``/``dh`` before it is ever tried.
+    """
+    return {
+        index: dict(edit.numeric)
+        for index, edit in parse_round_edits(payload, orders=orders).items()
+        if edit.numeric
+    }
+
+
+@dataclass
+class RoundEdit:
+    """One model answer for one work order: numbers, words, colour, or order.
+
+    The numeric half is the old patch.  The other three are the light tools: fix
+    the words (OCR left a wrong glyph), fix a contrast the eye can name, lift a
+    node out from under something.  None of them moves a member, so all of them
+    survive the same four gates as a coordinate nudge.
+    """
+
+    numeric: dict[str, float] = field(default_factory=dict)
+    text: str = ""
+    text_color: str = ""
+    fill_color: str = ""
+    z_index: int | None = None
+    note: str = ""
+
+    def is_empty(self) -> bool:
+        return not (self.numeric or self.text or self.text_color or self.fill_color or (
+            self.z_index is not None
+        ))
+
+
+def _clean_colour(value: Any) -> str:
+    import re as _re
+
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if not raw.startswith("#"):
+        raw = "#" + raw
+    if not _re.match(HEX_COLOUR_RE, raw):
+        return ""
+    return raw.lower()
+
+
+def parse_round_edits(
+    payload: Mapping[str, Any],
+    *,
+    orders: Sequence[WorkOrder] = (),
+) -> dict[int, RoundEdit]:
+    """Parse one round's answer, keeping only what the node type may take."""
+    by_index = {order.index: order for order in orders}
+    out: dict[int, RoundEdit] = {}
     for raw in payload.get("patches") or []:
         if not isinstance(raw, Mapping):
             continue
@@ -2088,20 +2456,126 @@ def parse_round_patches(payload: Mapping[str, Any]) -> dict[int, dict[str, float
             index = int(raw.get("index"))
         except (TypeError, ValueError):
             continue
-        patch: dict[str, float] = {}
-        for name, (low, high) in PATCH_LIMITS.items():
+        order = by_index.get(index)
+        allowed = patch_fields_for(order) if order is not None else tuple(PATCH_LIMITS)
+        numeric: dict[str, float] = {}
+        for name in allowed:
             if name not in raw:
                 continue
+            low, high = PATCH_LIMITS[name]
             try:
                 value = float(raw[name])
             except (TypeError, ValueError):
                 continue
             if value == 0.0:
                 continue
-            patch[name] = max(low, min(high, value))
-        if patch:
-            out[index] = dict(sorted(patch.items(), key=lambda item: -abs(item[1]))[:PATCH_MAX_FIELDS])
+            numeric[name] = max(low, min(high, value))
+        numeric = dict(
+            sorted(numeric.items(), key=lambda item: -abs(item[1]))[:PATCH_MAX_FIELDS]
+        )
+        text = str(raw.get("setText") or raw.get("text") or "").strip()
+        if len(text) > TEXT_EDIT_LIMIT:
+            text = ""
+        z_index: int | None = None
+        if raw.get("zIndex") is not None:
+            try:
+                z_index = max(0, min(Z_INDEX_MAX, int(raw["zIndex"])))
+            except (TypeError, ValueError):
+                z_index = None
+        edit = RoundEdit(
+            numeric=numeric,
+            text=text,
+            text_color=_clean_colour(raw.get("textColor")),
+            fill_color=_clean_colour(raw.get("fillColor")),
+            z_index=z_index,
+            note=str(raw.get("note") or ""),
+        )
+        if edit.is_empty():
+            continue
+        out[index] = edit
     return out
+
+
+def apply_round_edit(
+    element: dict[str, Any],
+    edit: RoundEdit | Mapping[str, float],
+    *,
+    frozen: bool = False,
+    element_type: str = "",
+) -> dict[str, Any] | None:
+    """Land one edit on one node, or refuse.
+
+    ``frozen`` means "this node is a frame": geometry and paint order would
+    re-parent its members, so only typography passes.  ``element_type`` is only
+    needed when the caller passes a bare numeric patch, because the size axes
+    belong to surfaces alone.
+    """
+    if isinstance(edit, Mapping):
+        edit = RoundEdit(numeric=dict(edit))
+    kind_type = element_type or str(element.get("type") or "")
+    applied: dict[str, Any] = {}
+    numeric = dict(edit.numeric)
+    if kind_type not in SIZE_PATCH_TYPES:
+        # 二次防线：调用方忘了按类型过滤，也不能把 dw/dh 落到文字上。
+        numeric.pop("dw", None)
+        numeric.pop("dh", None)
+    geometry = {"dx", "dy", "dw", "dh"} & set(numeric)
+    if geometry and frozen:
+        numeric = {name: value for name, value in numeric.items() if name not in geometry}
+    if numeric.get("dx") or numeric.get("dy"):
+        element["x"] = round(float(element.get("x") or 0) + float(numeric.get("dx", 0.0)), 1)
+        element["y"] = round(float(element.get("y") or 0) + float(numeric.get("dy", 0.0)), 1)
+        applied["dx"] = float(numeric.get("dx", 0.0))
+        applied["dy"] = float(numeric.get("dy", 0.0))
+    if numeric.get("dw") or numeric.get("dh"):
+        width = max(1.0, float(element.get("width") or 0) + float(numeric.get("dw", 0.0)))
+        height = max(1.0, float(element.get("height") or 0) + float(numeric.get("dh", 0.0)))
+        element["width"], element["height"] = round(width, 1), round(height, 1)
+        applied["dw"] = float(numeric.get("dw", 0.0))
+        applied["dh"] = float(numeric.get("dh", 0.0))
+    style = element.get("style")
+    if style is None and ({"fontSize", "fontWeight", "letterSpacing"} & set(numeric) or
+                          edit.text_color or edit.fill_color):
+        style = element["style"] = {}
+    if style is not None:
+        if "fontSize" in numeric:
+            size = float(style.get("fontSize") or 14.0) + float(numeric["fontSize"])
+            style["fontSize"] = round(max(8.0, min(200.0, size)) * 2) / 2
+            applied["fontSize"] = float(numeric["fontSize"])
+        if "fontWeight" in numeric:
+            weight = int(style.get("fontWeightValue") or 400) + int(numeric["fontWeight"])
+            weight = max(100, min(900, int(round(weight / 100.0)) * 100))
+            style["fontWeightValue"] = weight
+            style["fontWeight"] = "bold" if weight >= 700 else "normal"
+            applied["fontWeight"] = float(numeric["fontWeight"])
+        if "letterSpacing" in numeric:
+            style["letterSpacing"] = round(float(numeric["letterSpacing"]), 2)
+            applied["letterSpacing"] = float(numeric["letterSpacing"])
+        # ---- 语义工具 ----------------------------------------------------
+        if edit.text and kind_type == "text":
+            current = str(element.get("text") or "")
+            if edit.text != current:
+                element["text"] = edit.text
+                applied["setText"] = edit.text
+        if edit.text_color:
+            key = "textColor" if kind_type == "text" else "fillColor"
+            current = str(style.get(key) or "").lower()
+            if edit.text_color != current:
+                style[key] = edit.text_color
+                applied[key] = edit.text_color
+        if edit.fill_color and kind_type != "text":
+            current = str(style.get("fillColor") or "").lower()
+            if edit.fill_color != current:
+                style["fillColor"] = edit.fill_color
+                applied["fillColor"] = edit.fill_color
+    if edit.z_index is not None and not frozen:
+        if int(element.get("zIndex") or 0) != edit.z_index:
+            element["zIndex"] = edit.z_index
+            applied["zIndex"] = edit.z_index
+    if not applied:
+        return None
+    element.setdefault("arbiterEvidence", {})["quantitative"] = applied
+    return applied
 
 
 def _structural_indices(elements: Sequence[Mapping[str, Any]]) -> set[int]:
@@ -2127,46 +2601,14 @@ def apply_quantitative(
 ) -> dict[str, float] | None:
     """Move and restyle one node by the numbers, or refuse.
 
-    Geometry is refused for frame members: a frame's children are pinned to
-    measured positions, and nudging one is how a page goes from thirteen frames
-    to twelve.  Typography is always allowed — it cannot move a member.
+    Kept as the narrow entry point for callers that only have numbers; the round
+    loop goes through :func:`apply_round_edit`, which also carries the words and
+    the paint order.
     """
-    geometry = {"dx", "dy", "dw", "dh"} & set(patch)
-    if geometry and frozen:
+    applied = apply_round_edit(element, dict(patch), frozen=frozen)
+    if applied is None:
         return None
-    applied: dict[str, float] = {}
-    if "dx" in patch or "dy" in patch:
-        element["x"] = round(float(element.get("x") or 0) + float(patch.get("dx", 0.0)), 1)
-        element["y"] = round(float(element.get("y") or 0) + float(patch.get("dy", 0.0)), 1)
-        applied["dx"] = float(patch.get("dx", 0.0))
-        applied["dy"] = float(patch.get("dy", 0.0))
-    if "dw" in patch or "dh" in patch:
-        width = max(1.0, float(element.get("width") or 0) + float(patch.get("dw", 0.0)))
-        height = max(1.0, float(element.get("height") or 0) + float(patch.get("dh", 0.0)))
-        element["width"], element["height"] = round(width, 1), round(height, 1)
-        applied["dw"] = float(patch.get("dw", 0.0))
-        applied["dh"] = float(patch.get("dh", 0.0))
-    style = element.get("style")
-    if style is None and {"fontSize", "fontWeight", "letterSpacing"} & set(patch):
-        style = element["style"] = {}
-    if style is not None:
-        if "fontSize" in patch:
-            size = float(style.get("fontSize") or 14.0) + float(patch["fontSize"])
-            style["fontSize"] = round(max(8.0, min(200.0, size)) * 2) / 2
-            applied["fontSize"] = float(patch["fontSize"])
-        if "fontWeight" in patch:
-            weight = int(style.get("fontWeightValue") or 400) + int(patch["fontWeight"])
-            weight = max(100, min(900, int(round(weight / 100.0)) * 100))
-            style["fontWeightValue"] = weight
-            style["fontWeight"] = "bold" if weight >= 700 else "normal"
-            applied["fontWeight"] = float(patch["fontWeight"])
-        if "letterSpacing" in patch:
-            style["letterSpacing"] = round(float(patch["letterSpacing"]), 2)
-            applied["letterSpacing"] = float(patch["letterSpacing"])
-    if not applied:
-        return None
-    element.setdefault("arbiterEvidence", {})["quantitative"] = applied
-    return applied
+    return {key: float(value) for key, value in applied.items() if isinstance(value, float)}
 
 
 def roi_error(truth, drawn, box: Sequence[int]) -> float:
@@ -2234,6 +2676,181 @@ def audit_structure(elements: Sequence[Mapping[str, Any]]) -> dict[str, int]:
     }
 
 
+def text_edit_is_correction(current: str, wanted: str) -> bool:
+    """Is this a repaired word, or a deleted sentence?
+
+    The pixel guard cannot tell them apart — and on AtomGit it *rewarded* the
+    deletion: the whole second half of a headline was dropped and the block
+    error fell from 24.77 to 22.13, because blank paper was closer to the
+    original's light grey than the render's misaligned glyphs were.  So the rule
+    is structural: a text edit may fix glyphs and add missing words, but it may
+    not shorten the sentence.  Two characters of slack are allowed, for the
+    stray quote OCR likes to append.
+    """
+    if not wanted or wanted == current:
+        return False
+    if current.startswith(wanted) or current.endswith(wanted):
+        return False
+    if len(wanted) < len(current) - 2:
+        return False
+    if len(current) <= 2:
+        # 一两个字符的误识（`d` 读成 `PC端`）本来就没有相似度可言。
+        return True
+    import difflib
+
+    return difflib.SequenceMatcher(None, current, wanted).ratio() >= 0.34
+
+
+#: 颜色补丁与原图实测色的允许差：每个通道。超过就不是"校准"，是"换一种颜色"。
+COLOUR_AGREEMENT = 18
+
+
+def _colour_gap(first: str, second: str) -> int:
+    """Largest per-channel distance between two ``#rrggbb`` strings."""
+    try:
+        return max(
+            abs(int(first[index : index + 2], 16) - int(second[index : index + 2], 16))
+            for index in (1, 3, 5)
+        )
+    except (ValueError, IndexError):
+        return 255
+
+
+def colour_is_supported(
+    kind_type: str,
+    truth,
+    box: Sequence[int],
+    colour: str,
+) -> bool:
+    """Is the model's colour the colour that is actually in the picture?
+
+    The live model's favourite answer is ``#000000``: the render looks lighter
+    than the original, and it reads that as "the text colour is wrong".  It is
+    usually the *font weight*, and repainting every label black makes the page
+    worse.  The picture already holds the answer — the median ink colour inside
+    the box — so a colour patch has to agree with it.
+    """
+    if not colour:
+        return False
+    actual = _ink_colour(truth, box) if kind_type == "text" else _median_fill(truth, box)
+    if not actual:
+        return False
+    return _colour_gap(actual, colour) <= COLOUR_AGREEMENT
+
+
+def _edit_dict(edit: RoundEdit) -> dict[str, Any]:
+    """One answer, flat, the way it is written to the report."""
+    payload: dict[str, Any] = dict(edit.numeric)
+    if edit.text:
+        payload["setText"] = edit.text
+    if edit.text_color:
+        payload["textColor"] = edit.text_color
+    if edit.fill_color:
+        payload["fillColor"] = edit.fill_color
+    if edit.z_index is not None:
+        payload["zIndex"] = edit.z_index
+    return payload
+
+
+#: "这里缺字"要成立，渲染图那块必须真的没有墨。图上已经有墨、只是小了一号或
+#: 淡了一号，那是字太小，不是缺字——这一条把上一轮 18 条点名里 6 条假阳性挡掉。
+SWEEP_TEXT_PRESENT_SHARE = 0.35
+#: 判墨的通道差：与底色中位数比。
+SWEEP_INK_DELTA = 40
+#: 一个框里墨点占比低于这个数，就不是"一行字"的框，不参与缺字判定。
+SWEEP_TEXT_MIN_DENSITY = 0.005
+
+
+def _ink_pixels(image, box: Sequence[int]) -> int:
+    """Ink pixels inside one box — the measurement a "missing text" claim is about."""
+    import numpy as np
+
+    array = _array(image)
+    height, width = array.shape[:2]
+    x, y, w, h = (int(value) for value in list(box)[:4])
+    x0, y0 = max(0, x), max(0, y)
+    x1, y1 = min(width, x + w), min(height, y + h)
+    if x1 - x0 < 3 or y1 - y0 < 3:
+        return 0
+    crop = array[y0:y1, x0:x1]
+    # 底色取自**框外一圈**，不是框内中位数：一个纯墨块（按钮、色条）用框内中位数
+    # 量出来是 0——它的中位数就是墨色本身。
+    pad = 3
+    rx0, ry0 = max(0, x0 - pad), max(0, y0 - pad)
+    rx1, ry1 = min(width, x1 + pad), min(height, y1 + pad)
+    ring = array[ry0:ry1, rx0:rx1]
+    mask = np.ones(ring.shape[:2], dtype=bool)
+    mask[y0 - ry0 : y1 - ry0, x0 - rx0 : x1 - rx0] = False
+    background = float(np.median(ring[mask])) if mask.any() else float(np.median(array))
+    return int((np.abs(crop - background).max(axis=2) > SWEEP_INK_DELTA).sum())
+
+
+def still_missing(drawn, truth, box: Sequence[int]) -> bool:
+    """Is the word really absent from the render, or just too small to read?
+
+    The model judges a downscaled panel: 11.5px type in a 0.75 scale strip is not
+    legible, so it reports "missing text" for words that are painted in full.
+    Asking the pixels settles it — a word that is there has ink where the source
+    has ink; a word that is absent has none.
+    """
+    source_ink = _ink_pixels(truth, box)
+    if source_ink < 20:
+        return False
+    # 一块 320x30 的框里只有 38 个墨点（0.4%），那不是"一行字"，是别处的字尾
+    # 扫进了这个框。密度不够的框没有资格说"这里缺字"。
+    area = max(1, int(box[2]) * int(box[3]))
+    if source_ink / area < SWEEP_TEXT_MIN_DENSITY:
+        return False
+    return _ink_pixels(drawn, box) < SWEEP_TEXT_PRESENT_SHARE * source_ink
+
+
+def _sweep_round(
+    elements: Sequence[Mapping[str, Any]],
+    truth,
+    drawn,
+    *,
+    propose_sweep: Callable[[str, Sequence[Any]], Mapping[str, Any]] | None,
+    start: int,
+    existing: set[str],
+) -> dict[str, Any]:
+    """One whole-page look, turned into work orders the guards already understand.
+
+    Returns the raw defects as well: "the model named nothing" and "the model
+    named something that matched no node" are different outcomes, and only the
+    first one means the page passed the eye test.
+    """
+    if propose_sweep is None:
+        return {"defects": [], "orders": [], "report": {"skipped": "no-sweep-model"}}
+    digest = scene_digest(elements)
+    panels = macro_panels(truth, drawn)
+    try:
+        answer = propose_sweep(sweep_prompt(digest), panels) or {}
+    except Exception as exc:  # noqa: BLE001 - a failed look must not kill the round
+        return {"defects": [], "orders": [], "report": {"error": f"{type(exc).__name__}: {exc}"}}
+    claimed = parse_sweep_defects(answer)
+    # "缺字"类点名先过像素：设计里有、渲染里也有墨的，是字号问题不是缺失。
+    defects = [
+        defect
+        for defect in claimed
+        if defect["kind"] != "missing-text" or still_missing(drawn, truth, defect["bbox"])
+    ]
+    dismissed = [
+        defect for defect in claimed if defect not in defects
+    ]
+    orders = sweep_work_orders(elements, defects, start=start, exclude=existing)
+    return {
+        "defects": defects,
+        "orders": orders,
+        "report": {
+            "named": len(defects),
+            "dismissed": len(dismissed),
+            "dismissedKinds": [item["kind"] for item in dismissed],
+            "bound": len(orders),
+            "defects": defects,
+        },
+    }
+
+
 def refine(
     elements: list[dict[str, Any]],
     truth,
@@ -2244,6 +2861,7 @@ def refine(
     k: int = ROUND_TOP_K,
     audit: Callable[[Sequence[Mapping[str, Any]]], Mapping[str, int]] | None = None,
     propose_wireframe: Callable[[Sequence[Any], Sequence[Any]], Mapping[str, Any]] | None = None,
+    propose_sweep: Callable[[str, Sequence[Any]], Mapping[str, Any]] | None = None,
     structure: bool = True,
 ) -> dict[str, Any]:
     """Closed loop: nominate, ask, patch, re-draw, keep only what improved.
@@ -2280,6 +2898,19 @@ def refine(
             )
         drawn = draw(list(elements))
         orders = nominate_rounds(truth, drawn, elements, k=k)
+        # 全图巡检先点名，再把用户看得见的硬伤并进同一批工单：像素 Top-K 按
+        # 误差总量排队，一个漏掉的按钮文案永远排不进前三。
+        sweep = _sweep_round(
+            elements,
+            truth,
+            drawn,
+            propose_sweep=propose_sweep,
+            start=len(orders),
+            existing={order.element_id for order in orders},
+        )
+        if sweep["defects"] or sweep.get("skipped"):
+            report.setdefault("sweeps", []).append({"round": round_index, **sweep["report"]})
+        orders.extend(sweep["orders"])
         if not orders:
             report["log"].append({"round": round_index, "orders": [], "note": "converged"})
             break
@@ -2291,8 +2922,8 @@ def refine(
         )
         strips = [ruler_panel(truth, drawn, order.box) for order in orders]
         answer = propose(orders, strips) or {}
-        patches = parse_round_patches(answer)
-        if not patches:
+        edits = parse_round_edits(answer, orders=orders)
+        if not edits:
             report["log"].append({"round": round_index, "orders": len(orders), "note": "no-patch"})
             break
         report["rounds"] = round_index + 1
@@ -2300,9 +2931,10 @@ def refine(
         page_before = page_error(truth, drawn)
         before_state = inspect(elements)
         for order in orders:
-            patch = patches.get(order.index)
-            if not patch:
+            edit = edits.get(order.index)
+            if edit is None or edit.is_empty():
                 continue
+            patch = dict(edit.numeric)
             index = next(
                 (
                     position
@@ -2319,7 +2951,75 @@ def refine(
                     {
                         "round": round_index,
                         "ref": order.ref,
-                        "proposed": dict(patch),
+                        "proposed": _edit_dict(edit),
+                        "status": order.status,
+                        "roi": None,
+                    }
+                )
+                continue
+            # 颜色要跟着原图的实测色走；对不上就**只丢这个字段**，别把整条补丁
+            # 一起作废——模型经常把 setText 和模板里的默认色一起回上来。
+            dropped: list[str] = []
+            for field in ("text_color", "fill_color"):
+                colour = getattr(edit, field)
+                if colour and not colour_is_supported(
+                    order.element_type, truth, order.box, colour
+                ):
+                    setattr(edit, field, "")
+                    dropped.append(field)
+            if dropped:
+                order.note = (order.note + " " if order.note else "") + "colour-dropped"
+                report.setdefault("colourDropped", 0)
+                report["colourDropped"] += 1
+            if edit.is_empty():
+                order.status = "rolled-back:colour-not-in-picture"
+                report["rolledBack"] += 1
+                report["log"].append(
+                    {
+                        "round": round_index,
+                        "ref": order.ref,
+                        "proposed": _edit_dict(edit),
+                        "status": order.status,
+                        "roi": None,
+                    }
+                )
+                continue
+            # 一条"改文案"的意见经常落在整列/整段的容器上（误差带跨了好几行）。
+            # 能改字的只有里面的文本节点，所以把这条意见转投给它；ROI 与整页两道
+            # 门还是按原来的框量，改坏了照样回滚。
+            target = elements[index]
+            if edit.text and str(target.get("type") or "") != "text":
+                nested = _text_inside(elements, order.box)
+                if nested is not None:
+                    nested_index = next(
+                        (
+                            position
+                            for position, element in enumerate(elements)
+                            if element is nested
+                        ),
+                        None,
+                    )
+                    if nested_index is not None:
+                        index = nested_index
+                        target = nested
+                        order.note = (order.note + " " if order.note else "") + "retargeted"
+            # 文案守卫要在**转投之后**跑：一条落在整列上的意见，比较对象是那一行
+            # 真正的字，不是那个容器的空 text。
+            if edit.text:
+                current_text = str(elements[index].get("text") or "")
+                if not text_edit_is_correction(current_text, edit.text):
+                    edit.text = ""
+                    order.note = (order.note + " " if order.note else "") + "text-dropped"
+                    report.setdefault("textDropped", 0)
+                    report["textDropped"] += 1
+            if edit.is_empty():
+                order.status = "rolled-back:text-edit-not-a-correction"
+                report["rolledBack"] += 1
+                report["log"].append(
+                    {
+                        "round": round_index,
+                        "ref": order.ref,
+                        "proposed": _edit_dict(edit),
                         "status": order.status,
                         "roi": None,
                     }
@@ -2327,7 +3027,12 @@ def refine(
                 continue
             snapshot = copy.deepcopy(elements[index])
             before = roi_error(truth, drawn, order.box)
-            applied = apply_quantitative(elements[index], patch, frozen=index in frozen)
+            applied = apply_round_edit(
+                elements[index],
+                edit,
+                frozen=index in frozen,
+                element_type=str(target.get("type") or order.element_type),
+            )
             if applied is None:
                 geometry = {"dx", "dy", "dw", "dh"} & set(patch)
                 order.status = (
@@ -2341,7 +3046,7 @@ def refine(
                     {
                         "round": round_index,
                         "ref": order.ref,
-                        "proposed": dict(patch),
+                        "proposed": _edit_dict(edit),
                         "status": order.status,
                         "roi": None,
                     }

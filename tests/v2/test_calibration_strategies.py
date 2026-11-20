@@ -168,6 +168,69 @@ def test_pipeline_renders_once_per_adjusted_group(tmp_path: Path) -> None:
     assert result.selected_groups == ["group-a", "group-b"]
 
 
+def test_pipeline_skips_the_ink_roundtrip_group(tmp_path: Path) -> None:
+    """A skipped group must not run, must not render, and must say so."""
+    render_calls: list[str] = []
+
+    def _strategy(name: str) -> CalibrationStrategy:
+        def _runner(ctx: CalibrationContext) -> tuple[dict, dict]:
+            return dict(ctx.design), {"adjusted_count": 1}
+
+        return CalibrationStrategy(
+            name=name,
+            residuals=frozenset(),
+            regions=frozenset(),
+            runner=_runner,
+            always=True,
+        )
+
+    def _render(_design: dict, suffix: str) -> tuple[Path, dict]:
+        render_calls.append(suffix)
+        root = tmp_path / suffix
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "readback.json").write_text(
+            json.dumps({"type": "FRAME", "children": []}), encoding="utf-8"
+        )
+        return root, {"status": "captured-figma-evidence"}
+
+    groups = (
+        CalibrationGroup(
+            name="font-initial",
+            render_suffix="figma_font_initial",
+            strategies=(_strategy("control-fonts"),),
+        ),
+        CalibrationGroup(
+            name="ink-convergence",
+            render_suffix="figma_ink_converged",
+            strategies=(_strategy("ink-convergence"),),
+        ),
+    )
+
+    import src.app.services.structure.fidelity.calibration_strategies as strategies
+
+    original = strategies.CALIBRATION_GROUPS
+    strategies.CALIBRATION_GROUPS = groups
+    try:
+        result = run_calibration_pipeline(
+            design={},
+            image="unused.png",
+            run_root=tmp_path / "figma",
+            readback={"type": "FRAME", "children": []},
+            ocr_supplement={},
+            render=_render,
+            mode="legacy",
+            skip_groups=(strategies.INK_ROUNDTRIP_GROUP,),
+        )
+    finally:
+        strategies.CALIBRATION_GROUPS = original
+
+    assert result.skipped_groups == ["ink-convergence"]
+    assert "ink-convergence" not in result.reports
+    assert result.selected_groups == ["font-initial"]
+    # 首轮导出仍是唯一的产物目录：口径只剩一个。
+    assert render_calls == ["figma_font_initial"]
+
+
 def test_pipeline_surfaces_failed_calibration_render(tmp_path: Path) -> None:
     def _strategy() -> CalibrationStrategy:
         def _runner(ctx: CalibrationContext) -> tuple[dict, dict]:

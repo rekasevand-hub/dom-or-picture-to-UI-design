@@ -1,6 +1,29 @@
 # UI 自动还原 Agent
 
 **版本：1.1.0 冻结发版（2026-10-17）**
+**当前封版路线：`omni-cv`（`v1.0.0-omni-cv`，2026-11-21）**
+
+> **`omni-cv` 路线（截图 → 纯 CV → Figma / Axure）完整说明书：[`docs/omni_cv_route.md`](docs/omni_cv_route.md)**
+>
+> 该文档覆盖：端到端数据流、环境与前置服务（OmniParser `:8000`、Figma Bridge `:8765`）、
+> 可直接复制的启动命令、全部 CLI 参数与环境变量默认值、输出产物字段、验收与排障。
+>
+> 一句话版本（在仓库根目录执行）：
+>
+> ```bash
+> # 截图 → Figma（单页冷启，端到端约 27s）
+> bash scripts/run_image_pipeline.sh \
+>   --image output/_fresh_prep/FluxWeaver.png \
+>   --truth output/_fresh_prep/FluxWeaver.truth.json \
+>   --out   output/run_FluxWeaver \
+>   --route omni-cv --tool figma
+>
+> # 截图 → Axure RP8（完全离线，两次渲染逐字节校验）
+> bash scripts/run_image_pipeline.sh ... --route omni-cv --tool axure --generate-twice
+> ```
+>
+> 封版基线：七页冷启 **94.34 / 91.37 / 7.571**，冻结红线 **13/6/10/14/9/3/6**，
+> 全量单测 **1729 passed / 8 skipped**。
 
 从两类输入生成可编辑设计产物：
 
@@ -12,7 +35,9 @@
 - **后续路线**：A-006/A-008 保持历史失败；A-010 泛化声明仅限冻结三样本
 
 Grounding、CV 和 hybrid 是 image 输入下的实现策略，不是与 DOM
-并列的产品路线。当前 `auto/dom/grounding/cv` 参数只用于控制实现层选择。
+并列的产品路线。当前公开的 `--route` 取值只有 `auto` / `dom` / `omni-cv`
+（历史名 `physical` 作为隐藏别名保留，传入时会提示改用 `omni-cv`；`cv`、`grounding`
+不再是公开入口）。
 image → Figma 已完成首个 owned-screenshot current-scope MVP：Grounding 默认、
 真实 Figma 写入/回读/导出、critical text、原生文本编辑和 reference-only 图片
 显示替换均有证据。该结论不表示任意截图或生产环境已通过。

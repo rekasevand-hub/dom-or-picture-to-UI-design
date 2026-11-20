@@ -13,6 +13,11 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.app.agents import ReconstructAgent
+from src.app.services.structure.router import (
+    PUBLIC_ROUTES,
+    ROUTE_OMNI_CV,
+    normalize_route,
+)
 from src.app.utils.logging_utils import setup_logging
 from src.config import load_config
 
@@ -26,8 +31,15 @@ def _build_parser() -> argparse.ArgumentParser:
                              "同一页面不同区域的多张图要合并成 1 页；多页当前仅 Axure 支持）")
     parser.add_argument("--url", action="append", default=None, metavar="URL",
                         help="网页 URL（可重复：N 个 URL -> N 页，每个 URL 一页）")
-    parser.add_argument("--route", default=None, choices=["auto", "dom", "grounding", "cv"],
-                        help="实现层结构策略（不是产品路线）")
+    parser.add_argument("--route", default=None, type=normalize_route,
+                        choices=list(PUBLIC_ROUTES),
+                        help="实现层结构策略（不是产品路线）："
+                             "auto=按输入自动选（截图走 cv 并带兜底）；"
+                             "dom=网页 DOM 直出；"
+                             "omni-cv=截图 → 纯 CV 物理感知（RapidOCR + OmniParser + 容器），"
+                             "失败即报错、不回退（封版路线）")
+    parser.add_argument("--omni-cv", action="store_true",
+                        help=f"等价于 --route {ROUTE_OMNI_CV}；与冲突的 --route 同时出现会报错")
     parser.add_argument("--fast", action="store_true",
                         help="（已废弃，参数被忽略）DOM 路线恒定 computed style 直出，保留仅为兼容旧脚本")
     parser.add_argument("--enrich", action="store_true",
@@ -51,11 +63,16 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--interactive", action="store_true",
                         help="交互式选择入口：引导选择 URL/截图 与 处理路线")
     parser.add_argument("--pick-crops", action="store_true",
-                        help="（仅 grounding/cv 像素链路）采集后弹出框选窗口，手工框选需要"
+                        help="（仅 omni-cv 像素链路）采集后弹出框选窗口，手工框选需要"
                              "按原图像素还原的区域（图标字体/图表/任意直出画不出的块），"
                              "存 manual_crops.json；dom 路线能从 DOM 标识自动判出图标/图片，"
                              "会自动跳过。不带 --url 时用输出目录里已有的产物重渲染"
                              "（配合框选快速迭代）")
+    parser.add_argument(
+        "--strict-ir",
+        action="store_true",
+        help="设计稿违反 design-ir/2.0 契约时非零退出、阻断发射（默认只记账）",
+    )
     parser.add_argument("--debug", action="store_true", help="打印更多日志")
     return parser
 
@@ -68,6 +85,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     setup_logging(logging.DEBUG if args.debug else logging.INFO)
+
+    if args.omni_cv:
+        if args.route and args.route != ROUTE_OMNI_CV:
+            parser.error(
+                f"--omni-cv 与 --route {args.route} 冲突："
+                f"--omni-cv 等价于 --route {ROUTE_OMNI_CV}，二者只能写一个"
+            )
+        args.route = ROUTE_OMNI_CV
 
     config = load_config()
     if args.output_dir:
@@ -138,14 +163,17 @@ def main(argv: list[str] | None = None) -> int:
         if urls or args.route or len(urls) + len(images) > 1:
             from src.app.agents.precise_agent import PreciseAgent
             agent = PreciseAgent(config)
-            route = args.route or config.route_default   # ROUTE 环境变量，默认 auto
+            # ROUTE 环境变量也过一遍归一：历史脚本里写 ROUTE=physical 的照样跑，
+            # 但会看到一条指向 --route omni-cv 的提示。
+            route = args.route or normalize_route(config.route_default)
             if len(urls) + len(images) > 1:
                 agent.run_many(urls=urls, images=images, route=route, tool=tool,
-                               pick_crops=args.pick_crops)
+                               pick_crops=args.pick_crops, strict_ir=args.strict_ir)
             else:
                 agent.run(url=urls[0] if urls else None,
                           image=images[0] if images else None,
-                          route=route, tool=tool, pick_crops=args.pick_crops)
+                          route=route, tool=tool, pick_crops=args.pick_crops,
+                          strict_ir=args.strict_ir)
             return 0
 
         agent = ReconstructAgent(config)
@@ -157,6 +185,15 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
     except Exception as exc:
+        # 契约阻断有独立的退出码：CI 只看"非零"分不出"跑挂了"和"稿子不合契约"。
+        from src.app.services.contracts.production_gate import DesignIRGateError
+
+        if isinstance(exc, DesignIRGateError):
+            logger.error(
+                "design-ir 契约违规，已阻断发射（详见输出目录的 13_design_ir.json / "
+                "13_degradations.json）"
+            )
+            return 3
         logger.error(f"运行失败: {exc}", exc_info=args.debug)
         return 1
 

@@ -43,11 +43,19 @@ class ImageRouteFallbackTests(unittest.TestCase):
             ["cv"],
         )
 
-    def test_explicit_physical_route_does_not_fall_back(self) -> None:
+    def test_explicit_omni_cv_route_does_not_fall_back(self) -> None:
+        cfg = SimpleNamespace(vision_api_key="configured")
+        self.assertEqual(
+            route_order("image", "omni-cv", cfg, have_dom=False),
+            ["omni-cv"],
+        )
+
+    def test_physical_is_a_deprecated_alias_for_omni_cv(self) -> None:
+        # 历史脚本里的 `--route physical` 必须继续跑，但链条与产物都用规范名。
         cfg = SimpleNamespace(vision_api_key="configured")
         self.assertEqual(
             route_order("image", "physical", cfg, have_dom=False),
-            ["physical"],
+            ["omni-cv"],
         )
 
     def test_missing_vlm_config_starts_with_cv(self) -> None:

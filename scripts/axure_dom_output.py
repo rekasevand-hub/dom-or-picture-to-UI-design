@@ -52,6 +52,17 @@ def main(argv: list[str] | None = None) -> int:
 
     output_dir = Path(args.out)
     output_dir.mkdir(parents=True, exist_ok=True)
+    # 与生产主链同名同形的两个账本：13_design_ir / 13_degradations。
+    # 这个脚本本来就是 axure 的另一个入口，产物名字不该只在主链里存在。
+    from src.app.services.contracts.production_gate import gate_design_for_output
+
+    gate_design_for_output(
+        route["design"],
+        target="axure",
+        source_kind=args.source_kind,
+        out_dir=output_dir,
+        ir=route["ir"],
+    )
     _write_json(output_dir / "axure_design.json", route["design"])
     _write_json(output_dir / "design.ir.json", route["ir"])
     _write_json(output_dir / "route.json", _public_route(route))

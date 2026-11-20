@@ -49,8 +49,10 @@ from src.app.services.contracts.output_ir import (
     OUTPUT_CAPABILITY_VERSION,
     OUTPUT_IR_SCHEMA_VERSION,
     build_output_ir,
+    degradations_for,
     output_capabilities,
     project_for_output,
+    target_gaps,
     validate_output_ir,
 )
 from src.app.services.contracts.models import (
@@ -168,6 +170,7 @@ __all__ = [
     "canonical_json",
     "coverage_dimension",
     "coverage_region_summary",
+    "degradations_for",
     "dimension_status",
     "evaluate_release",
     "fixed_denominator_diff",
@@ -181,6 +184,7 @@ __all__ = [
     "rect_union_area",
     "resume_after_send",
     "runtime_ir_json_schema",
+    "target_gaps",
     "text_decision_from_ocr",
     "validate_audit_bundle",
     "validate_layers",

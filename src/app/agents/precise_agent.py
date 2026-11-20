@@ -35,7 +35,9 @@ from src.app.services.structure.fidelity import (
 )
 from src.app.services.structure.fidelity.contracts import FIDELITY_SCHEMA_VERSION
 from src.app.services.structure.router import (
+    ROUTE_OMNI_CV,
     grounding_fallback_reason,
+    normalize_route,
     route_order,
 )
 from src.app.services.structure.providers.base import ProviderContext
@@ -58,8 +60,8 @@ def _build_provider(cfg, route):
         return DomProvider()
     if route == "grounding":
         return GroundingProvider(cfg)
-    if route == "physical":
-        # 与 cv 同一条链，但不允许回退：失败要看得见。
+    if route == ROUTE_OMNI_CV:
+        # 封版路线：同一条物理感知链，但不允许回退——失败要看得见。
         return CVProvider(cfg, strict=True)
     return CVProvider(cfg)
 
@@ -283,6 +285,8 @@ def _build_grounding_fidelity_report(
 class PreciseAgent:
     def __init__(self, config) -> None:
         self.config = config
+        #: `--strict-ir`：设计稿违反 design-ir/2.0 契约时中止发射，而不是只记账。
+        self.strict_ir = False
 
     def run(
         self,
@@ -293,8 +297,12 @@ class PreciseAgent:
         tool="svg",
         pick_crops: bool = False,
         delivery_acceptance: DeliveryAcceptance | None = None,
+        strict_ir: bool = False,
     ) -> dict:
-        route = route or "auto"
+        # 路由名在这里就归一：`physical` 之类的历史名只活到入口，进管线的一律是
+        # 规范名，产物里的 requested_route 不会再出现两套写法。
+        route = normalize_route(route or "auto")
+        self.strict_ir = bool(strict_ir)
         cfg = self.config
         out = cfg.output_dir
         out.mkdir(parents=True, exist_ok=True)
@@ -895,7 +903,14 @@ class PreciseAgent:
         )
 
     def run_many(
-        self, *, urls=(), images=(), route="auto", tool="svg", pick_crops: bool = False
+        self,
+        *,
+        urls=(),
+        images=(),
+        route="auto",
+        tool="svg",
+        pick_crops: bool = False,
+        strict_ir: bool = False,
     ) -> dict:
         """多输入 -> 多页（`归档文档 axure_rp8_plan.md` §3.1）：N 个 URL / N 张不同界面截图
         -> N 页，**每个输入一页**（URL 的 DOM 各自独立，不需要对齐）。
@@ -924,6 +939,7 @@ class PreciseAgent:
                 route=route,
                 tool=tool,
                 pick_crops=pick_crops,
+                strict_ir=strict_ir,
             )
             return json.loads(
                 (self.config.output_dir / "12_design.json").read_text(encoding="utf-8")
@@ -946,9 +962,17 @@ class PreciseAgent:
         (out / "12_design.json").write_text(
             json.dumps(design, ensure_ascii=False, indent=1), encoding="utf-8"
         )
+        self._gate_design_ir(
+            design,
+            out,
+            tool=tool,
+            source_kind="dom" if urls else "image",
+            strict=strict_ir,
+        )
         from src.app.controllers.rendering_controller import RenderingController
 
         RenderingController(cfg).render(design, tool)
+        self._verify_axure_output(design, out, tool=tool)
         manifest = {
             "version": app_version(),
             "route": route,
@@ -1008,6 +1032,78 @@ class PreciseAgent:
             "elements": len(elements),
         }
         return page, record
+
+    def _gate_design_ir(
+        self,
+        design: dict,
+        out: Path,
+        *,
+        tool: str,
+        source_kind: str,
+        reference: dict | None = None,
+        strict: bool | None = None,
+    ) -> dict | None:
+        """design-ir/2.0 闸门：投影 + 契约校验 + 13_design_ir / 13_degradations。
+
+        记账是默认行为，违规不阻断；`--strict-ir` 时抛错，交由上层以非零码退出。
+        """
+        from src.app.services.contracts.production_gate import (
+            DesignIRGateError,
+            gate_design_for_output,
+        )
+
+        try:
+            return gate_design_for_output(
+                design,
+                target=tool,
+                source_kind=source_kind,
+                out_dir=out,
+                reference=reference,
+                strict=bool(self.strict_ir if strict is None else strict),
+            )
+        except DesignIRGateError as exc:
+            logger.error("design-ir 闸门阻断：%s", exc)
+            raise
+
+    def _verify_axure_output(self, design: dict, out: Path, *, tool: str) -> None:
+        """Axure 只读回读自检：不再只有 `scripts/axure_dom_output.py` 才做这件事。"""
+        if str(tool) != "axure":
+            return
+        artifact = Path(out) / "prototype.rp"
+        if not artifact.is_file():
+            return
+        try:
+            from src.app.services.rendering.axure.evidence import (
+                compare_rp_to_design,
+                inspect_rp,
+            )
+
+            inspection = inspect_rp(artifact)
+            comparison = compare_rp_to_design(inspection, design)
+        except Exception as exc:  # noqa: BLE001 - 自检失败不掩盖已产出的 .rp
+            logger.warning("Axure 回读自检失败：%s: %s", type(exc).__name__, exc)
+            return
+        report = {
+            "schema_version": "image-axure-evidence/1.0",
+            "artifact": {
+                "name": artifact.name,
+                "size": artifact.stat().st_size,
+                "sha256": inspection["artifact_sha256"],
+            },
+            "self_check": inspection["self_check"],
+            "integrity": inspection["integrity"],
+            "comparison": comparison,
+            "inspection": {
+                "page_count": inspection["page_count"],
+                "asset_count": inspection["asset_count"],
+                "member_count": inspection["member_count"],
+            },
+        }
+        (Path(out) / "axure_evidence.json").write_text(
+            json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+        if not (report["self_check"].get("ok") and report["integrity"].get("ok")):
+            logger.warning("Axure 自检未通过：%s", report["self_check"])
 
     def _require_pages_support(self, tool: str) -> None:
         """多页只对支持 `pages` 的输出端开放（当前 = axure）：宁可明确报错，别静默叠成一页。"""
@@ -1296,6 +1392,15 @@ class PreciseAgent:
         (out / "12_design.json").write_text(
             json.dumps(design, ensure_ascii=False, indent=1), encoding="utf-8"
         )
+        # 生产主链的唯一出口：不论下游是 Figma 还是 Axure，先过 design-ir/2.0。
+        self._gate_design_ir(
+            design,
+            out,
+            tool=tool,
+            source_kind="image" if image_contract is not None else "dom",
+            reference=(image_contract or {}).get("reference"),
+            strict=self.strict_ir,
+        )
         if route == "dom":
             from src.app.services.evidence.dom_route_quality import (
                 DOMRouteQualityError,
@@ -1362,6 +1467,7 @@ class PreciseAgent:
             capture_sidecar=capture_sidecar,
             acceptance=delivery_acceptance,
         )
+        self._verify_axure_output(design, out, tool=tool)
         self._refine_text_baselines(design, image, out, tool)
 
         meta = design.get("_meta") or {}

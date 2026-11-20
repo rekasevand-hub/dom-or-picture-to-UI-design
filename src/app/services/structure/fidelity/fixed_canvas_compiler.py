@@ -3638,10 +3638,45 @@ def _recover_chip_outlines(
                 },
             }
             # 插在标签之前：装饰层永远在文字之下，文字永远在它之上。
-            elements.insert(elements.index(label), outline)
+            _insert_under_label(elements, label, outline)
             added += 1
             break
     return added
+
+
+def _insert_under_label(
+    elements: list[dict[str, Any]],
+    label: Mapping[str, Any],
+    decoration: dict[str, Any],
+) -> None:
+    """Draw a decoration directly under one label, in the label's own paint context.
+
+    "Right before the label in the flat list" is only right while the label paints
+    as a root sibling.  A label that belongs to a frame paints **with that frame**,
+    and the frame sits at the container's index — which is earlier than the label's
+    flat index — so a decoration inserted at the label's flat index lands after the
+    whole frame and paints over the words it was drawn for.  That is exactly how
+    wecom-modal's white ``chip-outline`` swallowed ``取消``: the plate was under the
+    text in the list and over it on the canvas.
+
+    So the decoration joins the frame, immediately before the label's entry: same
+    paint order as the flat insert, but inside the group that actually owns it.
+    """
+    label_id = str(label.get("id") or "")
+    if label_id:
+        for container in elements:
+            children = container.get("layoutChildren")
+            if not children:
+                continue
+            for position, child in enumerate(children):
+                if not isinstance(child, dict) or str(child.get("id") or "") != label_id:
+                    continue
+                children.insert(position, {"id": decoration["id"]})
+                # 帧成员由帧负责发射，扁平列表里的位置不再决定绘制顺序；仍放在
+                # 帧后面，读产物的人一眼能看出它属于谁。
+                elements.insert(elements.index(container) + 1, decoration)
+                return
+    elements.insert(elements.index(label), decoration)
 
 
 def _wrapped_by_control(
@@ -11457,7 +11492,7 @@ def compile_scene_plan_to_design(
     align_stats = align_frame_columns(elements)
     align_stats["baselines"] = align_baselines(elements)
     align_stats["inkSpan"] = calibrate_ink_span(elements)
-    # 帧已锁：这三处只改字号，不动成员、不动框、不动层序。
+    # 帧已锁：那三处只改字号的守卫，不放宽高、不动成员。
     align_stats["inline"] = _fit_locked_text_geometry(elements)
     # 帧结构已经锁定（谁是谁的成员、谁在第几帧，都不会再变）。装饰层从这里开始
     # 只画不改结构：卡片的 1px 轮廓、被切开的两张卡之间的底板、芯片外那一圈细线。

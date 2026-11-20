@@ -266,7 +266,9 @@ def test_the_ruler_panel_carries_ticks_on_all_four_sides() -> None:
     margin = arbiter.RULER_MARGIN
     # 刻度是深色像素；白边上必须数得出东西，否则模型没有尺子可读。
     assert (panel[: margin - 8].min(axis=2) < 120).sum() > 10
-    assert (panel[:, :8].min(axis=2) < 120).sum() > 10
+    # 左侧看整条白边：刻度画在 margin 内侧（x=margin-6..margin-1），数字画在 x=2，
+    # 只取前 8 列等于只看被裁掉一半的数字——那是尺子的标签，不是尺子。
+    assert (panel[:, :margin].min(axis=2) < 120).sum() > 10
     # 中间是 2× 的并排图：宽度应当接近两倍 ROI 加上间隙。
     assert panel.shape[1] >= 88 * 2 + 10
 

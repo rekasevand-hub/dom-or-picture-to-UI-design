@@ -30,6 +30,25 @@ def test_image_figma_mvp_cli_defaults_are_current_product_contract() -> None:
     assert args.acceptance_policy == "1.0"
     assert args.emission_contract == "repair"
     assert args.calibration_mode == "residual"
+    # 导出后的墨迹回环校准默认关：RapidOCR 紧框之后它在四页上全线输给首轮导出。
+    assert args.ink_roundtrip is False
+
+
+def test_image_figma_mvp_cli_can_still_ask_for_the_ink_roundtrip() -> None:
+    module = _load_script()
+    args = module._build_parser().parse_args(
+        [
+            "--image",
+            "input.png",
+            "--truth",
+            "truth.json",
+            "--out",
+            "out",
+            "--ink-roundtrip",
+        ]
+    )
+
+    assert args.ink_roundtrip is True
 
 
 def test_image_figma_mvp_cli_keeps_legacy_calibration_fallback() -> None:

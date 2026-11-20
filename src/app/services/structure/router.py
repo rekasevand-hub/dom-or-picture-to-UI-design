@@ -21,6 +21,38 @@ _GROUNDING_UNAVAILABLE_TYPES = {
     "GroundingUnavailableError",
 }
 
+#: 对外唯一官方路由名：截图 → 纯 CV 物理感知（RapidOCR + OmniParser + 容器）。
+ROUTE_OMNI_CV = "omni-cv"
+#: `--route` 的公开可选值。`--help` 里出现的就是这三个；`cv` / `grounding` 是
+#: 内部实现策略名，不再作为对外入口。
+PUBLIC_ROUTES = ("auto", "dom", ROUTE_OMNI_CV)
+#: 兼容别名 → 规范名。只做映射，不进 `choices`，`--help` 里看不到。
+ROUTE_ALIASES = {"physical": ROUTE_OMNI_CV}
+
+
+def normalize_route(value: str | None, *, announce: bool = True) -> str | None:
+    """Map a historical route name to its canonical one, announcing the move.
+
+    `physical` was the stage-three name for exactly this chain; scripts and
+    frozen regression commands still pass it.  It keeps working, but the CLI
+    says so and points at the spelling the docs now use.
+    """
+    if not value:
+        return value
+    text = str(value).strip()
+    canonical = ROUTE_ALIASES.get(text)
+    if canonical is None:
+        return text
+    if announce:
+        import sys
+
+        print(
+            f"[deprecated] --route {text} 已更名为 --route {canonical}"
+            f"（别名本次仍生效，后续版本移除）",
+            file=sys.stderr,
+        )
+    return canonical
+
 
 def grounding_fallback_reason(exc: BaseException) -> str | None:
     """Return a CV-fallback reason only for Grounding service unavailability."""
@@ -54,12 +86,14 @@ def grounding_fallback_reason(exc: BaseException) -> str | None:
 def route_order(
     input_kind: str, requested: str | None, cfg: "Config", have_dom: bool
 ) -> list[str]:
-    # physical = 三路物理分权感知（build_physical_plan），cv 是它带旧链路兜底的
-    # 同一个 provider。grounding 是第一阶段的全图 VLM 路线，只在显式要求时使用：
-    # 它绕开 physical_perception 与编译器，产出的稿子与阶段二不是一套东西。
-    valid = {"dom", "grounding", "cv", "physical"}
+    # omni-cv = 三路物理分权感知（build_physical_plan），正式路线，不回退。
+    # cv 是它带旧链路兜底的同一个 provider，只在 auto 链里用；grounding 是第一阶段
+    # 的全图 VLM 路线，只在内部显式要求时使用：它绕开 physical_perception 与编译器，
+    # 产出的稿子与阶段二不是一套东西。
+    valid = {"dom", "grounding", "cv", ROUTE_OMNI_CV, *ROUTE_ALIASES}
     if requested and requested not in valid:
         raise ValueError(f"未知路线: {requested}")
+    requested = normalize_route(requested)
     dom_ok = (input_kind == "url") and have_dom
     if requested:
         if requested in ("dom",) and not dom_ok:

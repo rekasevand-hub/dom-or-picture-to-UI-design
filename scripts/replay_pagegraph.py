@@ -366,6 +366,9 @@ def _arbitrate(design: dict, picture: str | Path, out: Path, tag: str, render_pa
                 propose_wireframe=lambda candidates, panels: vision(
                     arbiter.wireframe_prompt(candidates), panels
                 ),
+                # 整页巡检优先于像素 Top-K：漏掉的按钮文案、错字这类硬伤面积太小，
+                # 按误差总量永远排不进前三。
+                propose_sweep=lambda prompt, panels: vision(prompt, panels),
                 rounds=arbiter.ARBITER_MAX_ROUNDS,
             )
         else:

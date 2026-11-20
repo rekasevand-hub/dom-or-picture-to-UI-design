@@ -29,6 +29,10 @@ from src.app.services.evidence.region_quality import (  # noqa: E402
     evaluate_region_quality,
 )
 from src.app.services.rendering.figma_adapter import FigmaBridgeAdapter  # noqa: E402
+from src.app.services.structure.router import (  # noqa: E402
+    ROUTE_OMNI_CV,
+    normalize_route,
+)
 from src.app.services.structure.image_contract import (  # noqa: E402
     inspect_image_reference,
 )
@@ -39,6 +43,7 @@ from src.app.services.structure.fidelity.calibration_profile import (  # noqa: E
     build_calibration_residual_profile,
 )
 from src.app.services.structure.fidelity.calibration_strategies import (  # noqa: E402
+    INK_ROUNDTRIP_GROUP,
     CalibrationRenderError,
     run_calibration_pipeline,
 )
@@ -66,6 +71,154 @@ class ImageMVFigmaAdapter(FigmaBridgeAdapter):
         pass
 
 
+AXURE_OUTPUT_SCHEMA_VERSION = "image-axure-output/1.0"
+
+
+def _gate(
+    *,
+    dsn: dict,
+    output: Path,
+    tool: str,
+    strict: bool,
+    source_kind: str,
+    reference: dict | None,
+) -> dict | None:
+    """design-ir/2.0 闸门：投影 + 契约校验 + 落盘 13_design_ir/13_degradations。"""
+    from src.app.services.contracts.production_gate import (
+        DesignIRGateError,
+        gate_design_for_output,
+    )
+
+    try:
+        return gate_design_for_output(
+            dsn,
+            target=tool,
+            source_kind=source_kind,
+            out_dir=output,
+            reference=reference,
+            strict=strict,
+        )
+    except DesignIRGateError as exc:
+        _write_json(
+            output / "ir_gate.json",
+            {
+                "status": "blocked-ir",
+                "target": exc.target,
+                "issues": exc.issues,
+                "strict": True,
+            },
+        )
+        print(json.dumps({"status": "blocked-ir", "issues": exc.issues}, ensure_ascii=True))
+        raise SystemExit(3) from exc
+
+
+def _emit_axure(
+    *,
+    design: dict,
+    output: Path,
+    sample_id: str,
+    gate: dict | None,
+    generate_twice: bool,
+    strict: bool,
+) -> int:
+    """Axure RP8 发射：复用闸门的 IR 做路由，再用 evidence.py 只读回读自检。"""
+    import hashlib
+
+    from src.app.services.rendering.axure.evidence import (
+        compare_rp_to_design,
+        inspect_rp,
+    )
+    from src.app.services.rendering.axure_adapter import AxureRPAdapter
+    from src.app.services.rendering.axure_route import plan_axure_route
+
+    ir = _read_json(output / "13_design_ir.json") if (output / "13_design_ir.json").is_file() else None
+    route = plan_axure_route(design, source_kind="image", ir=ir)
+    _write_json(output / "axure_design.json", route["design"])
+    _write_json(output / "design.ir.json", route["ir"])
+    _write_json(
+        output / "route.json",
+        {key: value for key, value in route.items() if key not in ("design", "ir")},
+    )
+
+    artifact = output / "prototype.rp"
+    _render_axure(route["design"], artifact)
+    repeat = None
+    if generate_twice:
+        repeat = output / "prototype.repeat.rp"
+        _render_axure(route["design"], repeat)
+    inspection = inspect_rp(artifact)
+    comparison = compare_rp_to_design(inspection, route["design"], route=route)
+    repeat_sha = hashlib.sha256(repeat.read_bytes()).hexdigest() if repeat else None
+    deterministic = not generate_twice or (
+        repeat is not None and repeat.read_bytes() == artifact.read_bytes()
+    )
+    report = {
+        "schema_version": AXURE_OUTPUT_SCHEMA_VERSION,
+        "sample_id": sample_id,
+        "document_id": route["document_id"],
+        "source_kind": route["source_kind"],
+        "gate": gate,
+        "artifact": {
+            "name": artifact.name,
+            "size": artifact.stat().st_size,
+            "sha256": inspection["artifact_sha256"],
+        },
+        "determinism": {
+            "enabled": bool(generate_twice),
+            "repeat_name": repeat.name if repeat else None,
+            "repeat_sha256": repeat_sha,
+            "identical": deterministic,
+        },
+        "self_check": inspection["self_check"],
+        "integrity": inspection["integrity"],
+        "comparison": comparison,
+        "inspection": {
+            "page_count": inspection["page_count"],
+            "asset_count": inspection["asset_count"],
+            "member_count": inspection["member_count"],
+        },
+        "projection": route["projection"],
+        "degradations": route["degradations"],
+        "acceptance_scope": route["projection"]["acceptance_scope"],
+        "limitations": route["limitations"],
+    }
+    _write_json(output / "artifact_report.json", report)
+    print(
+        "[axure] pages=%s widgets=%s assets=%s self_check=%s integrity=%s "
+        "comparison=%s deterministic=%s sha256=%s"
+        % (
+            inspection["page_count"],
+            comparison["widget_count"],
+            inspection["asset_count"],
+            inspection["self_check"].get("ok"),
+            inspection["integrity"].get("ok"),
+            comparison["ok"],
+            deterministic,
+            inspection["artifact_sha256"][:16],
+        ),
+        flush=True,
+    )
+    ok = bool(
+        inspection["self_check"].get("ok")
+        and inspection["integrity"].get("ok")
+        and comparison["ok"]
+        and deterministic
+    )
+    if not ok and strict:
+        print(json.dumps({"status": "blocked-axure-evidence"}, ensure_ascii=True))
+        return 3
+    return 0 if ok else 1
+
+
+def _render_axure(design: dict, output_path: Path) -> None:
+    from src.app.services.rendering.axure_adapter import AxureRPAdapter
+
+    adapter = AxureRPAdapter(output_path)
+    adapter.connect()
+    adapter.render_design(design)
+    adapter.disconnect()
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run the owned image-to-Figma MVP sample."
@@ -75,8 +228,18 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument(
         "--route",
-        choices=("auto", "physical", "grounding", "cv"),
-        default="auto",
+        type=normalize_route,
+        choices=("auto", ROUTE_OMNI_CV),
+        default=None,
+        help=(
+            "auto=截图走 cv 并带兜底；omni-cv=纯 CV 物理感知（RapidOCR + "
+            "OmniParser + 容器），失败即报错、不回退（封版路线）"
+        ),
+    )
+    parser.add_argument(
+        "--omni-cv",
+        action="store_true",
+        help=f"等价于 --route {ROUTE_OMNI_CV}；与冲突的 --route 同时出现会报错",
     )
     parser.add_argument("--origin-x", type=float, default=22000)
     parser.add_argument("--origin-y", type=float, default=0)
@@ -95,6 +258,35 @@ def _build_parser() -> argparse.ArgumentParser:
             "residual (default) selects strategy groups from the measured "
             "native-text residual profile and recomputes the profile after each "
             "render. 'legacy' preserves the historical fifteen-stage order."
+        ),
+    )
+    parser.add_argument(
+        "--tool",
+        choices=("figma", "axure"),
+        default="figma",
+        help=(
+            "Output target. Both go through the design-ir/2.0 gate; axure also "
+            "runs plan_axure_route + evidence.py readback instead of the Figma bridge."
+        ),
+    )
+    parser.add_argument(
+        "--strict-ir",
+        action="store_true",
+        help="Exit non-zero when the design violates the design-ir/2.0 contract.",
+    )
+    parser.add_argument(
+        "--generate-twice",
+        action="store_true",
+        help="Axure only: render the .rp twice and require byte-identical output.",
+    )
+    parser.add_argument(
+        "--ink-roundtrip",
+        action="store_true",
+        help=(
+            "Re-run the post-export ink convergence pass (figma_ink_converged). "
+            "Off by default: with RapidOCR's tight boxes the first export beat "
+            "the converged one on all four pages measured, and the extra Figma "
+            "round-trip is what used to fail with 'invalid callback id'."
         ),
     )
     parser.add_argument(
@@ -236,7 +428,17 @@ def _fidelity_regions(geometry: dict | None) -> list[dict]:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = _build_parser().parse_args(argv)
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    if args.omni_cv:
+        if args.route and args.route != ROUTE_OMNI_CV:
+            parser.error(
+                f"--omni-cv 与 --route {args.route} 冲突："
+                f"--omni-cv 等价于 --route {ROUTE_OMNI_CV}，二者只能写一个"
+            )
+        args.route = ROUTE_OMNI_CV
+    # 不给 --route 时保持历史默认（auto → 截图走 cv 并带兜底），封版路线要显式选。
+    args.route = args.route or "auto"
     if args.acceptance_policy == "2.0":
         acceptance_policy = IMAGE_MVP_POLICY_V2
     elif args.acceptance_policy == "2.1":
@@ -369,6 +571,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     design["canvas"]["y"] = float(args.origin_y)
     _write_json(output / "figma_design.json", design)
 
+    # 生产主链的唯一出口：不论下游是 Figma 还是 Axure，先过 design-ir/2.0。
+    gate = _gate(dsn=design, output=output, tool=args.tool, strict=args.strict_ir,
+                 source_kind="image", reference=reference)
+    if gate is not None and gate.get("status") == "not-gated":
+        gate = None
+    if args.tool == "axure":
+        return _emit_axure(
+            design=design,
+            output=output,
+            sample_id=str(truth.get("sample_id") or ""),
+            gate=gate,
+            generate_twice=args.generate_twice,
+            strict=args.strict_ir,
+        )
+
     run_root = output / "figma"
     run_summary = run_image_figma_evidence(
         design,
@@ -432,6 +649,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             render=_render_calibration_design,
             mode=args.calibration_mode,
             profile_builder=_calibration_profile,
+            skip_groups=() if args.ink_roundtrip else (INK_ROUNDTRIP_GROUP,),
         )
     except CalibrationRenderError as exc:
         failure = {**exc.summary, "calibrationGroup": exc.group_name}
@@ -458,6 +676,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
         "mode": args.calibration_mode,
         "selected_groups": calibration.selected_groups,
+        "skipped_groups": calibration.skipped_groups,
         "residual_profile": calibration.profile,
     }
     _write_json(output / "font_calibration.json", calibration_report)

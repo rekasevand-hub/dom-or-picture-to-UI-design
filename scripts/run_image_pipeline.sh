@@ -14,13 +14,25 @@ fi
 
 cd "$ROOT"
 
-# 默认走阶段二的三路物理分权感知：build_physical_plan（CV 容器 + OCR 文字 +
-# OmniParser 图标）-> fixed_canvas_compiler -> Figma Bridge。
+# 默认走封版路线 omni-cv：三路物理分权感知 build_physical_plan（CV 容器 +
+# OCR 文字 + OmniParser 图标）-> fixed_canvas_compiler -> Figma Bridge / Axure。
 #
 # GROUNDING_FIDELITY_MODE=high / IMAGE_ENRICHMENT_MODE=apply 是第一阶段的
 # 全图 VLM grounding 路线要的开关，默认不再注入：那条路会把 physical_perception
 # 与编译器优化整段绕过去，而 CLI 上完全看不出来。真的要走老路线时显式：
 #   IMAGE_ROUTE=grounding GROUNDING_FIDELITY_MODE=high IMAGE_ENRICHMENT_MODE=apply #     bash scripts/run_image_pipeline.sh --image ... --truth ... --out ...
-ROUTE="${IMAGE_ROUTE:-physical}"
+#
+# 历史名 physical 仍可用（image_figma_mvp 会打印一条弃用提示并映射到 omni-cv）。
+ROUTE="${IMAGE_ROUTE:-omni-cv}"
+
+# 调用方自己给了路线（--route / --route=... / --omni-cv）就不要再补一个：
+# 两个 --route 只是"后者覆盖前者"，读起来像在打架。
+for arg in "$@"; do
+  case "$arg" in
+    --route|--route=*|--omni-cv)
+      exec "$PY" scripts/image_figma_mvp.py "$@"
+      ;;
+  esac
+done
 
 exec "$PY" scripts/image_figma_mvp.py --route "$ROUTE" "$@"

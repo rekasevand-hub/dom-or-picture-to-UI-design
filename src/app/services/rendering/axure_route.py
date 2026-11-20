@@ -10,6 +10,7 @@ from typing import Any
 
 from src.app.services.contracts import (
     build_output_ir,
+    degradations_for,
     project_for_output,
     validate_output_ir,
 )
@@ -424,32 +425,8 @@ def _degradations(
     ir: Mapping[str, Any],
     projection: Mapping[str, Any],
 ) -> list[dict[str, Any]]:
-    fallbacks = {
-        str(item).split("->", 1)[0]: str(item).split("->", 1)[1]
-        for item in projection.get("degraded") or []
-        if "->" in str(item)
-    }
-    nodes = [
-        node
-        for frame in ir.get("frames") or []
-        for node in frame.get("nodes") or []
-        if isinstance(node, Mapping)
-    ]
-    rows = []
-    for feature in projection.get("unsupported_features") or []:
-        affected = sorted(
-            str(node.get("source_node_id") or node.get("node_id") or "")
-            for node in nodes
-            if feature in (node.get("required_features") or [])
-        )
-        rows.append(
-            {
-                "feature": str(feature),
-                "fallback": fallbacks.get(str(feature), "not-implemented"),
-                "source_node_ids": affected,
-            }
-        )
-    return sorted(rows, key=lambda row: row["feature"])
+    """One ledger for both callers — see ``output_ir.degradations_for``."""
+    return degradations_for(ir, projection)
 
 
 def _json_sha256(value: Any) -> str:

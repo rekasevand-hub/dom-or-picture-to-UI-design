@@ -32,6 +32,7 @@ from src.app.services.structure.fidelity.arbitration_store import (  # noqa: E40
 )
 from src.app.services.structure.fidelity.fixed_canvas_compiler import (  # noqa: E402
     _decorate_locked_frames,
+    _insert_under_label,
     _measure_stamp_rotations,
     _wrapped_by_control,
     compile_scene_plan_to_design,
@@ -94,6 +95,56 @@ def _compile(source: Path, plan: dict) -> dict:
 
 
 class TestDecorationAfterLock:
+    def test_a_decoration_under_a_framed_label_joins_that_frame(self) -> None:
+        """A plate drawn for a framed label must paint inside the frame.
+
+        Inserting at the label's flat index is only correct while the label is a
+        root sibling.  When it belongs to a frame, the frame paints at its own
+        (earlier) index, so a flat insert lands *after* the frame and covers the
+        words it was drawn under — wecom-modal's white chip over ``取消``.
+        """
+        label = {"id": "text:label", "type": "text", "x": 10, "y": 10, "width": 40, "height": 20}
+        elements = [
+            {
+                "id": "card:0",
+                "type": "container",
+                "role": "card",
+                "x": 0,
+                "y": 0,
+                "width": 200,
+                "height": 100,
+                "layoutChildren": [{"id": "text:label"}],
+            },
+            {"id": "other", "type": "container", "x": 0, "y": 0, "width": 10, "height": 10},
+            label,
+        ]
+        decoration = {"id": "chip-outline:9:9", "type": "container", "role": "panel"}
+
+        _insert_under_label(elements, label, decoration)
+
+        assert [child.get("id") for child in elements[0]["layoutChildren"]] == [
+            "chip-outline:9:9",
+            "text:label",
+        ]
+        # 装饰层的对象本身仍是叶子：它被帧发射，不是帧。
+        assert not decoration.get("layoutChildren")
+
+    def test_a_root_level_label_keeps_the_decoration_before_it(self) -> None:
+        label = {"id": "text:loose", "type": "text", "x": 10, "y": 10, "width": 40, "height": 20}
+        elements = [
+            {"id": "ground", "type": "container", "role": "page-ground"},
+            label,
+        ]
+        decoration = {"id": "chip-outline:1:1", "type": "container", "role": "panel"}
+
+        _insert_under_label(elements, label, decoration)
+
+        assert [element.get("id") for element in elements] == [
+            "ground",
+            "chip-outline:1:1",
+            "text:loose",
+        ]
+
     def test_decoration_adds_no_frames(self, tmp_path: Path) -> None:
         source = tmp_path / "card.png"
         _card_page(source)

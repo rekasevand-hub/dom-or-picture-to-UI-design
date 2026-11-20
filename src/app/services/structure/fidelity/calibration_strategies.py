@@ -34,6 +34,12 @@ from src.app.services.structure.fidelity.text_calibration import (
 CALIBRATION_MODES = ("legacy", "residual")
 SCHEMA_VERSION = "image-calibration-strategies/1.0"
 
+#: 导出后那一次墨迹回环校准的组名。RapidOCR 的紧框之后它变成了过冲：实测四页
+#: 首轮导出**全线优于**收敛后导出（FluxWeaver 95.39 vs 95.09、inventory 94.14 vs
+#: 94.09、review 93.31 vs 92.99、wecom 96.16 vs 95.86），而它还要多一次真机往返。
+#: 所以默认跳过，开关留在 CLI（``--ink-roundtrip``）；要复现旧口径时再打开。
+INK_ROUNDTRIP_GROUP = "ink-convergence"
+
 
 @dataclass(frozen=True)
 class CalibrationContext:
@@ -73,6 +79,7 @@ class CalibrationPipelineResult:
     reports: dict[str, dict[str, Any]]
     selected_groups: list[str]
     profile: dict[str, Any] | None
+    skipped_groups: list[str] = field(default_factory=list)
 
 
 class CalibrationRenderError(RuntimeError):
@@ -433,12 +440,19 @@ def run_calibration_pipeline(
         [dict[str, Any], Path, dict[str, Any]], Mapping[str, Any] | None
     ]
     | None = None,
+    skip_groups: Sequence[str] = (),
 ) -> CalibrationPipelineResult:
-    """Run selected groups, re-rendering once per group when needed."""
+    """Run selected groups, re-rendering once per group when needed.
+
+    ``skip_groups`` drops a whole group before selection, so a strategy that has
+    stopped paying for itself (the ink roundtrip, since the OCR boxes got tight)
+    cannot re-render the page just to lose a tenth of a point.
+    """
     current_design = design
     current_run_root = run_root
     current_readback = readback
     profile = None
+    skipped = [name for name in skip_groups]
     if mode == "residual":
         if profile_builder is None:
             raise ValueError("residual calibration mode requires profile_builder")
@@ -446,6 +460,8 @@ def run_calibration_pipeline(
     reports: dict[str, dict[str, Any]] = {}
     selected_groups: list[str] = []
     for group in CALIBRATION_GROUPS:
+        if group.name in skip_groups:
+            continue
         if mode == "legacy" or profile is None:
             strategies = group.strategies
         else:
@@ -501,4 +517,5 @@ def run_calibration_pipeline(
         reports=reports,
         selected_groups=selected_groups,
         profile=dict(profile) if profile is not None else None,
+        skipped_groups=skipped,
     )

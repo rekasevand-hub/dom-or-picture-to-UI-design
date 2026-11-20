@@ -30,9 +30,19 @@ from replay_pagegraph import _render, _vision_callable  # noqa: E402
 from src.app.services.structure.fidelity import vlm_arbiter as arbiter  # noqa: E402
 
 
-def _load(tag: str) -> tuple[dict, np.ndarray]:
-    base = ROOT / "output" / f"_phys_{tag}"
-    design = json.loads((base / "figma_design.json").read_text(encoding="utf-8"))
+def _run_dir(tag: str, run: str = "") -> Path:
+    """Where the cold run lives. Defaults to the phase-3 naming."""
+    return Path(run) if run else ROOT / "output" / f"_phys_{tag}"
+
+
+def _load(tag: str, run: str = "", design_name: str = "figma_design_initial.json") -> tuple[dict, np.ndarray]:
+    base = _run_dir(tag, run)
+    # ``figma_design_initial.json`` 是**首轮导出**那一份；``figma_design.json`` 可能已经
+    # 被校准组覆盖过（AtomGit 的 placeholder 组会改两处），拿它做 A 组等于换了起点。
+    path = base / design_name
+    if not path.is_file():
+        path = base / "figma_design.json"
+    design = json.loads(path.read_text(encoding="utf-8"))
     reference = json.loads(
         (base / "pipeline" / "image_reference.json").read_text(encoding="utf-8")
     )
@@ -63,13 +73,19 @@ def main() -> int:
     parser.add_argument("--mode", choices=("A", "B"), required=True)
     parser.add_argument("--rounds", type=int, default=2)
     parser.add_argument("--out", default="")
+    parser.add_argument("--run", default="", help="cold-run directory (default output/_phys_<tag>)")
+    parser.add_argument(
+        "--design-name",
+        default="figma_design_initial.json",
+        help="design file inside the run (falls back to figma_design.json)",
+    )
     parser.add_argument("--emit", action="store_true", help="push to Figma and score")
     args = parser.parse_args()
 
     out = Path(args.out or (ROOT / "output" / f"_arb{args.mode}_{args.tag}"))
     out.mkdir(parents=True, exist_ok=True)
 
-    design, truth = _load(args.tag)
+    design, truth = _load(args.tag, args.run, args.design_name)
     started = time.time()
     report: dict = {"tag": args.tag, "mode": args.mode, "rounds": args.rounds}
 
@@ -96,6 +112,8 @@ def main() -> int:
             propose_wireframe=lambda candidates, panels: vision(
                 arbiter.wireframe_prompt(candidates), panels
             ),
+            # 每轮开头先做一次整页并排巡检，再和像素 Top-K 一起进同一套补丁。
+            propose_sweep=lambda prompt, panels: vision(prompt, panels),
             rounds=args.rounds,
         )
         design = working
@@ -104,7 +122,7 @@ def main() -> int:
     (out / "12_design.json").write_text(
         json.dumps(design, ensure_ascii=False, indent=1), encoding="utf-8"
     )
-    picture = Path(str(json.loads((ROOT / "output" / f"_phys_{args.tag}" / "pipeline" / "image_reference.json").read_text(encoding="utf-8"))["input"]["path"]))
+    picture = Path(str(json.loads((_run_dir(args.tag, args.run) / "pipeline" / "image_reference.json").read_text(encoding="utf-8"))["input"]["path"]))
     if not picture.is_absolute():
         picture = ROOT / picture
     (out / "00_screenshot.png").write_bytes(picture.read_bytes())
