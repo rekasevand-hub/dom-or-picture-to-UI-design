@@ -404,8 +404,11 @@ def _ink_color(encoded: Any) -> tuple[int, int, int]:
         image = Image.open(io.BytesIO(base64.b64decode(text))).convert("RGBA")
     except (ValueError, TypeError, OSError):
         return (102, 102, 102)
+    # Pillow 12 renamed getdata() to get_flattened_data(); older builds have only
+    # the first, so ask for the new name and fall back rather than pin a version.
+    read = getattr(image, "get_flattened_data", None) or image.getdata
     candidates = []
-    for red, green, blue, alpha in image.get_flattened_data():
+    for red, green, blue, alpha in read():
         luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue
         if alpha >= 32 and luminance < 220:
             candidates.append((red, green, blue))

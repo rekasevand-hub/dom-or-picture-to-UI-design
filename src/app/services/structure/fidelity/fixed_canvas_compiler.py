@@ -21,6 +21,11 @@ from src.app.services.structure.fidelity.container_manifest import (
     build_container_manifest,
 )
 from src.app.services.structure.fidelity.contracts import normalize_bbox
+from src.app.services.structure.fidelity.post_frame_align import (
+    align_baselines,
+    align_frame_columns,
+    calibrate_ink_span,
+)
 from src.app.services.structure.fidelity.style_resolver import resolve_text_style
 
 
@@ -365,6 +370,31 @@ def _control_element(
     return element
 
 
+def _matte_payload(
+    node: Mapping[str, Any],
+    image_path: str,
+    x: int,
+    y: int,
+    box_width: int,
+    box_height: int,
+    width: int,
+    height: int,
+) -> tuple[str | None, dict[str, Any]]:
+    """Cut this crop out of its rectangle, if the pixels say it is isolated."""
+    from src.app.services.structure.fidelity import alpha_matte
+
+    return alpha_matte.matte_png_b64(
+        image_path,
+        x,
+        y,
+        box_width,
+        box_height,
+        width,
+        height,
+        role=str(node.get("role") or ""),
+    )
+
+
 def _image_element(
     node: Mapping[str, Any],
     *,
@@ -386,6 +416,14 @@ def _image_element(
         width,
         height,
     )
+    # 异形插画：裁片的四角带着它所在卡片的底色，一旦它下面那张面被重建成
+    # 渐变或别的颜色，这四个角就变成一个看得见的方框。抠图只在"边框确实是
+    # 平坦背景"时才做，判定全在 alpha_matte 里，这里只负责换 payload。
+    matte_payload, matte_evidence = _matte_payload(
+        node, image_path, x, y, box_width, box_height, width, height
+    )
+    if matte_payload:
+        payload = matte_payload
     digest = hashlib.sha256(base64.b64decode(payload)).hexdigest() if payload else None
     screenshot_sha = str(reference["input"]["sha256"])
     record = build_asset_record(
@@ -406,7 +444,7 @@ def _image_element(
             screenshot_sha256=screenshot_sha,
             display_box=(x, y, box_width, box_height),
         )
-    return {
+    element = {
         "id": str(node.get("id") or f"image-{index}"),
         "type": "image",
         "x": x,
@@ -436,6 +474,9 @@ def _image_element(
             "generated": False,
         },
     }
+    if matte_payload:
+        element["alphaMatte"] = matte_evidence
+    return element
 
 
 def _source_chrome_right_rail(
@@ -1063,9 +1104,13 @@ def _container_element(
     # Border and corner radius live in the pixels, not in the plan: the
     # renderer accepts both, but nothing was feeding them, so every card came
     # out as a flat rectangle with no edge and square corners.
-    style.update(
-        sample_container_decoration(image_path, render_bbox, style["fillColor"])
-    )
+    if role != "table":
+        # 表格是格线切出来的结构，不是一张卡：采样出的圆角与描边会把表格四角
+        # 削掉、四周多出一圈原图没有的框。表头带与本体的边界不在四角，削掉的
+        # 只是真角。
+        style.update(
+            sample_container_decoration(image_path, render_bbox, style["fillColor"])
+        )
     element = {
         "id": str(node.get("id") or ""),
         "type": "container",
@@ -1141,6 +1186,10 @@ def _table_decorations(
     # 之前无条件画，推断出来的"无框表格"会被加上一整套格子线，反而更假。
     draw_header = bool(grid.get("header", True)) if isinstance(grid, Mapping) else True
     draw_verticals = bool(grid.get("verticals", True)) if isinstance(grid, Mapping) else True
+    # 装饰的颜色也来自原图。硬编码的 #fbfcfd / #e7ecf1 只是"大多数表格长这样"，
+    # 而计划里现在带着实测值：表头带的中位色、分隔线的中位色。
+    header_fill = str((grid or {}).get("headerColor") or "#fbfcfd") if isinstance(grid, Mapping) else "#fbfcfd"
+    line_fill = str((grid or {}).get("lineColor") or "#e7ecf1") if isinstance(grid, Mapping) else "#e7ecf1"
     decorations: list[dict[str, Any]] = []
     if draw_header:
         decorations.append(
@@ -1152,7 +1201,7 @@ def _table_decorations(
                 "width": box_width,
                 "height": header_height,
                 "text": "",
-                "style": {"fillColor": "#fbfcfd"},
+                "style": {"fillColor": header_fill},
                 "role": "table-header",
                 "contentRef": None,
             }
@@ -1167,7 +1216,7 @@ def _table_decorations(
                 "width": 1,
                 "height": box_height,
                 "text": "",
-                "style": {"fillColor": "#e7ecf1"},
+                "style": {"fillColor": line_fill},
                 "role": "table-grid",
                 "contentRef": None,
             }
@@ -1185,7 +1234,7 @@ def _table_decorations(
                 "width": box_width,
                 "height": 1,
                 "text": "",
-                "style": {"fillColor": "#e7ecf1"},
+                "style": {"fillColor": line_fill},
                 "role": "table-grid",
                 "contentRef": None,
             }
@@ -1426,6 +1475,7 @@ def _has_nested_container(
     nearly identically (one is a duplicate rectangle); the poorer one keeps
     zero members and is dropped as a frame candidate, and counting it here
     would block its parent forever with no orphan to protect.
+
     """
     for index in children:
         if str(elements[index].get("type")) != "container":
@@ -1434,6 +1484,15 @@ def _has_nested_container(
             continue
         if members is not None and not members.get(index):
             continue
+        # 一个**自己不涂色**、又永远成不了帧的子容器也豁免。等它等于永远不等：
+        # 成帧要两个成员，单成员的行带永远过不去，于是父帧被它拖着一起不作数
+        # ——wecom-modal 的弹窗就是这么被一条单成员 row 卡成零帧的。
+        # 判据是"涂不涂色"而不是"有几个成员"：一条透明行带被父帧包住，像素上
+        # 什么也不会变；一块不透明底板被包住，就会被父帧的底色吞掉（实测把
+        # 不透明的也算进来，inventory 10→7、AtomGit 13→12）。
+        if members is not None and len(members.get(index) or ()) < 2:
+            if not _background_fill(elements[index]):
+                continue
         return True
     return False
 
@@ -1588,6 +1647,261 @@ def _frame_closure(
 
     walk(root)
     return seen
+
+
+#: 标签底板允许比它所在帧大出这么多像素。再多就不是"垫在按钮里的底色"，
+#: 而是一块铺到卡片外面的面。
+PLATE_SNAP = 4
+
+
+def _adopt_label_plates(elements: list[dict[str, Any]]) -> int:
+    """A label's plate belongs inside the frame around that label.
+
+    A text-backdrop is cut from the picture at the label it sits under, so its
+    box is the plate's real box — often two pixels taller than the button frame
+    that a container probe measured.  Those two pixels are enough to keep it out
+    of the frame, and ``paint_order`` then appends a non-member that overlaps the
+    frame's run to the *end* of it: the blue plate painted after the white
+    "刷新", which turned the button into an empty blue block with no words.
+
+    Adopting it is the fix that matches what the plate is for: stretch the frame
+    to the plate (a couple of pixels, which is the frame being measured short)
+    and make the plate its member.  Then the batch paints panel before words,
+    and the text lands on its own plate.
+
+    Refused beyond ``PLATE_SNAP``: a plate that big is a surface, not a button's
+    ground, and stretching a frame over it would swallow its neighbours.
+    """
+    by_id = {str(element.get("id") or ""): index for index, element in enumerate(elements)}
+    adopted = 0
+    for index, element in enumerate(elements):
+        if str(element.get("role") or "") != "text-backdrop":
+            continue
+        plate = _layout_rect(element)
+        if plate is None:
+            continue
+        for frame_index, frame in enumerate(elements):
+            children = frame.get("layoutChildren")
+            if not children:
+                continue
+            box = _layout_rect(frame)
+            if box is None:
+                continue
+            members = [
+                by_id.get(str(child.get("id") or "")) for child in children if isinstance(child, dict)
+            ]
+            # 底板要装得下帧里的一颗字，才算那颗字的底。
+            holds_label = False
+            for member in members:
+                if member is None or member >= len(elements):
+                    continue
+                other = elements[member]
+                if str(other.get("type")) != "text" or not str(other.get("text") or "").strip():
+                    continue
+                text_box = _layout_rect(other)
+                if text_box is not None and _rect_contains(plate, text_box, tolerance=2):
+                    holds_label = True
+                    break
+            if not holds_label:
+                continue
+            overhang = max(
+                box[0] - plate[0],
+                box[1] - plate[1],
+                (plate[0] + plate[2]) - (box[0] + box[2]),
+                (plate[1] + plate[3]) - (box[1] + box[3]),
+            )
+            if overhang > PLATE_SNAP:
+                continue
+            union = (
+                min(box[0], plate[0]),
+                min(box[1], plate[1]),
+                max(box[0] + box[2], plate[0] + plate[2]),
+                max(box[1] + box[3], plate[1] + plate[3]),
+            )
+            frame["x"], frame["y"] = float(union[0]), float(union[1])
+            frame["width"], frame["height"] = float(union[2] - union[0]), float(union[3] - union[1])
+            frame["layoutChildren"] = list(children) + [{"id": str(element.get("id") or "")}]
+            element["plateOf"] = str(elements[members[0]].get("id") or "") if members else ""
+            adopted += 1
+            break
+    return adopted
+
+
+#: 同一行上两段文字之间至少留这么多像素的净空，否则读起来就是撞在一起。
+INLINE_TEXT_GAP = 2
+#: 收敛下限。再小就不是"收一点"，而是换了一种排版——那种情况下错的是框，不是字号。
+INLINE_SHRINK_FLOOR = 0.80
+#: 同一基线上、水平间距不超过它、且高度相近的片段，是同一段话被切成了几块。
+INLINE_FRAGMENT_GAP = 16
+#: 片段高度比超过它，就不是同一级文字（标题旁边的小徽章、单位、角标）。
+INLINE_FRAGMENT_HEIGHT = 1.33
+#: 字号差小于这个比例就算一致，不必动。
+INLINE_FRAGMENT_SIZE = 0.10
+#: 容器右侧的内留白。
+INLINE_CONTAINER_PAD = 8
+
+
+def _fit_locked_text_geometry(elements: list[dict[str, Any]]) -> dict[str, int]:
+    """Three text-geometry repairs that may not touch structure.
+
+    They run after the frames are locked, so all they change is ``fontSize`` —
+    a frame's membership, its box and the paint order stay exactly as approved.
+    That is the whole point: every one of these defects used to be repaired by
+    moving boxes, which is what turned a text fix into a lost frame.
+
+    * **Same line, cut into pieces** — ``库存总量:1773`` and ``可用库存:…`` are one
+      sentence the OCR cut at a space; measured separately their ink gives two
+      sizes (19.0 against 22.25 on one baseline).  Adjacent fragments of similar
+      height are one run of text, so they share the median size.
+    * **Neighbour collision** — the estimated painted width of the left word
+      reaches into the right word's start.  Boxes do not overlap (OCR boxes are
+      tight to ink), the glyphs do.  The left word shrinks into the gap.
+    * **Container overflow** — a line whose painted width leaves its own card.
+      review's first paragraph ran past the white card's right edge by 40px.
+
+    Never below ``INLINE_SHRINK_FLOOR``: if the fit needs more than a fifth off,
+    the box is wrong, not the type, and shrinking would only hide it.
+    """
+    from src.app.services.structure.fidelity.font_metrics import text_width
+
+    rects = [_layout_rect(element) for element in elements]
+    texts = [
+        index
+        for index, element in enumerate(elements)
+        if str(element.get("type")) == "text"
+        and str(element.get("text") or "").strip()
+        and rects[index] is not None
+    ]
+    # 一个文本也要走：容器内右键溢出与"同句被切块"无关，单行页面同样会越界。
+    if not texts:
+        return {"unified": 0, "collisions": 0, "overflows": 0}
+    containers = [
+        index
+        for index, element in enumerate(elements)
+        if str(element.get("type")) in ("container", "table")
+        and rects[index] is not None
+    ]
+
+    def owner_of(index: int) -> int | None:
+        x, y, w, h = rects[index]
+        centre = (x + w / 2.0, y + h / 2.0)
+        best: int | None = None
+        best_area: float | None = None
+        for candidate in containers:
+            if candidate == index:
+                continue
+            cx, cy, cw, ch = rects[candidate]
+            if not (cx <= centre[0] <= cx + cw and cy <= centre[1] <= cy + ch):
+                continue
+            area = float(cw * ch)
+            if best_area is None or area < best_area:
+                best, best_area = candidate, area
+        return best
+
+    def size_of(index: int) -> float:
+        return float((elements[index].get("style") or {}).get("fontSize") or 0.0)
+
+    def set_size(index: int, size: float) -> None:
+        style = elements[index].setdefault("style", {})
+        style["fontSize"] = max(6.0, round(size * 4) / 4)
+
+    def same_line(first: int, second: int) -> bool:
+        ax, ay, aw, ah = rects[first]
+        bx, by, bw, bh = rects[second]
+        overlap = min(ay + ah, by + bh) - max(ay, by)
+        return overlap >= 0.5 * min(ah, bh)
+
+    # 1) 同一段话被切成几块：同一基线、紧挨着、高度相近的片段共用一个字号。
+    unified = 0
+    ordered = sorted(texts, key=lambda index: (rects[index][0], rects[index][1]))
+    clusters: list[list[int]] = []
+    for index in ordered:
+        for cluster in clusters:
+            last = cluster[-1]
+            if not same_line(last, index):
+                continue
+            gap = rects[index][0] - (rects[last][0] + rects[last][2])
+            if gap < 0 or gap > INLINE_FRAGMENT_GAP:
+                continue
+            heights = (rects[last][3], rects[index][3])
+            if max(heights) / max(1.0, min(heights)) > INLINE_FRAGMENT_HEIGHT:
+                continue
+            cluster.append(index)
+            break
+        else:
+            clusters.append([index])
+    for cluster in clusters:
+        if len(cluster) < 2:
+            continue
+        sizes = [size_of(index) for index in cluster]
+        if min(sizes) <= 0:
+            continue
+        if max(sizes) / min(sizes) <= 1.0 + INLINE_FRAGMENT_SIZE:
+            continue
+        ordered_sizes = sorted(sizes)
+        target = ordered_sizes[len(ordered_sizes) // 2]
+        for index, size in zip(cluster, sizes):
+            if abs(target - size) < 0.25:
+                continue
+            set_size(index, target)
+            unified += 1
+
+    # 2) 邻接撞字 + 3) 容器内右溢出：都换算成"这一行最多能有多宽"，取最紧的那个。
+    collisions = overflows = 0
+    for index in texts:
+        size = size_of(index)
+        if size <= 0:
+            continue
+        text = str(elements[index].get("text") or "")
+        painted = text_width(text, size)
+        if painted <= 0:
+            continue
+        x, y, w, h = rects[index]
+        owner = owner_of(index)
+        available: float | None = None
+        reason = ""
+        for other in texts:
+            if other == index or not same_line(index, other):
+                continue
+            ox = rects[other][0]
+            if ox <= x:
+                continue
+            if owner_of(other) != owner:
+                continue
+            limit = ox - x - INLINE_TEXT_GAP
+            if limit <= 0:
+                continue
+            if painted > limit and (available is None or limit < available):
+                available = float(limit)
+                reason = "collision"
+        if owner is not None and len(text) >= 2:
+            cx, cy, cw, ch = rects[owner]
+            # 只收"正文"：容器得明显比这行字宽，否则它是个贴身的芯片
+            # （`G`、`★`、`库位`），字号由芯片定、不由宽度定——实测这两类
+            # 混在一起时，收的是芯片里的单字，白改。
+            if w <= cw * 0.95 and cw >= w * 1.2:
+                limit = (cx + cw - INLINE_CONTAINER_PAD) - x
+                if limit > 0 and painted > limit and (available is None or limit < available):
+                    available = float(limit)
+                    reason = "overflow"
+        if available is None or painted <= available:
+            continue
+        scale = max(INLINE_SHRINK_FLOOR, available / painted)
+        if scale >= 0.995:
+            continue
+        set_size(index, size * scale)
+        elements[index].setdefault("inlineEvidence", {})["shrunk"] = {
+            "from": round(size, 2),
+            "to": round(size * scale, 2),
+            "available": round(available, 1),
+            "painted": round(painted, 1),
+            "why": reason,
+        }
+        if reason == "collision":
+            collisions += 1
+        else:
+            overflows += 1
+    return {"unified": unified, "collisions": collisions, "overflows": overflows}
 
 
 def _lift_frame_overlays(
@@ -2619,6 +2933,11 @@ def _snap_text_to_ocr(
                 best = (distance, line_box)
         if best is None or best[0] <= TEXT_SNAP_MIN_SHIFT:
             continue
+        # 位移必须有上限。"量歪了原点"是几十像素的事；差出一整个版面，说明那是
+        # 同一句话在页面另一处的另一份（marketplace 左右两张卡都有"看详情"），
+        # 吸过去就是把左边那颗字搬到右边，然后被去重删掉——左边的按钮就空了。
+        if best[0] > max(box[2] * 2, TEXT_SNAP_MAX_SHIFT):
+            continue
         element["x"] = best[1][0]
         element["width"] = max(1, best[1][2])
         # The box no longer decides where the line starts: OCR does.  A right
@@ -2668,466 +2987,14 @@ CONTROL_REANCHOR_MIN_SHIFT = 80
 ROW_ATTACH_MAX = 160
 
 
-def _table_roots(
-    elements: list[dict[str, Any]],
-) -> tuple[list[int | None], list[tuple[int, int, int, int] | None]]:
-    """Owner chain plus, for each element, the table that contains it."""
-    rects = [
-        _layout_rect(element) if str(element.get("type")) in _LAYOUT_MEMBER_TYPES else None
-        for element in elements
-    ]
-    containers = {
-        index
-        for index, element in enumerate(elements)
-        if str(element.get("type")) in ("container", "table")
-    }
-    owners = [
-        _owner_index(rects, index, parent_candidates=containers) if rects[index] else None
-        for index in range(len(elements))
-    ]
-    roots: list[int | None] = []
-    for index in range(len(elements)):
-        current = owners[index]
-        seen: set[int] = set()
-        found = None
-        while current is not None and current not in seen:
-            element = elements[current]
-            if str(element.get("type")) == "table" or str(element.get("id") or "").startswith(
-                "table-node:"
-            ):
-                found = current
-                break
-            seen.add(current)
-            current = owners[current] if current < len(owners) else None
-        roots.append(found)
-    return roots, rects
 
 
-def _repartition_table_rows(
-    elements: list[dict[str, Any]],
-    observations: Sequence[Mapping[str, Any]] | None,
-) -> int:
-    """Rebuild one table row's columns from where its words actually are.
-
-    A detected grid can put a row's columns at the extremes — the inventory
-    header came back as 383 / 408 / 435 / 2492 / 2519 while the words are at
-    626 / 844 / 1064 / 1274 / 1548 — leaving five labels in 25px columns and a
-    pair swapped end for end.  Per-cell nudging cannot fix that: widening one
-    cell pushes it into its neighbour and the renderer refuses the whole table
-    (measured: inventory2 lost two frames).
-
-    So the row is rebuilt as a whole.  Each cell takes its column from the
-    midpoint between its own words and the next cell's words, the first column
-    starts at the row's left edge and the last ends at its right edge.  The
-    result is contiguous by construction, so no cell can overlap another.
-
-    Only OCR whose centre lies inside the table is considered.  Without that
-    filter a sidebar label that happens to share a word with a cell would drag
-    a column out of the table entirely.
-    """
-    if not observations:
-        return 0
-    from src.app.services.structure.fidelity.contracts import (
-        normalize_match_text,
-        owner_text_similarity,
-    )
-
-    # Headers only.  A data row's columns must agree with the header's, and
-    # re-slicing one independently produced columns that no longer lined up
-    # with anything — on inventory2 it cost two frames.  The header is the row
-    # that gets to define them.
-    cells = [
-        index
-        for index, element in enumerate(elements)
-        if str(element.get("contentRef") or element.get("id") or "").startswith(
-            "table-header:"
-        )
-        and element.get("text")
-    ]
-    if len(cells) < ROW_REPARTITION_MIN_MATCHES:
-        return 0
-    roots, rects = _table_roots(elements)
-
-    lines: list[tuple[str, tuple[int, int, int, int]]] = []
-    for observation in observations:
-        if not isinstance(observation, Mapping):
-            continue
-        text = normalize_match_text(observation.get("text"))
-        box = observation.get("bbox")
-        if not text or not isinstance(box, (list, tuple)) or len(box) != 4:
-            continue
-        try:
-            values = tuple(int(round(float(value))) for value in box)
-        except (TypeError, ValueError):
-            continue
-        if values[2] <= 0 or values[3] <= 0:
-            continue
-        lines.append((text, values))  # type: ignore[arg-type]
-
-    # Group by where the words are, not by where the cells currently sit.  A
-    # half-corrected row has some cells on the real baseline and others still
-    # on the grid's, and grouping by the cell would split one row in two.
-    #
-    # The table is taken from the *words*, not from the cell: a cell measured
-    # below the table's own rectangle has no table in its owner chain at all,
-    # and that is exactly the label that stays adrift (inventory2's "失效日期",
-    # 112px under its row).  Its OCR line is inside the table, so the line knows
-    # where the cell belongs even though the cell does not.
-    tables = [
-        index
-        for index, element in enumerate(elements)
-        if str(element.get("type")) == "table"
-        or str(element.get("id") or "").startswith("table-node:")
-    ]
-
-    def table_at(line_box: tuple[int, int, int, int]) -> int | None:
-        centre_x = line_box[0] + line_box[2] / 2
-        centre_y = line_box[1] + line_box[3] / 2
-        best: tuple[int, int] | None = None
-        for table in tables:
-            box = rects[table]
-            if box is None:
-                continue
-            if not (
-                box[0] <= centre_x <= box[0] + box[2]
-                and box[1] <= centre_y <= box[1] + box[3]
-            ):
-                continue
-            area = box[2] * box[3]
-            if best is None or area < best[0]:
-                best = (area, table)
-        return best[1] if best else None
-
-    bands: dict[tuple[int, int], list[tuple[int, tuple[int, int, int, int]]]] = {}
-    for index in cells:
-        box = rects[index]
-        if box is None:
-            continue
-        text = normalize_match_text(elements[index].get("text"))
-        if not text:
-            continue
-        best = None
-        for line_text, line_box in lines:
-            if line_text != text and owner_text_similarity(line_text, text) < 0.85:
-                continue
-            if abs((line_box[1] + line_box[3] / 2) - (box[1] + box[3] / 2)) > ROW_ATTACH_MAX:
-                continue
-            owner = table_at(line_box)
-            if owner is None:
-                # Nothing in the picture claims these words: fall back to the
-                # cell's own table, and only if it really contains them.
-                owner = roots[index]
-                table_box = rects[owner] if owner is not None else None
-                centre_x = line_box[0] + line_box[2] / 2
-                centre_y = line_box[1] + line_box[3] / 2
-                if table_box is None or not (
-                    table_box[0] <= centre_x <= table_box[0] + table_box[2]
-                    and table_box[1] <= centre_y <= table_box[1] + table_box[3]
-                ):
-                    continue
-            # Nearest line on both axes, weighted towards y: two tables can
-            # carry the same header words at the same x, and only the row they
-            # sit on tells them apart.
-            score = abs(
-                (line_box[1] + line_box[3] / 2) - (box[1] + box[3] / 2)
-            ) + 0.25 * abs((line_box[0] + line_box[2] / 2) - (box[0] + box[2] / 2))
-            if best is None or score < best[0]:
-                best = (score, line_box, owner)
-        if best is None:
-            continue
-        bands.setdefault((best[2], int(round(best[1][1] / ROW_BAND))), []).append(
-            (index, best[1])
-        )
-
-    rebuilt = 0
-    column_plans: dict[int, list[int]] = {}
-    for (root, _band), group in bands.items():
-        if len(group) < ROW_REPARTITION_MIN_MATCHES:
-            continue
-        table_box = rects[root]
-        if table_box is None:
-            continue
-        members = [index for index, _line in group]
-        # The words decide whether these cells are one row.  Where the *cells*
-        # were measured is the thing being repaired, so a cell sitting a
-        # hundred pixels below its own words is an outlier to pull back, not a
-        # reason to leave the whole row mis-columned — that is how the
-        # inventory2 header kept five squeezed columns and one label adrift.
-        line_tops = [line[1] for _index, line in group]
-        if max(line_tops) - min(line_tops) > ROW_SPREAD_MAX:
-            continue
-        matches = group
-        shift = max(
-            abs((rects[index][0] + rects[index][2] / 2) - (line[0] + line[2] / 2))
-            for index, line in matches
-        )
-        vertical = max(abs(rects[index][1] - line[1]) for index, line in matches)
-        if shift <= ROW_REPARTITION_MIN_SHIFT and vertical <= ROW_REPARTITION_MIN_SHIFT:
-            continue
-
-        matches.sort(key=lambda pair: pair[1][0])
-        cell_tops = sorted(rects[index][1] for index in members)
-        top = cell_tops[len(cell_tops) // 2]
-        inliers = [
-            index for index in members if abs(rects[index][1] - top) <= ROW_SPREAD_MAX
-        ]
-        if not inliers:
-            continue
-        bottom = max(rects[index][1] + rects[index][3] for index in inliers)
-
-        left = min(rects[index][0] for index in members)
-        right = max(rects[index][0] + rects[index][2] for index in members)
-        left = max(left, table_box[0])
-        right = min(right, table_box[0] + table_box[2])
-        if right - left < ROW_REPARTITION_MIN_WIDTH * len(matches):
-            continue
-        # Midpoints between neighbouring words, walked left to right and forced
-        # to stay at least one readable column apart.  The row is then a
-        # partition by construction: `cell[i].right == cell[i+1].left`, nothing
-        # overlaps, and nothing leaves the table.
-        boundaries = [left]
-        for position in range(len(matches) - 1):
-            first = matches[position][1]
-            second = matches[position + 1][1]
-            boundary = (first[0] + first[2] + second[0]) // 2
-            boundaries.append(max(boundary, boundaries[-1] + ROW_REPARTITION_MIN_WIDTH))
-        boundaries.append(right)
-        if boundaries[-1] < boundaries[-2] + ROW_REPARTITION_MIN_WIDTH:
-            continue
-
-        for position, (index, _line) in enumerate(matches):
-            element = elements[index]
-            element["x"] = boundaries[position]
-            element["width"] = max(1, boundaries[position + 1] - boundaries[position])
-            element["y"] = top
-            element["height"] = max(18, bottom - top)
-            style = element.get("style")
-            if isinstance(style, dict):
-                style["textAlign"] = "center"
-            rebuilt += 1
-        column_plans[root] = boundaries
-
-    rebuilt += _apply_column_plans(elements, rects, roots, lines, column_plans)
-    return rebuilt
 
 
-def _apply_column_plans(
-    elements: list[dict[str, Any]],
-    rects: Sequence[tuple[int, int, int, int] | None],
-    roots: Sequence[int | None],
-    lines: Sequence[tuple[str, tuple[int, int, int, int]]],
-    column_plans: Mapping[int, list[int]],
-) -> int:
-    """Lay a table's data rows out on the columns its header just defined.
-
-    Repairing the header alone leaves the body where the grid put it: in the
-    inventory2 first table the five values stayed in 20px boxes hard against
-    the table's edges and painted as a smudge under 生产日期/失效日期.  The
-    header is the row that knows the columns; the body only has to keep its own
-    left-to-right order.
-
-    Order is all a body row can be trusted for.  OCR says where the sequence
-    *starts* — the cells it reads land on known columns — and the offset those
-    agree on carries the rest, including values no OCR line ever saw.
-    """
-    if not column_plans:
-        return 0
-    from src.app.services.structure.fidelity.contracts import (
-        normalize_match_text,
-        owner_text_similarity,
-    )
-
-    grouped: dict[int, list[int]] = {}
-    for index, element in enumerate(elements):
-        if not str(element.get("contentRef") or "").startswith("table-cell:"):
-            continue
-        if not str(element.get("text") or "").strip():
-            continue
-        root = roots[index] if index < len(roots) else None
-        box = rects[index]
-        if root is None or root not in column_plans or box is None:
-            continue
-        grouped.setdefault(root, []).append(index)
-
-    laid_out = 0
-    for root, members in grouped.items():
-        boundaries = column_plans[root]
-        columns = len(boundaries) - 1
-        if columns < 2:
-            continue
-        members.sort(key=lambda index: rects[index][1])  # type: ignore[index]
-        rows: list[list[int]] = []
-        for index in members:
-            top = rects[index][1]  # type: ignore[index]
-            if rows and abs(top - rects[rows[-1][0]][1]) <= ROW_SPREAD_MAX:  # type: ignore[index]
-                rows[-1].append(index)
-            else:
-                rows.append([index])
-        for row in rows:
-            if len(row) < 2:
-                continue
-            ordered = sorted(row, key=lambda index: rects[index][0])  # type: ignore[index]
-            anchors: list[int] = []
-            for rank, index in enumerate(ordered):
-                text = normalize_match_text(elements[index].get("text"))
-                box = rects[index]
-                if not text or box is None:
-                    continue
-                centre = box[0] + box[2] / 2
-                row_centre = box[1] + box[3] / 2
-                best: tuple[float, int] | None = None
-                for line_text, line_box in lines:
-                    if line_text != text and owner_text_similarity(line_text, text) < 0.85:
-                        continue
-                    if abs((line_box[1] + line_box[3] / 2) - row_centre) > ROW_ATTACH_MAX:
-                        continue
-                    column = _column_of(line_box[0] + line_box[2] / 2, boundaries)
-                    if column is None:
-                        continue
-                    distance = abs((line_box[0] + line_box[2] / 2) - centre)
-                    if best is None or distance < best[0]:
-                        best = (distance, column)
-                if best is not None:
-                    anchors.append(best[1] - rank)
-            if len(anchors) < 2:
-                continue
-            anchors.sort()
-            offset = anchors[len(anchors) // 2]
-            # The sequence has to agree with the words, or the row is not a
-            # row — a merged cell or a second line would land on nonsense.
-            if sum(1 for value in anchors if abs(value - offset) <= 1) < len(anchors) - 1:
-                continue
-            top = min(rects[index][1] for index in row)  # type: ignore[index]
-            bottom = max(rects[index][1] + rects[index][3] for index in row)  # type: ignore[index]
-            width_rows: list[tuple[int, int, int, int]] = []
-            for rank, index in enumerate(ordered):
-                column = rank + offset
-                if not 0 <= column < columns:
-                    continue
-                width_rows.append(
-                    (
-                        index,
-                        boundaries[column],
-                        max(1, boundaries[column + 1] - boundaries[column]),
-                        column,
-                    )
-                )
-            # Overlapping assignments mean the offset is wrong for this row.
-            seen: set[int] = set()
-            if any(column in seen or seen.add(column) for _i, _x, _w, column in width_rows):
-                continue
-            for index, x, width, _column in width_rows:
-                element = elements[index]
-                element["x"] = x
-                element["width"] = width
-                element["y"] = top
-                element["height"] = max(18, bottom - top)
-                style = element.get("style")
-                if isinstance(style, dict):
-                    style["textAlign"] = "center"
-                laid_out += 1
-    return laid_out
 
 
-def _column_of(centre: float, boundaries: Sequence[int]) -> int | None:
-    for column in range(len(boundaries) - 1):
-        if boundaries[column] <= centre <= boundaries[column + 1]:
-            return column
-    return None
 
 
-def _fit_table_text(
-    elements: list[dict[str, Any]],
-    observations: Sequence[Mapping[str, Any]] | None,
-    pixels,
-) -> int:
-    """Size table text by its ink, not by the cell it sits in.
-
-    A cell box is a grid interval.  When the grid is coarse — a narrow column
-    that spans two rows, a header band measured 73px tall — deriving the font
-    from the box height produces 40-55px type in a 20px column, which then
-    wraps one glyph per line.  Ink is the only honest measure: the OCR line
-    when the same words were read, otherwise the foreground mask inside the
-    cell itself.
-
-    Geometry is left alone on purpose: widening a cell to its ink pushes it
-    over a neighbour, and the renderer then refuses the whole table for
-    covering a stranger — measured on inventory2, two frames went that way.
-    A column narrower than its own text is a grid problem, and shrinking the
-    type is the part that can be fixed without moving anything.
-    """
-    cells = [
-        element
-        for element in elements
-        if str(element.get("contentRef") or element.get("id") or "").startswith(
-            TABLE_TEXT_PREFIXES
-        )
-        and element.get("text")
-    ]
-    if not cells:
-        return 0
-    from src.app.services.structure.fidelity.contracts import normalize_match_text
-
-    lines: list[tuple[str, tuple[int, int, int, int]]] = []
-    for observation in observations or []:
-        if not isinstance(observation, Mapping):
-            continue
-        text = normalize_match_text(observation.get("text"))
-        box = observation.get("bbox")
-        if not text or not isinstance(box, (list, tuple)) or len(box) != 4:
-            continue
-        try:
-            values = tuple(int(round(float(value))) for value in box)
-        except (TypeError, ValueError):
-            continue
-        if values[2] <= 0 or values[3] <= 0:
-            continue
-        lines.append((text, values))  # type: ignore[arg-type]
-
-    resized = 0
-    for element in cells:
-        box = _layout_rect(element)
-        if box is None:
-            continue
-        text = normalize_match_text(element.get("text"))
-        ink = None
-        for line_text, line_box in lines:
-            if line_text == text:
-                ink = line_box
-                break
-        if ink is None:
-            ink = _measure_ink(pixels, box)
-        if ink is None:
-            continue
-        font = max(TABLE_FONT_MIN, min(TABLE_FONT_MAX, round(ink[3] * INK_TO_FONT * 4) / 4))
-        style = element.get("style")
-        if not isinstance(style, dict):
-            continue
-        style["fontSize"] = font
-        style["lineHeight"] = max(
-            int(round(font * 1.35)), int(style.get("lineHeight") or 0)
-        )
-        resized += 1
-
-    # A row of cells shares one type size.  Anything far from the row median is
-    # still a bad box measurement, and clamping to the median is what keeps a
-    # single narrow cell from shouting.
-    rows: dict[int, list[dict[str, Any]]] = {}
-    for element in cells:
-        style = element.get("style")
-        if not isinstance(style, dict) or not style.get("fontSize"):
-            continue
-        rows.setdefault(int(round(element["y"] / 10.0)), []).append(element)
-    for row in rows.values():
-        if len(row) < 2:
-            continue
-        sizes = sorted(float(element["style"]["fontSize"]) for element in row)
-        median = sizes[len(sizes) // 2]
-        for element in row:
-            size = float(element["style"]["fontSize"])
-            if size > median * 1.35 or size < median * 0.7:
-                element["style"]["fontSize"] = median
-    return resized
 
 
 TABLE_TEXT_PREFIXES = ("table-header:", "table-cell:")
@@ -3139,195 +3006,7 @@ TABLE_ANCHOR_MAX_SHIFT = 300
 TABLE_ANCHOR_MIN_X_OVERLAP = 0.3
 
 
-def _anchor_table_text(
-    elements: list[dict[str, Any]],
-    observations: Sequence[Mapping[str, Any]] | None,
-) -> int:
-    """Move synthesized table text onto the OCR line that reads the same words.
 
-    Table cells come out of a detected grid, so their box is the cell rather
-    than the ink.  When the grid's origin is wrong, the words print one or two
-    hundred pixels away from where the picture has them — in the inventory
-    screenshot straight over the card rows above.  OCR already read those words
-    at their real position and the grid has no authority over it.
-
-    Only a displacement several cells agree on counts.  One cell that matches
-    far away is usually the same label in another table, and following it tears
-    a correct table apart; a shared offset is the signature of a bad grid
-    origin, which is what this repairs.
-    """
-    if not observations:
-        return 0
-    from src.app.services.structure.fidelity.contracts import (
-        normalize_match_text,
-        owner_text_similarity,
-    )
-
-    lines: list[tuple[str, tuple[int, int, int, int]]] = []
-    for observation in observations:
-        if not isinstance(observation, Mapping):
-            continue
-        text = str(observation.get("text") or "").strip()
-        box = observation.get("bbox")
-        if not text or not isinstance(box, (list, tuple)) or len(box) != 4:
-            continue
-        try:
-            left, top, width, height = (int(round(float(value))) for value in box)
-        except (TypeError, ValueError):
-            continue
-        if width <= 0 or height <= 0:
-            continue
-        lines.append((normalize_match_text(text), (left, top, width, height)))
-    if not lines:
-        return 0
-
-    rects = [
-        _layout_rect(element) if str(element.get("type")) in _LAYOUT_MEMBER_TYPES else None
-        for element in elements
-    ]
-    containers = {
-        index
-        for index, element in enumerate(elements)
-        if str(element.get("type")) == "container"
-    }
-    owners = [
-        _owner_index(rects, index, parent_candidates=containers) if rects[index] else None
-        for index in range(len(elements))
-    ]
-    roots, table_rects = _table_roots(elements)
-
-    matches: list[tuple[dict[str, Any], tuple[int, int, int, int], int]] = []
-    for position, element in enumerate(elements):
-        reference = str(element.get("contentRef") or element.get("id") or "")
-        if not reference.startswith(TABLE_TEXT_PREFIXES):
-            continue
-        text = normalize_match_text(element.get("text"))
-        box = _layout_rect(element)
-        if not text or box is None:
-            continue
-        # A cell may only follow words read inside its own table.  A sidebar
-        # label two panels away can share a cell's wording ("盘点单"), and
-        # following it drags the cell — and with it the column — out of the
-        # table.
-        root = roots[position] if position < len(roots) else None
-        table_box = table_rects[root] if root is not None else None
-        if table_box is None:
-            # Not under a declared table node: its owning container is the
-            # table as far as this pass is concerned.
-            owner = owners[position]
-            table_box = rects[owner] if owner is not None else None
-        if table_box is None:
-            continue
-        best: tuple[float, tuple[int, int, int, int]] | None = None
-        for line_text, line_box in lines:
-            centre_x = line_box[0] + line_box[2] / 2
-            centre_y = line_box[1] + line_box[3] / 2
-            if not (
-                table_box[0] <= centre_x <= table_box[0] + table_box[2]
-                and table_box[1] <= centre_y <= table_box[1] + table_box[3]
-            ):
-                continue
-            if line_text != text and owner_text_similarity(line_text, text) < 0.9:
-                continue
-            # Both axes, weighted towards y: a wrong grid origin shifts a whole
-            # block at once, so requiring x overlap would hide the very cells
-            # that need moving.
-            distance = abs(
-                (box[1] + box[3] / 2) - (line_box[1] + line_box[3] / 2)
-            ) + 0.25 * abs((box[0] + box[2] / 2) - (line_box[0] + line_box[2] / 2))
-            if best is None or distance < best[0]:
-                best = (distance, line_box)
-        if best is None:
-            continue
-        line_box = best[1]
-        vertical = line_box[1] - box[1]
-        horizontal = abs((box[0] + box[2] / 2) - (line_box[0] + line_box[2] / 2))
-        if max(abs(vertical), horizontal) > TABLE_ANCHOR_MAX_SHIFT:
-            continue
-        if abs(vertical) <= TABLE_ANCHOR_MIN_SHIFT and horizontal <= TABLE_ANCHOR_MIN_SHIFT:
-            continue
-        owner = owners[position]
-        if owner is None or rects[owner] is None:
-            continue
-        # The cell may only move inside the box that owns it.  A target outside
-        # means the container is wrong as well, and moving the text alone would
-        # leave a member outside its frame — the renderer rejects the whole
-        # frame for that.
-        if not _rect_contains(rects[owner], line_box, tolerance=8):
-            continue
-        matches.append((element, line_box, vertical))
-
-    if not matches:
-        return 0
-    buckets: dict[int, list[tuple[dict[str, Any], tuple[int, int, int, int]]]] = {}
-    for element, line_box, vertical in matches:
-        buckets.setdefault(int(round(vertical / 6.0)), []).append((element, line_box))
-    dominant = max(buckets.values(), key=len)
-    if len(dominant) < 2:
-        return 0
-
-    moved = 0
-    for element, (left, top, width, height) in dominant:
-        element["x"] = left
-        element["y"] = top
-        element["width"] = max(1, width)
-        element["height"] = max(18, height)
-        style = element.get("style")
-        if isinstance(style, dict):
-            style["textAlign"] = "start"
-        moved += 1
-    return moved
-
-def _drop_page_coloured_shells(
-    elements: list[dict[str, Any]],
-    background: str,
-) -> int:
-    """Remove containers that paint the page colour and own nothing.
-
-    A dialog screenshot is dimmed end to end, so the page background itself is
-    the scrim colour and several boxes measure out as the same flat grey.  One
-    of them lands on top of a real card and blocks its frame, yet it adds not a
-    single pixel: it paints exactly what is already there.
-
-    Only shell containers are removed — ones with no members of their own and
-    no picture or text.  Anything that owns content still has a job.
-    """
-    target = str(background or "").strip().lower()
-    if not target.startswith("#"):
-        return 0
-    rects = [
-        _layout_rect(element) if str(element.get("type")) in _LAYOUT_MEMBER_TYPES else None
-        for element in elements
-    ]
-    containers = {
-        index
-        for index, element in enumerate(elements)
-        if str(element.get("type")) == "container"
-    }
-    owners = [
-        _owner_index(rects, index, parent_candidates=containers) if rects[index] else None
-        for index in range(len(elements))
-    ]
-    owning = {owner for owner in owners if owner is not None}
-    doomed = [
-        index
-        for index in containers
-        if index not in owning
-        and str(elements[index].get("role") or "") != "text-backdrop"
-        and not elements[index].get("imageBase64")
-        and not elements[index].get("text")
-        and str((elements[index].get("style") or {}).get("fillColor") or "")
-        .strip()
-        .lower()
-        == target
-    ]
-    if not doomed:
-        return 0
-    drop = set(doomed)
-    elements[:] = [
-        element for index, element in enumerate(elements) if index not in drop
-    ]
-    return len(doomed)
 
 
 COINCIDENT_TEXT_COVERAGE = 0.65
@@ -3390,38 +3069,8 @@ PARAGRAPH_REFLOW_MAX_GAP = 1.8
 INK_MIN_CONTRAST = 30
 
 
-def _text_cleanliness(element: Mapping[str, Any]) -> tuple[int, int]:
-    """Prefer model wording over a raw OCR line, then the longer string."""
-    return (
-        0 if str(element.get("textBoxAuthority") or "") == "ocr-line" else 1,
-        len(str(element.get("text") or "")),
-    )
 
 
-def _rendered_span(element: Mapping[str, Any]) -> tuple[int, int]:
-    """Left edge and right edge a text will actually paint to.
-
-    A synthesized cell can carry a 48px box for a forty-character line: the
-    box is the measurement, the string is what lands on the canvas, and the
-    renderer draws the whole line.  Comparing boxes alone therefore misses the
-    double-printed rows, because the two boxes sit side by side while the two
-    strings overlap by hundreds of pixels.
-    """
-    rect = _layout_rect(element)
-    if rect is None:
-        return (0, 0)
-    left, _top, box_width, _box_height = rect
-    text = str(element.get("text") or "")
-    style = element.get("style") or {}
-    try:
-        font = float(style.get("fontSize") or 0.0)
-    except (TypeError, ValueError):
-        font = 0.0
-    # 真实字宽：字体自己给出的 advance width，而不是"CJK 1 em、其他 0.55 em"。
-    from src.app.services.structure.fidelity.font_metrics import text_width
-
-    estimated = text_width(text, font)
-    return (left, left + max(box_width, int(round(estimated))))
 
 
 #: Glyphs OCR swaps for one another inside an identifier.  "WO5OS-OO5" and
@@ -3440,287 +3089,18 @@ OCR_HOMOGLYPHS = str.maketrans(
 )
 
 
-def _fold_homoglyphs(text: str) -> str:
-    """Collapse letter/digit pairs OCR cannot tell apart, for matching only."""
-    return text.translate(OCR_HOMOGLYPHS)
 
 
-def _ghost_gap(
-    left: tuple[int, int, int, int],
-    right: tuple[int, int, int, int],
-) -> int:
-    """Horizontal distance between two boxes, zero when they overlap."""
-    return max(0, max(left[0], right[0]) - min(left[0] + left[2], right[0] + right[2]))
 
 
-def _shared_affix(left: str, right: str) -> int:
-    heads = 0
-    for first, second in zip(left, right):
-        if first != second:
-            break
-        heads += 1
-    tails = 0
-    for first, second in zip(reversed(left), reversed(right)):
-        if first != second:
-            break
-        tails += 1
-    return max(heads, tails)
 
 
-def _label_match_ratio(left: str, right: str) -> float:
-    """Share of the shorter string covered by one unbroken run of the longer.
-
-    A prefix test is too brittle for OCR: "W0505" and "WO505" break it on the
-    fourth character, and the rest of a twenty-character label matches exactly.
-    The longest common run tolerates that single substituted glyph.
-    """
-    if not left or not right:
-        return 0.0
-    block = SequenceMatcher(
-        None, left, right, autojunk=False
-    ).find_longest_match(0, len(left), 0, len(right))
-    return block.size / min(len(left), len(right))
 
 
-def _ink_contrast(
-    element: Mapping[str, Any],
-    elements: Sequence[dict[str, Any]],
-    background: str,
-) -> int:
-    """How far the text colour sits from the surface it is printed on.
-
-    Two readings of one label can differ only in the colour each sampled, and
-    one of them sampled the card instead of the ink: #fefffe words on a white
-    row are there, and cannot be read.  The surface is the smallest container
-    that holds the text; the page is the fallback.
-    """
-    style = element.get("style")
-    if not isinstance(style, dict):
-        return 0
-    ink = _hex_rgb(str(style.get("textColor") or background))
-    box = _layout_rect(element)
-    if box is None:
-        return 0
-    surface = str(background or "")
-    smallest = None
-    for candidate in elements:
-        if str(candidate.get("type")) != "container":
-            continue
-        if str(candidate.get("role") or "") == "text-backdrop":
-            # A surface inferred from the pixels around a text cannot also
-            # vouch for that text's colour — the two would agree by
-            # construction, and a white reading on its own white row would
-            # look readable because a nearby badge was sampled under it.
-            continue
-        fill = _opaque_fill(candidate)
-        if not fill:
-            continue
-        other = _layout_rect(candidate)
-        if other is None:
-            continue
-        # The whole text has to sit on the surface.  Testing the centre alone
-        # let a badge under the middle of a long row label count as that
-        # label's background, which made a near-white reading look readable.
-        if not _rect_contains(other, box, tolerance=2):
-            continue
-        area = other[2] * other[3]
-        if smallest is None or area < smallest[0]:
-            smallest = (area, fill)
-    if smallest is not None:
-        surface = smallest[1]
-    base = _hex_rgb(surface or background)
-    return max(abs(one - two) for one, two in zip(ink, base))
 
 
-def _preferred_copy(
-    first: int,
-    second: int,
-    elements: Sequence[dict[str, Any]],
-    background: str = "",
-) -> int:
-    """Which of two readings of one label survives.
-
-    A readable reading beats an unreadable one: one of the pair may carry the
-    colour of the surface it was measured against, which prints invisible.
-    Otherwise the fuller string wins — a reading that swallowed the rest of the
-    row still prints the words the shorter one has, while the shorter one drops
-    them.  On equal wording the box that fits its own text better wins, because
-    a 48px box around a 400px line is a measurement error and its x is not
-    trustworthy.
-    """
-    one = str(elements[first].get("text") or "")
-    two = str(elements[second].get("text") or "")
-    first_contrast = _ink_contrast(elements[first], elements, background)
-    second_contrast = _ink_contrast(elements[second], elements, background)
-    if (first_contrast >= INK_MIN_CONTRAST) != (second_contrast >= INK_MIN_CONTRAST):
-        return first if first_contrast >= INK_MIN_CONTRAST else second
-    if len(one) != len(two):
-        return first if len(one) > len(two) else second
-
-    def fit(index: int, text: str) -> float:
-        rect = _layout_rect(elements[index])
-        if rect is None or not text:
-            return 0.0
-        left, right = _rendered_span(elements[index])
-        span = max(1, right - left)
-        return min(rect[2], span) / span
-
-    return first if fit(first, one) >= fit(second, two) else second
 
 
-def _drop_coincident_texts(
-    elements: list[dict[str, Any]],
-    background: str = "",
-) -> int:
-    """Remove a label that a later stage measured again over the same words.
-
-    Table synthesis writes header cells straight from the detected grid, while
-    OCR reads the same words as a short line.  They are produced by different
-    stages, so the stage that merges text never sees the pair; the export then
-    prints one string on top of the other.  Two text boxes covering the same
-    area and agreeing on the wording are one label — the poorer copy goes.
-
-    Coverage, not IoU: one box is usually a full-width cell and the other the
-    ink-tight line inside it, which keeps IoU low while the smaller box is
-    almost entirely covered.
-
-    Two readings of one row can also land *side by side*: the label box was
-    measured narrow, the renderer prints the whole line from it, and the line
-    runs straight over its own twin.  Coverage never fires there — the boxes do
-    not overlap.  So a pair on the same line whose normalised strings share a
-    prefix, a suffix, or one contains the other, is compared on what it will
-    paint rather than on what it was measured as.
-    """
-    from src.app.services.structure.fidelity.contracts import (
-        normalize_owner_text,
-        owner_text_similarity,
-    )
-
-    texts = [
-        index
-        for index, element in enumerate(elements)
-        if element.get("type") == "text" and element.get("text")
-    ]
-    doomed: set[int] = set()
-    for position, first in enumerate(texts):
-        if first in doomed:
-            continue
-        first_badge = bool(elements[first].get("badgeLabel"))
-        first_rect = _layout_rect(elements[first])
-        if first_rect is None:
-            continue
-        for second in texts[position + 1 :]:
-            if second in doomed:
-                continue
-            # A chip's own word and the row's reading of the same line are two
-            # different objects and can live beside each other.  Two chip words
-            # are not: one of them is a second print of the same label.
-            if first_badge != bool(elements[second].get("badgeLabel")):
-                continue
-            second_rect = _layout_rect(elements[second])
-            if second_rect is None:
-                continue
-            overlap_h = min(first_rect[1] + first_rect[3], second_rect[1] + second_rect[3]) - max(
-                first_rect[1], second_rect[1]
-            )
-            if overlap_h <= 0:
-                continue
-            box_overlap_w = min(
-                first_rect[0] + first_rect[2], second_rect[0] + second_rect[2]
-            ) - max(first_rect[0], second_rect[0])
-            first_left, first_right = _rendered_span(elements[first])
-            second_left, second_right = _rendered_span(elements[second])
-            overlap_w = min(first_right, second_right) - max(first_left, second_left)
-            same_line = overlap_h / max(1, min(first_rect[3], second_rect[3]))
-            if overlap_w <= 0:
-                # Two prints of one label can miss each other by a few pixels:
-                # the box was measured a little to the left and the copy a
-                # little to the right, so nothing overlaps even though both
-                # paint the same sentence.  Same row, same words, within
-                # reading distance — one of them is a ghost.
-                one_ghost = str(elements[first].get("text") or "")
-                two_ghost = str(elements[second].get("text") or "")
-                widths_agree = abs(first_rect[2] - second_rect[2]) <= max(
-                    first_rect[2], second_rect[2]
-                ) * DUPLICATE_GHOST_WIDTH_RATIO
-                if (
-                    same_line >= DUPLICATE_GHOST_Y_OVERLAP
-                    and widths_agree
-                    and owner_text_similarity(one_ghost, two_ghost)
-                    >= DUPLICATE_GHOST_SIMILARITY
-                    and _ghost_gap(first_rect, second_rect) <= DUPLICATE_GHOST_REACH
-                ):
-                    keep = _preferred_copy(first, second, elements, background)
-                    if keep == first:
-                        doomed.add(second)
-                        continue
-                    doomed.add(first)
-                    break
-                continue
-            coverage = (box_overlap_w * overlap_h) / max(
-                1, min(first_rect[2] * first_rect[3], second_rect[2] * second_rect[3])
-            ) if box_overlap_w > 0 else 0.0
-            # Same line, one string inside the other: one reading merged the
-            # whole row while another reported a single field of it.  The long
-            # one already prints every word, so the short copy is redundant —
-            # no need for the coverage threshold, the y agreement carries it.
-            if same_line >= DUPLICATE_LINE_Y_OVERLAP:
-                one = str(elements[first].get("text") or "").strip()
-                two = str(elements[second].get("text") or "").strip()
-                key_one = _fold_homoglyphs(normalize_owner_text(one))
-                key_two = _fold_homoglyphs(normalize_owner_text(two))
-                if one and two and (
-                    one in two or two in one or key_one in key_two or key_two in key_one
-                ):
-                    shorter = one if len(one) <= len(two) else two
-                    # A number on its own is a value, not a shortened label:
-                    # the "100" cell in a quantity column is inside the row's
-                    # prose and still needs to print.  The same number twice on
-                    # the same spot is a double print, and that is not a value.
-                    if one == two or (len(shorter) >= 4 and not shorter.isdigit()):
-                        keep = _preferred_copy(first, second, elements, background)
-                        if keep == first:
-                            doomed.add(second)
-                            continue
-                        doomed.add(first)
-                        break
-                if key_one and key_two and not (
-                    key_one in key_two or key_two in key_one
-                ):
-                    shared = _shared_affix(key_one, key_two)
-                    alike = owner_text_similarity(key_one, key_two)
-                    covered = _label_match_ratio(key_one, key_two)
-                    if (
-                        shared >= DUPLICATE_LINE_AFFIX
-                        or alike >= DUPLICATE_LINE_SIMILARITY
-                        or covered >= DUPLICATE_LINE_COVERAGE
-                    ) and min(len(key_one), len(key_two)) >= DUPLICATE_LINE_AFFIX:
-                        keep = _preferred_copy(first, second, elements, background)
-                        other = second if keep == first else first
-                        doomed.add(other)
-                        if keep == first:
-                            continue
-                        break
-            if coverage < COINCIDENT_TEXT_COVERAGE:
-                continue
-            if (
-                owner_text_similarity(
-                    elements[first].get("text"), elements[second].get("text")
-                )
-                < COINCIDENT_TEXT_SIMILARITY
-            ):
-                continue
-            if _text_cleanliness(elements[first]) >= _text_cleanliness(elements[second]):
-                doomed.add(second)
-            else:
-                doomed.add(first)
-                break
-    if not doomed:
-        return 0
-    elements[:] = [
-        element for index, element in enumerate(elements) if index not in doomed
-    ]
-    return len(doomed)
 
 
 #: Names a vision model gives an icon, never words the page prints.  ``search``
@@ -3811,158 +3191,14 @@ PAGE_FILL_TOLERANCE = 10
 PAGE_FRAGMENT_MIN_AREA = 40000
 
 
-def _ocr_lines(
-    observations: Sequence[Mapping[str, Any]] | None,
-) -> list[tuple[str, tuple[int, int, int, int]]]:
-    """Normalised OCR text with its box, ready for matching."""
-    from src.app.services.structure.fidelity.contracts import normalize_match_text
-
-    lines: list[tuple[str, tuple[int, int, int, int]]] = []
-    for observation in observations or ():
-        if not isinstance(observation, Mapping):
-            continue
-        text = normalize_match_text(observation.get("text"))
-        box = observation.get("bbox")
-        if not text or not isinstance(box, (list, tuple)) or len(box) != 4:
-            continue
-        try:
-            values = tuple(int(round(float(value))) for value in box)
-        except (TypeError, ValueError):
-            continue
-        if values[2] <= 0 or values[3] <= 0:
-            continue
-        lines.append((text, values))  # type: ignore[arg-type]
-    return lines
 
 
-def _icon_descriptor(text: str) -> bool:
-    """True when the whole string is a control/icon name, not prose."""
-    words = [word for word in re.split(r"[^a-z]+", str(text or "").strip().lower()) if word]
-    if not words or len(words) > 3:
-        return False
-    return all(word in ICON_DESCRIPTOR_WORDS for word in words)
 
 
-def _has_ocr_support(
-    text: str,
-    box: tuple[int, int, int, int],
-    lines: Sequence[tuple[str, tuple[int, int, int, int]]],
-    *,
-    slack: int = ICON_DESCRIPTOR_OCR_SLACK,
-    threshold: float = 0.75,
-) -> bool:
-    from src.app.services.structure.fidelity.contracts import (
-        normalize_match_text,
-        owner_text_similarity,
-    )
-
-    key = normalize_match_text(text)
-    if not key:
-        return False
-    for line_text, line_box in lines:
-        if line_text != key and owner_text_similarity(line_text, key) < threshold:
-            continue
-        left = box[0] - slack
-        top = box[1] - slack
-        right = box[0] + box[2] + slack
-        bottom = box[1] + box[3] + slack
-        centre_x = line_box[0] + line_box[2] / 2
-        centre_y = line_box[1] + line_box[3] / 2
-        if left <= centre_x <= right and top <= centre_y <= bottom:
-            return True
-    return False
 
 
-def _drop_icon_descriptor_labels(
-    elements: list[dict[str, Any]],
-    observations: Sequence[Mapping[str, Any]] | None,
-) -> int:
-    """Strip captions the model invented for icons.
-
-    A toolbar comes back as ``search``, ``mail``, ``menu``, ``dropdown``,
-    ``close`` — five words that name five glyphs and appear nowhere in the
-    screenshot.  Written as text they print on top of the glyphs and read as
-    page content, which is worse than the icon alone.
-
-    OCR decides.  When a line really reads those words at that spot (a "Star"
-    button, an English "Search" label) the text stays; without that support the
-    string is a semantic annotation and only the shape is kept.
-    """
-    if not elements:
-        return 0
-    lines = _ocr_lines(observations)
-    doomed: set[int] = set()
-    cleared = 0
-    for index, element in enumerate(elements):
-        kind = str(element.get("type") or "")
-        if kind not in {"text", "button", "input"}:
-            continue
-        text = str(element.get("text") or "").strip()
-        if not text or not text.isascii() or not _icon_descriptor(text):
-            continue
-        if str(element.get("contentRef") or element.get("id") or "").startswith(
-            TABLE_TEXT_PREFIXES
-        ):
-            continue
-        rect = _layout_rect(element)
-        if rect is None or max(rect[2], rect[3]) > ICON_DESCRIPTOR_MAX_SIDE:
-            continue
-        if _has_ocr_support(text, rect, lines):
-            continue
-        if kind == "text":
-            doomed.add(index)
-        else:
-            element["text"] = ""
-            element.pop("controlValue", None)
-        cleared += 1
-    if doomed:
-        elements[:] = [
-            element for index, element in enumerate(elements) if index not in doomed
-        ]
-    return cleared
 
 
-def _chip_ink(
-    pixels,
-    box: tuple[int, int, int, int],
-    fill: str,
-) -> tuple[str, float] | None:
-    """Colour and height of the glyphs printed on a chip.
-
-    The chip's fill is known, so the ink is whatever stands far from it.  The
-    median of those pixels is the type colour, and their vertical extent gives
-    the size the way the table pass measures it.
-    """
-    try:
-        import numpy as np
-    except Exception:  # pragma: no cover - imaging stack is a hard dependency
-        return None
-    if pixels is None:
-        return None
-    frame_height, frame_width = pixels.shape[:2]
-    x, y, width, height = box
-    left, top = max(0, x), max(0, y)
-    right = min(frame_width, x + width)
-    bottom = min(frame_height, y + height)
-    if right - left < 4 or bottom - top < 4:
-        return None
-    patch = pixels[top:bottom, left:right]
-    target = np.asarray(_hex_rgb(fill), dtype=np.int16)
-    distance = np.abs(patch - target).max(axis=2)
-    strong = distance >= 60
-    if int(strong.sum()) < 4:
-        return None
-    # The glyph's core, not its antialiased rim: the rim blends into the chip
-    # and turns a white label pale green.
-    core = distance >= max(60.0, float(distance.max()) * 0.8)
-    ink = patch[core] if int(core.sum()) >= 4 else patch[strong]
-    colour = "#%02x%02x%02x" % tuple(
-        int(value) for value in np.median(ink.reshape(-1, 3), axis=0)
-    )
-    rows = np.where(strong.sum(axis=1) >= max(2, (right - left) // 20))[0]
-    if rows.size == 0:
-        return None
-    return colour, float(rows.max() - rows.min() + 1)
 
 
 #: A line OCR read this confidently is a line that is on the page.
@@ -3977,1066 +3213,34 @@ OCR_PROMOTE_SIMILARITY = 0.6
 OCR_PROMOTE_MOVE_SIMILARITY = 0.9
 
 
-def _rows_share(
-    left: tuple[int, int, int, int],
-    right: tuple[int, int, int, int],
-    share: float = 0.5,
-    reach: int = 160,
-) -> bool:
-    """Whether two boxes sit on one visual row, within reading distance."""
-    rows = min(left[1] + left[3], right[1] + right[3]) - max(left[1], right[1])
-    if rows < min(left[3], right[3]) * share:
-        return False
-    gap = max(left[0], right[0]) - min(left[0] + left[2], right[0] + right[2])
-    return gap <= reach
 
 
-def _promote_ocr_text(
-    elements: list[dict[str, Any]],
-    image_path: str,
-    canvas: tuple[int, int] | None,
-    ocr_observations: Sequence[Mapping[str, Any]] | None,
-) -> int:
-    """Turn words OCR read into text nodes the plan never carried.
-
-    The scene plan is a model's summary of a screenshot, and it skips whole nav
-    bars, button labels and status lines: marketplace's 首页/模型广场/控制台,
-    AtomGit's AtomCode/探索更多, review's 系统运行正常.  OCR read every one of
-    them at its true coordinates, but until now those readings were only used to
-    *correct* nodes that already existed — a missed line stayed missing.
-
-    A confident line that no node covers is promoted as an ordinary text node.
-    From there it follows the same path as any other: chip sampling paints the
-    red/blue/black pill behind it, duplicate removal still applies, and the
-    frame pass decides whether it belongs to a container.  Exact wording is
-    skipped rather than merged — a line that overlaps a node, or repeats one on
-    the same row, was already printed.
-    """
-    if not ocr_observations or not canvas:
-        return 0
-    from src.app.services.structure.fidelity.contracts import (
-        normalize_match_text,
-        owner_text_similarity,
-    )
-
-    width, height = canvas
-    existing: list[tuple[tuple[int, int, int, int], str]] = []
-    for element in elements:
-        if str(element.get("type")) != "text" or not element.get("text"):
-            continue
-        rect = _layout_rect(element)
-        if rect is None:
-            continue
-        existing.append((rect, normalize_match_text(element.get("text"))))
-
-    added = 0
-    for observation in ocr_observations:
-        if not isinstance(observation, Mapping):
-            continue
-        try:
-            confidence = float(observation.get("confidence") or 0)
-        except (TypeError, ValueError):
-            continue
-        if confidence < OCR_PROMOTE_CONFIDENCE:
-            continue
-        text = str(observation.get("text") or "").strip()
-        if not text or text.isdigit():
-            continue
-        if not any(character.isalnum() for character in text):
-            continue
-        box = observation.get("bbox")
-        if not isinstance(box, (list, tuple)) or len(box) != 4:
-            continue
-        try:
-            left, top, box_width, box_height = (int(value) for value in box)
-        except (TypeError, ValueError):
-            continue
-        if box_width < 6 or box_height < 8:
-            continue
-        left = max(0, left)
-        top = max(0, top)
-        box_width = min(box_width, width - left)
-        box_height = min(box_height, height - top)
-        if box_width < 6 or box_height < 8:
-            continue
-        rect = (left, top, box_width, box_height)
-        # A single glyph is only worth a node when it sits on a row that other
-        # words already describe: the 起 beside a price, the 折 inside a badge.
-        # A stray mark on its own is not a label.
-        if len(text) < 2 and not any(
-            _rows_share(rect, other_rect)
-            for other_rect, _key in existing
-        ):
-            continue
-        key = normalize_match_text(text)
-        moved = False
-        blocked = False
-        for element in elements:
-            if str(element.get("type")) != "text" or not element.get("text"):
-                continue
-            if str(element.get("imageMVP", {}).get("source")) == "ocr-promotion":
-                continue
-            other_rect = _layout_rect(element)
-            if other_rect is None:
-                continue
-            rows = min(rect[1] + rect[3], other_rect[1] + other_rect[3]) - max(
-                rect[1], other_rect[1]
-            )
-            if rows < min(rect[3], other_rect[3]) * 0.6:
-                continue
-            if (
-                owner_text_similarity(element.get("text"), text)
-                < OCR_PROMOTE_MOVE_SIMILARITY
-            ):
-                continue
-            # Same words on the same row: this is the node that was measured in
-            # the wrong place, and OCR is where it actually is.  Moving it is
-            # the repair; adding a second copy prints the row twice.
-            if abs(other_rect[0] - left) > 6 or abs(other_rect[2] - box_width) > 8:
-                element["x"] = left
-                element["y"] = top
-                element["width"] = box_width
-                element["height"] = box_height
-                style = element.get("style")
-                if isinstance(style, dict):
-                    style["textAlign"] = "left"
-                for name in ("textBox", "textEmBox"):
-                    value = element.get(name)
-                    if isinstance(value, (list, tuple)) and len(value) == 4:
-                        element[name] = [left, top, box_width, box_height]
-                moved = True
-            else:
-                blocked = True
-            break
-        if moved:
-            continue
-        if blocked:
-            continue
-        for other_rect, other_key in existing:
-            if _overlap_share(rect, other_rect) >= OCR_PROMOTE_MAX_IOA:
-                blocked = True
-                break
-            rows = min(rect[1] + rect[3], other_rect[1] + other_rect[3]) - max(
-                rect[1], other_rect[1]
-            )
-            same_row = rows >= min(rect[3], other_rect[3]) * 0.6
-            if not other_key or not key:
-                continue
-            # OCR reads a paragraph line by line while the plan writes it as one
-            # box with different wrapping, so the same words can sit ten pixels
-            # apart and still be one sentence.  Within a few line heights, one
-            # string containing the other is a repeat, not a new label.
-            near = abs(
-                (rect[1] + rect[3] / 2) - (other_rect[1] + other_rect[3] / 2)
-            ) <= max(rect[3], other_rect[3]) * 2.5
-            if (same_row or near) and (key in other_key or other_key in key):
-                blocked = True
-                break
-            if same_row and owner_text_similarity(other_key, key) >= OCR_PROMOTE_SIMILARITY:
-                blocked = True
-                break
-        if blocked:
-            continue
-        digest = hashlib.sha1(
-            f"{left}:{top}:{box_width}:{box_height}:{text}".encode("utf-8")
-        ).hexdigest()[:16]
-        node = {
-            "id": f"text:ocr-{digest}",
-            "type": "text",
-            "role": "text",
-            "bbox": [left, top, box_width, box_height],
-            "text": text,
-            "content_ref": f"text:ocr-{digest}",
-        }
-        element = _text_element(
-            node,
-            image_path=image_path,
-            width=width,
-            height=height,
-            node_by_id={},
-        )
-        # The line was read, not described: it keeps OCR's own box.
-        element["x"] = left
-        element["y"] = top
-        element["width"] = box_width
-        element["height"] = box_height
-        element.setdefault("imageMVP", {})["source"] = "ocr-promotion"
-        elements.append(element)
-        existing.append((rect, key))
-        added += 1
-
-    return added
 
 
-def _restore_chip_labels(
-    elements: list[dict[str, Any]],
-    image_path: str,
-    canvas: tuple[int, int] | None,
-    ocr_observations: Sequence[Mapping[str, Any]] | None,
-) -> int:
-    """Put the word back inside a badge whose label was absorbed by its row.
-
-    A row reads two ways: "库位" on the green chip, and the whole line as one
-    string.  The line wins the duplicate pass — it carries every word — and the
-    chip is left empty: the badge is real, its word is missing.  OCR still has
-    the chip's own reading at the chip's own coordinates, so the label is rebuilt
-    from there, centred in the chip and inked in the chip's own type colour.
-    """
-    if not ocr_observations or not canvas:
-        return 0
-    pixels = _pixel_edges(image_path, canvas[0], canvas[1])
-    lines: list[tuple[str, tuple[int, int, int, int]]] = []
-    for observation in ocr_observations:
-        if not isinstance(observation, Mapping):
-            continue
-        text = str(observation.get("text") or "").strip()
-        box = observation.get("bbox")
-        if not text or not isinstance(box, (list, tuple)) or len(box) != 4:
-            continue
-        try:
-            lines.append((text, tuple(int(value) for value in box)))
-        except (TypeError, ValueError):
-            continue
-    if not lines:
-        return 0
-    existing = [
-        rect
-        for rect in (
-            _layout_rect(element)
-            for element in elements
-            if str(element.get("type")) == "text" and element.get("text")
-        )
-        if rect is not None
-    ]
-    restored = 0
-    for element in list(elements):
-        if str(element.get("role") or "") != "text-backdrop":
-            continue
-        chip = _layout_rect(element)
-        if chip is None:
-            continue
-        if not (
-            CHIP_MIN_WIDTH <= chip[2] <= CHIP_MAX_WIDTH and chip[3] <= CHIP_MAX_HEIGHT
-        ):
-            continue
-        if any(_rect_contains(chip, other, tolerance=2) for other in existing):
-            continue
-        fill = _solid_fill(element)
-        if not fill:
-            continue
-        best: tuple[float, str, tuple[int, int, int, int]] | None = None
-        for text, line in lines:
-            if not _rect_contains(chip, line, tolerance=3):
-                continue
-            share = _overlap_share(line, chip)
-            if best is None or share > best[0]:
-                best = (share, text, line)
-        if best is None or best[0] < 0.5:
-            continue
-        ink = _chip_ink(pixels, best[2], fill)
-        colour = ink[0] if ink else "#ffffff"
-        height = ink[1] if ink else best[2][3] * 0.8
-        size = min(max(height * INK_TO_FONT, TABLE_FONT_MIN), TABLE_FONT_MAX)
-        width = best[2][2]
-        digest = hashlib.sha1(
-            f"{chip[0]}:{chip[1]}:{best[1]}".encode("utf-8")
-        ).hexdigest()[:16]
-        # A badge centres its word; the OCR box is the ink's own extent, so its
-        # size is kept and only its origin is moved to the middle.
-        box_x = chip[0] + (chip[2] - width) / 2
-        box_y = chip[1] + (chip[3] - best[2][3]) / 2
-        label = {
-            "id": f"text:chip-{digest}",
-            "type": "text",
-            "x": int(round(box_x)),
-            "y": int(round(box_y)),
-            "width": width,
-            "height": best[2][3],
-            "text": best[1],
-            "style": {
-                "textColor": colour,
-                "fontSize": round(size, 2),
-                "fontWeight": "normal",
-                "fontFamily": "Noto Sans SC",
-                "textAlign": "center",
-            },
-            "contentRef": f"text:chip-{digest}",
-            "sceneOwnerId": f"text:chip-{digest}",
-            "imageMVP": {
-                "source": "pixel-recovery",
-                "role": "text",
-                "candidate_type": "text",
-                "grouping_status": "recovered",
-                "reference_only": False,
-                "generated": False,
-                "textStatus": "ocr-chip-label",
-            },
-            "badgeLabel": True,
-        }
-        elements.append(label)
-        existing.append((label["x"], label["y"], label["width"], label["height"]))
-        restored += 1
-    return restored
 
 
-def _tail_key(element: Mapping[str, Any]) -> str:
-    """A text node's words, comparable across two models of the same sentence.
-
-    ``OCR_HOMOGLYPHS`` folds the lower-case confusions; a capital ``I`` read as a
-    lower-case ``l`` ("AI" vs "Al") is the one this pass actually met, so the
-    vertical strokes are folded here as well.  Comparison only — the text keeps
-    whatever the model wrote.
-    """
-    folded = "".join(_fold_homoglyphs(str(element.get("text") or "")).split())
-    return (
-        folded.replace("I", "1").replace("i", "1").replace("l", "1").replace("|", "1")
-    )
 
 
-def _drop_paragraph_tails(elements: list[dict[str, Any]]) -> int:
-    """Remove a fragment that is only the tail of a paragraph printed above it.
-
-    When a paragraph is modelled once as a whole string and once as its wrapped
-    remainder, the two boxes do not overlap — the fragment starts on the line
-    below — so the coincidence test leaves both.  In the SVG the paragraph then
-    runs past the card edge and the fragment repeats its last words; in Figma,
-    where the paragraph wraps inside its box, the two occupy the same lines and
-    print on top of each other.
-
-    The signature is specific enough to act on: the short string is a *suffix*
-    of the long one, it starts on a later line, and it sits inside the same
-    horizontal span.  A standalone label that happens to repeat the end of a
-    nearby paragraph is the risk, so the fragment has to be a real piece of
-    prose (six characters), the paragraph has to be most of a sentence longer,
-    and the fragment has to begin below the paragraph's first line.
-    """
-    tails = 0
-    texts = [
-        (index, element)
-        for index, element in enumerate(elements)
-        if element.get("type") == "text" and str(element.get("text") or "").strip()
-    ]
-    doomed: set[int] = set()
-    for fragment_index, fragment in texts:
-        if fragment_index in doomed:
-            continue
-        # OCR reads the same word differently in the two models ("AI" vs "Al"),
-        # so the comparison folds homoglyphs and drops the spaces that a line
-        # break introduced.  Matching only; the text itself is untouched.
-        fragment_text = _tail_key(fragment)
-        if len(fragment_text) < PARAGRAPH_TAIL_MIN_CHARS:
-            continue
-        for host_index, host in texts:
-            if host_index == fragment_index or host_index in doomed:
-                continue
-            host_text = _tail_key(host)
-            if len(host_text) < len(fragment_text) + PARAGRAPH_TAIL_LENGTH_MARGIN:
-                continue
-            if not host_text.endswith(fragment_text):
-                continue
-            fragment_box = _layout_rect(fragment)
-            host_box = _layout_rect(host)
-            if fragment_box is None or host_box is None:
-                continue
-            fx, fy, fw, fh = fragment_box
-            hx, hy, hw, hh = host_box
-            if fy < hy + PARAGRAPH_TAIL_MIN_DROP:
-                continue
-            if fy > hy + hh + PARAGRAPH_TAIL_REACH:
-                continue
-            overlap = min(fx + fw, hx + hw) - max(fx, hx)
-            if overlap < fw * PARAGRAPH_TAIL_HORIZONTAL_SHARE:
-                continue
-            doomed.add(fragment_index)
-            tails += 1
-            break
-    if not doomed:
-        return 0
-    elements[:] = [
-        element for index, element in enumerate(elements) if index not in doomed
-    ]
-    return tails
 
 
-def _drop_text_under_patches(elements: list[dict[str, Any]]) -> int:
-    """Delete vector text that a picture patch already prints.
-
-    A patch is cut from the screenshot, so any vector node inside it is a second
-    print of the same words — the discount stamps were exactly that: a bitmap of
-    "5.8 折" with a text node on top of it.  The patch wins because it carries the
-    真实像素; the node only adds a ghost.
-
-    `mark` crops are deliberately *not* included: a mark is often a bitmap of a
-    label that is also modelled as text (AtomGit's 智能体开发), and there the text
-    is the better asset — it stays editable.  Words with no OCR support sitting on
-    a chip-sized mark are handled by `_drop_nested_texts`, which asks the picture
-    first.
-
-    Frame members are referenced by id, so removing an element is safe once the
-    id is also removed from any frame that lists it.
-    """
-    patches = [
-        _layout_rect(element)
-        for element in elements
-        if str(element.get("role") or "") == "patch"
-    ]
-    patches = [box for box in patches if box]
-    if not patches:
-        return 0
-    doomed: set[str] = set()
-    for element in elements:
-        if element.get("type") != "text" or not str(element.get("text") or "").strip():
-            continue
-        box = _layout_rect(element)
-        if box is None:
-            continue
-        area = max(1, box[2] * box[3])
-        for patch in patches:
-            overlap_w = min(box[0] + box[2], patch[0] + patch[2]) - max(box[0], patch[0])
-            overlap_h = min(box[1] + box[3], patch[1] + patch[3]) - max(box[1], patch[1])
-            if overlap_w <= 0 or overlap_h <= 0:
-                continue
-            if (overlap_w * overlap_h) / area >= PATCH_TEXT_COVER:
-                doomed.add(str(element.get("id") or element.get("contentRef") or ""))
-                break
-    if not doomed:
-        return 0
-    elements[:] = [
-        element
-        for element in elements
-        if str(element.get("id") or element.get("contentRef") or "") not in doomed
-    ]
-    for element in elements:
-        members = element.get("layoutChildren")
-        if isinstance(members, list):
-            element["layoutChildren"] = [
-                member
-                for member in members
-                if str(member.get("id") or "") not in doomed
-            ]
-    return len(doomed)
 
 
-def _drop_contained_texts(elements: list[dict[str, Any]]) -> int:
-    """Delete a text node that is the ghost of a bigger one in the same place.
-
-    "11月 &日更新" sat inside "价目牌 · 82 个模型 · 11 月 8 日更新" and printed on
-    top of it; "Kimi" sat inside "Kimi K3"; "¥8.00" inside "¥4.64 ¥8.00".  The
-    overlap test upstream compares coverage and wording and lets these through
-    because the words differ.  Containment is the signal: when the smaller box
-    lives inside the larger one and the two share the words they do have, the
-    smaller is a second model of the same line.
-    """
-    from difflib import SequenceMatcher
-
-    texts = [
-        element
-        for element in elements
-        if element.get("type") == "text" and str(element.get("text") or "").strip()
-    ]
-    doomed: set[str] = set()
-    for small in texts:
-        small_key = str(small.get("id") or "")
-        if not small_key or small_key in doomed:
-            continue
-        small_box = _layout_rect(small)
-        if small_box is None:
-            continue
-        small_area = max(1, small_box[2] * small_box[3])
-        for big in texts:
-            if big is small:
-                continue
-            big_box = _layout_rect(big)
-            if big_box is None:
-                continue
-            if big_box[2] * big_box[3] <= small_area:
-                continue
-            overlap_w = min(small_box[0] + small_box[2], big_box[0] + big_box[2]) - max(
-                small_box[0], big_box[0]
-            )
-            overlap_h = min(small_box[1] + small_box[3], big_box[1] + big_box[3]) - max(
-                small_box[1], big_box[1]
-            )
-            if overlap_w <= 0 or overlap_h <= 0:
-                continue
-            if (overlap_w * overlap_h) / small_area < CONTAINED_TEXT_IOA:
-                continue
-            one = _tail_key(small)
-            two = _tail_key(big)
-            if not one or not two:
-                continue
-            # 用词对得上：相似度够、或互相包含、或短的那句的字符几乎都在长句里
-            # （OCR 把 "8" 读成 "&" 时，"11月 &日更新" 与 "…11 月 8 日更新" 的
-            # 相似度只有 0.45，但字符覆盖是 0.83）。
-            covered = set(one) & set(two)
-            char_cover = len(covered) / max(1, len(set(one)))
-            if (
-                SequenceMatcher(None, one, two).ratio() >= CONTAINED_TEXT_SIMILARITY
-                or one in two
-                or two in one
-                or _shared_affix(one, two) >= 4
-                or char_cover >= 0.8
-            ):
-                doomed.add(small_key)
-                break
-    if not doomed:
-        return 0
-    elements[:] = [
-        element
-        for element in elements
-        if str(element.get("id") or element.get("contentRef") or "") not in doomed
-    ]
-    for element in elements:
-        members = element.get("layoutChildren")
-        if isinstance(members, list):
-            element["layoutChildren"] = [
-                member for member in members if str(member.get("id") or "") not in doomed
-            ]
-    return len(doomed)
 
 
-def _ocr_carries(
-    text: str,
-    box: tuple[int, int, int, int],
-    ocr_observations: Sequence[Mapping[str, Any]] | None,
-) -> bool:
-    """Does an OCR line *at this box* actually spell these words?
-
-    Containment, not character overlap.  "¥4.64" shares two characters with
-    "DeepSeek V4.1 Flash", and counting that as support is how a phantom price
-    gets to sit on top of a title: every box test passes because the title's box
-    covers it.
-    """
-    key = "".join(_fold_homoglyphs(str(text or "")).split()).lower()
-    if not key:
-        return False
-    wanted = set(key)
-    for observation in ocr_observations or []:
-        line = "".join(
-            _fold_homoglyphs(str(observation.get("text") or "")).split()
-        ).lower()
-        if not line:
-            continue
-        raw_box = observation.get("bbox") or []
-        if len(raw_box) != 4:
-            continue
-        other = tuple(int(value) for value in raw_box)
-        if (
-            _overlap_share(box, other) < OCR_SUPPORT_OVERLAP
-            and _overlap_share(other, box) < OCR_SUPPORT_OVERLAP
-        ):
-            continue
-        # Characters, not containment: OCR spells "输入 · 峰时" as "输入 .峰时"
-        # and "谷时 ¥0.58" as "谷时半0.58", and a legit line must not be thrown
-        # away because the engine guessed one glyph wrong.
-        if len(wanted & set(line)) / len(wanted) >= OCR_SUPPORT_CHARS:
-            return True
-    return False
 
 
-def _drop_nested_texts(
-    elements: list[dict[str, Any]],
-    ocr_observations: Sequence[Mapping[str, Any]] | None,
-) -> int:
-    """Delete a text node that prints where a bigger text node already prints.
-
-    Two lines of type never share the same pixels; when they appear to, one of
-    them is not describing the picture.  marketplace's DeepSeek card had four of
-    these — "¥4.64", "¥8.00", "¥2.00" and "起 ¥23.00" all mapped onto the card's
-    title band, so the export looked like a title with small type smudged into it.
-
-    Wording cannot decide this: those strings are not variants of the title, they
-    are different words in the wrong place.  What decides it is support — the
-    picture's own OCR at that box.  A table cell where "冻结库存" sits inside a
-    wide value box *is* supported by OCR, and is left alone.
-    """
-    texts = [
-        element
-        for element in elements
-        if element.get("type") == "text" and str(element.get("text") or "").strip()
-    ]
-    # Pictures about the size of the words they sit under are chips and icons — a
-    # crop the compiler already committed to.  A full-bleed photo is not: words
-    # over a photo are normal, so only comparable areas count here.
-    chips = [
-        (_layout_rect(element), int(element.get("width") or 0) * int(element.get("height") or 0))
-        for element in elements
-        if element.get("imageBase64")
-    ]
-    chips = [(box, area) for box, area in chips if box]
-    doomed: set[str] = set()
-    for small in texts:
-        small_key = str(small.get("id") or "")
-        if not small_key or small_key in doomed:
-            continue
-        small_box = _layout_rect(small)
-        if small_box is None:
-            continue
-        if _ocr_carries(str(small.get("text") or ""), small_box, ocr_observations):
-            continue
-        small_area = small_box[2] * small_box[3]
-        small_centre = small_box[1] + small_box[3] / 2.0
-        for big in texts:
-            if big is small or str(big.get("id") or "") in doomed:
-                continue
-            big_box = _layout_rect(big)
-            if big_box is None:
-                continue
-            if big_box[2] * big_box[3] <= small_area:
-                continue
-            if _overlap_share(small_box, big_box) < NESTED_TEXT_SHARE:
-                continue
-            # Same line: a value printed under a heading lives one line lower and
-            # keeps its own vertical band.  These occupy the same band.
-            if abs(small_centre - (big_box[1] + big_box[3] / 2.0)) > max(
-                3.0, small_box[3] * NESTED_TEXT_LINE_TOLERANCE
-            ):
-                continue
-            if big_box[3] > small_box[3] * NESTED_TEXT_HEIGHT_RATIO:
-                continue
-            doomed.add(small_key)
-            break
-        if small_key in doomed:
-            continue
-        for picture_box, picture_area in chips:
-            if picture_area > small_area * NESTED_IMAGE_AREA_RATIO:
-                continue
-            if _overlap_share(small_box, picture_box) >= PATCH_TEXT_COVER:
-                doomed.add(small_key)
-                break
-    if not doomed:
-        return 0
-    elements[:] = [
-        element
-        for element in elements
-        if str(element.get("id") or element.get("contentRef") or "") not in doomed
-    ]
-    for element in elements:
-        members = element.get("layoutChildren")
-        if isinstance(members, list):
-            element["layoutChildren"] = [
-                member for member in members if str(member.get("id") or "") not in doomed
-            ]
-    return len(doomed)
 
 
-def _restore_display_weight(
-    elements: list[dict[str, Any]],
-    image_path: str | Path,
-    width: int,
-    height: int,
-) -> int:
-    """Give the page's biggest line the weight a display title is set in.
-
-    The stroke test in `style_resolver` measures `2*area/perimeter`, which is the
-    right number for text at reading sizes and the wrong one for a 99px hero: a
-    Song face has 12px verticals and 2px horizontals, so the average lands at
-    0.086em — under the bold threshold — and the title comes out Regular, which
-    is the one thing a page cannot afford.
-
-    So the biggest line is judged by role, not by average: if it measures at
-    least `DISPLAY_STROKE_MIN` of its own em, it is display type and gets 800.
-    """
-    import numpy as np
-    from PIL import Image
-
-    from src.app.services.structure.fidelity.style_resolver import _stroke_thickness
-
-    try:
-        image = np.asarray(Image.open(image_path).convert("RGB"), dtype=np.int16)
-    except (OSError, FileNotFoundError):
-        return 0
-    sized = [
-        element
-        for element in elements
-        if element.get("type") == "text"
-        and str(element.get("text") or "").strip()
-        and float((element.get("style") or {}).get("fontSize") or 0) >= DISPLAY_MIN_SIZE
-    ]
-    if not sized:
-        return 0
-    biggest = max(float((element.get("style") or {}).get("fontSize") or 0) for element in sized)
-    changed = 0
-    for element in sized:
-        style = element.setdefault("style", {})
-        size = float(style.get("fontSize") or 0)
-        if abs(size - biggest) > 1.0:
-            continue
-        if int(style.get("fontWeightValue") or 400) >= 800:
-            continue
-        box = _layout_rect(element)
-        if box is None:
-            continue
-        x, y, w, h = box
-        x0, y0 = max(0, x), max(0, y)
-        x1, y1 = min(width, x + w), min(height, y + h)
-        if x1 - x0 < 8 or y1 - y0 < 8:
-            continue
-        crop = image[y0:y1, x0:x1]
-        luminance = crop.mean(axis=2)
-        if float(luminance.max() - luminance.min()) < 40:
-            continue
-        mask = luminance >= (float(np.percentile(luminance, 5)) + float(luminance.max())) / 2.0
-        if mask.sum() < 60:
-            continue
-        thickness = _stroke_thickness(mask.astype(np.uint8))
-        if thickness / max(1.0, size) < DISPLAY_STROKE_MIN:
-            continue
-        style["fontWeightValue"] = 800
-        style["fontWeight"] = "bold"
-        element["weightEvidence"] = {
-            "method": "display-role",
-            "stroke": round(float(thickness), 2),
-            "size": round(size, 1),
-        }
-        changed += 1
-    return changed
 
 
-def _separate_badge_icon_text(elements: list[dict[str, Any]]) -> int:
-    """Start a badge's words after the glyph instead of inside it.
-
-    A pill that reads "● 大厂直供" arrives as a box over the pill, an icon cut
-    over the dot and a text box that begins on top of the dot.  The three are
-    measured independently, so nothing notices that the first word is printed
-    through the icon.  Moving the words to the icon's right edge is the whole
-    repair; the pill keeps its size, so no frame changes.
-
-    Only inside a badge: a pill or a button is a few hundred pixels wide and at
-    most a line tall.  A sidebar row is wider than that, and its icon cut
-    already carries the first millimetres of the label as pixels — nudging the
-    text there would print the leading glyph twice.
-    """
-    if not elements:
-        return 0
-    rects = [_layout_rect(element) for element in elements]
-    icons = [
-        index
-        for index, element in enumerate(elements)
-        if str(element.get("type")) == "image"
-        and rects[index] is not None
-        and rects[index][2] <= 48
-        and rects[index][3] <= 48
-    ]
-    if not icons:
-        return 0
-    chips = [
-        index
-        for index, element in enumerate(elements)
-        if str(element.get("type")) == "container"
-        and rects[index] is not None
-        and rects[index][2] <= BADGE_MAX_WIDTH
-        and rects[index][3] <= BADGE_MAX_HEIGHT
-    ]
-    moved = 0
-    for index, element in enumerate(elements):
-        if str(element.get("type")) != "text" or not element.get("text"):
-            continue
-        box = rects[index]
-        if box is None:
-            continue
-        chip = None
-        for candidate in chips:
-            chip_box = rects[candidate]
-            if chip_box is None or not _rect_contains(chip_box, box, tolerance=2):
-                continue
-            if chip is None or chip_box[2] * chip_box[3] < rects[chip][2] * rects[chip][3]:
-                chip = candidate
-        if chip is None:
-            continue
-        chip_box = rects[chip]
-        for icon in icons:
-            icon_box = rects[icon]
-            if icon_box is None or chip_box is None:
-                continue
-            if not _rect_contains(chip_box, icon_box, tolerance=2):
-                continue
-            overlap_h = min(box[1] + box[3], icon_box[1] + icon_box[3]) - max(
-                box[1], icon_box[1]
-            )
-            if overlap_h < min(box[3], icon_box[3]) * 0.5:
-                continue
-            # The words' leading edge has to be *inside* the glyph and they have
-            # to run past it: that is the printed-through-the-icon shape.  A
-            # label that starts left of the icon is a different defect.
-            if not (icon_box[0] + 1 < box[0] < icon_box[0] + icon_box[2] - 1):
-                continue
-            if box[0] + box[2] <= icon_box[0] + icon_box[2]:
-                continue
-            target = icon_box[0] + icon_box[2] + BADGE_ICON_GAP
-            if target <= box[0]:
-                continue
-            # Clearing the glyph must leave the words somewhere to go.  A
-            # two-pixel remainder means the "icon" was measured over the label
-            # as well, so the shift would trade one bad box for another.
-            remaining = box[0] + box[2] - target
-            if remaining < max(12, box[2] * 0.5):
-                continue
-            element["x"] = target
-            element["width"] = max(1, remaining)
-            rects[index] = (target, box[1], element["width"], box[3])
-            moved += 1
-            break
-    return moved
 
 
-def _table_containing(
-    box: tuple[int, int, int, int],
-    tables: Sequence[int],
-    rects: Sequence[tuple[int, int, int, int] | None],
-) -> int | None:
-    """The smallest table whose rectangle holds this box's centre."""
-    centre_x = box[0] + box[2] / 2
-    centre_y = box[1] + box[3] / 2
-    best: tuple[int, int] | None = None
-    for table in tables:
-        other = rects[table]
-        if other is None:
-            continue
-        if not (
-            other[0] <= centre_x <= other[0] + other[2]
-            and other[1] <= centre_y <= other[1] + other[3]
-        ):
-            continue
-        area = other[2] * other[3]
-        if best is None or area < best[0]:
-            best = (area, table)
-    return best[1] if best else None
 
 
-def _recover_saturated_bars(
-    elements: list[dict[str, Any]],
-    image_path: str,
-    width: int,
-    height: int,
-) -> int:
-    """Add the solid coloured bars nothing else in the plan accounts for.
-
-    A progress bar is the one element every perception stage drops: too thin to
-    be a container, no words on it, not a glyph.  The review screen came back
-    with "处理进度 90%" and nothing under it.  Pixels know: a run six to
-    twenty-two pixels tall, at least a hundred wide, saturated, and almost
-    completely filled is a painted bar, not a line, not a border, not text.
-    """
-    import numpy as np
-    from PIL import Image
-
-    try:
-        import cv2
-    except Exception:  # pragma: no cover - opencv is a pipeline dependency
-        return 0
-    try:
-        image = np.asarray(Image.open(image_path).convert("RGB"), dtype=np.int16)
-    except (OSError, ValueError):
-        return 0
-    if image.ndim != 3 or image.shape[0] < 8 or image.shape[1] < 8:
-        return 0
-    image = image[:height, :width].astype(np.int32)
-    pool = image.reshape(-1, 3)
-    # HSV saturation, computed the cheap way: (max - min) / max.  int32 is not
-    # optional: on int16 the 255x multiply overflows and a blue bar reads as
-    # unsaturated noise.
-    high = pool.max(axis=1)
-    low = pool.min(axis=1)
-    saturation = np.where(high > 0, (high - low) * 255 // np.maximum(high, 1), 0)
-    mask = (
-        (saturation.reshape(image.shape[:2]) >= BAR_MIN_SATURATION)
-        & (high.reshape(image.shape[:2]) >= BAR_MIN_VALUE)
-    ).astype(np.uint8)
-    if not mask.any():
-        return 0
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((3, 3), dtype=np.uint8))
-    count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(mask, 8)
-
-    rects = [_layout_rect(element) for element in elements]
-    texts = [
-        rects[index]
-        for index, element in enumerate(elements)
-        if str(element.get("type")) == "text" and element.get("text") and rects[index]
-    ]
-
-    candidates: list[tuple[int, list[int]]] = []
-    for index in range(1, count):
-        x, y, box_width, box_height, area = (int(value) for value in stats[index, :5])
-        if box_height < BAR_MIN_HEIGHT or box_height > BAR_MAX_HEIGHT:
-            continue
-        if box_width < BAR_MIN_WIDTH:
-            continue
-        if box_width / max(1, box_height) < BAR_MIN_ASPECT:
-            continue
-        if area / max(1, box_width * box_height) < BAR_FILL_RATIO:
-            continue
-        box = (x, y, box_width, box_height)
-        # Words printed on it means it is a highlight behind a label, not a bar.
-        if any(_iou(box, text) >= 0.25 for text in texts):
-            continue
-        # Already in the design: a rule, a chip, a divider that came with a fill.
-        if any(
-            rect is not None
-            and _iou(box, rect) >= BAR_EXISTING_IOU
-            for rect in rects
-        ):
-            continue
-        candidates.append((area, [x, y, box_width, box_height]))
-
-    if not candidates:
-        return 0
-    candidates.sort(key=lambda item: item[0], reverse=True)
-    added = 0
-    from src.app.services.structure.image_contract import _dominant_color
-    from src.app.services.structure.fidelity.pixel_probe import (
-        sample_container_decoration,
-    )
-
-    for _area, box in candidates[:BAR_MAX_REGIONS]:
-        digest = hashlib.sha1(
-            f"{box[0]}:{box[1]}:{box[2]}:{box[3]}:{image_path}".encode("utf-8")
-        ).hexdigest()[:16]
-        style: dict[str, Any] = {"fillColor": _dominant_color(image_path, box, inset=1)}
-        style.update(sample_container_decoration(image_path, box, style["fillColor"]))
-        style.setdefault("borderRadius", max(2, min(box[3] // 2, 8)))
-        elements.append(
-            {
-                "id": f"bar:{digest}",
-                "type": "container",
-                "x": box[0],
-                "y": box[1],
-                "width": box[2],
-                "height": box[3],
-                "text": "",
-                "style": style,
-                "role": "progress",
-                "name": "Progress bar",
-                "contentRef": f"bar:{digest}",
-                "sceneOwnerId": f"bar:{digest}",
-                "imageMVP": {
-                    "source": "pixel-recovery",
-                    "role": "progress",
-                    "grouping_status": "recovered",
-                },
-            }
-        )
-        added += 1
-    return added
 
 
-def _resolve_misfiled_controls(
-    elements: list[dict[str, Any]],
-    observations: Sequence[Mapping[str, Any]] | None,
-    image_path: str,
-) -> int:
-    """Put a control back where its own words were read, or drop the copy.
-
-    A navigation item measured over a table is a double fault: the table now
-    has a stranger painted across its first row, and the sidebar row it came
-    from is empty.  OCR knows where those words really are.  When nothing on
-    the page reads them at the box the control sits in, the box is the error —
-    move it onto its line, and sample the fill again, because the colour was
-    taken at the wrong place too (a cyan nav pill measured over a white table
-    becomes white).
-
-    If another element already prints those words at that line, the control is
-    a second copy of it and goes away instead of stacking on it.
-    """
-    if not elements:
-        return 0
-    from src.app.services.structure.fidelity.contracts import (
-        normalize_owner_text,
-        owner_text_similarity,
-    )
-
-    lines = _ocr_lines(observations)
-    if not lines:
-        return 0
-    rects = [_layout_rect(element) for element in elements]
-    tables = [
-        index
-        for index, element in enumerate(elements)
-        if str(element.get("type")) == "table"
-        or str(element.get("id") or "").startswith("table-node:")
-    ]
-    if not tables:
-        return 0
-    doomed: set[int] = set()
-    repaired = 0
-    for index, element in enumerate(elements):
-        if str(element.get("type")) not in {"button", "input"}:
-            continue
-        if str(element.get("contentRef") or "").startswith(TABLE_TEXT_PREFIXES):
-            continue
-        text = normalize_owner_text(element.get("text"))
-        box = rects[index]
-        if not text or box is None:
-            continue
-        if _table_containing(box, tables, rects) is None:
-            continue
-        # Words printed here already?  Then the box is right and this is not
-        # the defect this pass handles.
-        if _has_ocr_support(
-            str(element.get("text") or ""), box, lines, slack=4, threshold=0.85
-        ):
-            continue
-        target: tuple[float, tuple[int, int, int, int]] | None = None
-        for line_text, line_box in lines:
-            if line_text != text and owner_text_similarity(line_text, text) < 0.85:
-                continue
-            distance = abs(
-                (line_box[0] + line_box[2] / 2) - (box[0] + box[2] / 2)
-            ) + abs((line_box[1] + line_box[3] / 2) - (box[1] + box[3] / 2))
-            if distance < CONTROL_REANCHOR_MIN_SHIFT:
-                continue
-            if target is None or distance < target[0]:
-                target = (distance, line_box)
-        if target is None:
-            continue
-        line_box = target[1]
-        twin = any(
-            other is not element
-            and other_index not in doomed
-            and str(other.get("type")) in {"text", "button", "input"}
-            and normalize_owner_text(other.get("text"))
-            and owner_text_similarity(other.get("text"), element.get("text")) >= 0.85
-            and _rect_contains(
-                _layout_rect(other) or (0, 0, 0, 0), line_box, tolerance=12
-            )
-            for other_index, other in enumerate(elements)
-        )
-        if twin:
-            doomed.add(index)
-            repaired += 1
-            continue
-        width, height = box[2], box[3]
-        new_x = int(round(line_box[0] + line_box[2] / 2 - width / 2))
-        new_y = int(round(line_box[1] + line_box[3] / 2 - height / 2))
-        element["x"], element["y"] = new_x, new_y
-        moved = (new_x, new_y, width, height)
-        rects[index] = moved
-        _resample_fill(element, image_path, moved)
-        repaired += 1
-    if doomed:
-        elements[:] = [
-            element for index, element in enumerate(elements) if index not in doomed
-        ]
-    return repaired
 
 
-def _resample_fill(
-    element: dict[str, Any],
-    image_path: str,
-    box: tuple[int, int, int, int],
-) -> None:
-    """Take the fill colour from where the element now sits."""
-    style = element.get("style")
-    if not isinstance(style, dict) or not style.get("fillColor"):
-        return
-    from src.app.services.structure.image_contract import _dominant_color
-
-    try:
-        colour = _dominant_color(image_path, list(box))
-    except Exception:  # noqa: BLE001 - a colour hint must never break the build
-        return
-    if colour:
-        style["fillColor"] = colour
 
 
 #: A patch behind bare text has to differ from the text's own surface by this
@@ -5061,259 +3265,10 @@ BACKDROP_EDGE_SHARE = 0.6
 BACKDROP_MAX_AREA_SHARE = 0.25
 
 
-def _frame_colour(image, box: tuple[int, int, int, int], inset: int) -> tuple[int, int, int]:
-    """Median colour of a 2px frame drawn ``inset`` pixels inside ``box``."""
-    import numpy as np
-
-    x, y, width, height = box
-    left, top = x + inset, y + inset
-    right, bottom = x + width - inset, y + height - inset
-    if right - left < 2 or bottom - top < 2:
-        left, top, right, bottom = x, y, x + width, y + height
-    chunks = [
-        image[top : top + 2, left:right],
-        image[max(top, bottom - 2) : bottom, left:right],
-        image[top:bottom, left : left + 2],
-        image[top:bottom, max(left, right - 2) : right],
-    ]
-    pool = np.concatenate([chunk.reshape(-1, 3) for chunk in chunks if chunk.size])
-    median = np.median(pool, axis=0)
-    return (int(median[0]), int(median[1]), int(median[2]))
 
 
-def _walk_to_edge(image, fill, box, side: str, limit: int) -> tuple[int, int] | None:
-    """First distance out of ``box`` on ``side`` whose colour leaves ``fill``."""
-    import numpy as np
-
-    x, y, width, height = box
-    for step in range(1, limit + 1):
-        if side == "left":
-            band = image[y : y + height, max(0, x - step) : max(0, x - step) + 1]
-        elif side == "right":
-            band = image[y : y + height, x + width + step - 1 : x + width + step]
-        elif side == "top":
-            band = image[max(0, y - step) : max(0, y - step) + 1, x : x + width]
-        else:
-            band = image[y + height + step - 1 : y + height + step, x : x + width]
-        if band.size == 0:
-            return None
-        distance = np.abs(band.reshape(-1, 3) - np.asarray(fill, dtype=np.int16)).max(axis=1)
-        if int(distance.max()) >= BACKDROP_EDGE_DELTA:
-            column = band.reshape(-1, 3)[int(distance.argmax())]
-            return step, 0, 0, 0  # placeholder, colour read by the caller
-    return None
 
 
-def _recover_text_backdrops(
-    elements: list[dict[str, Any]],
-    image_path: str,
-    width: int,
-    height: int,
-) -> int:
-    """Give bare text the badge, pill or button it is printed on.
-
-    A plan describes words, not the coloured chips behind them: the green 库位
-    tag, the red 模型广场 tab, the black 推荐/登录 buttons, the white 看详情
-    button all arrive as plain text on whatever surface happens to be there.
-    The pixels know the chip — it ends a few pixels from the words, and what is
-    outside it is a different colour.
-
-    Walk out from each text box until the colour leaves the text's own surface.
-    A step of 18 or more is a fill; a step between 10 and 18 is a hairline, which
-    is how an empty input on a white card shows up at all.
-    """
-    import numpy as np
-    from PIL import Image
-
-    try:
-        image = np.asarray(Image.open(image_path).convert("RGB"), dtype=np.int16)
-    except (OSError, ValueError):
-        return 0
-    if image.ndim != 3:
-        return 0
-    canvas_area = max(1, width * height)
-
-    from src.app.services.structure.fidelity.pixel_probe import estimate_corner_radius
-
-    def hex_of(colour: tuple[int, int, int]) -> str:
-        return "#{:02x}{:02x}{:02x}".format(*[max(0, min(255, value)) for value in colour])
-
-    # Surfaces already described by a filled element: no chip to add.
-    existing: list[tuple[tuple[int, int, int, int], str]] = []
-    for element in elements:
-        style = element.get("style")
-        if not isinstance(style, dict):
-            continue
-        fill = str(style.get("fillColor") or "")
-        box = _layout_rect(element)
-        if fill and box is not None:
-            existing.append((box, fill.lower()))
-
-    out: list[dict[str, Any]] = []
-    added = 0
-    for element in elements:
-        out.append(element)
-        if str(element.get("type")) != "text" or not element.get("text"):
-            continue
-        box = _layout_rect(element)
-        if box is None or box[2] < 2 or box[3] < 2:
-            continue
-        x, y, box_width, box_height = box
-        fill = _frame_colour(image, box, inset=2)
-        if fill == (0, 0, 0) and image[y : y + 1, x : x + 1].size == 0:
-            continue
-
-        edges: dict[str, int] = {}
-        border_samples: list[tuple[int, int, int]] = []
-        for side in ("left", "right", "top", "bottom"):
-            for step in range(1, BACKDROP_MAX_PAD + 1):
-                if side == "left":
-                    band = image[y : y + box_height, max(0, x - step) : max(0, x - step) + 1]
-                elif side == "right":
-                    band = image[y : y + box_height, x + box_width + step - 1 : x + box_width + step]
-                elif side == "top":
-                    band = image[max(0, y - step) : max(0, y - step) + 1, x : x + box_width]
-                else:
-                    band = image[y + box_height + step - 1 : y + box_height + step, x : x + box_width]
-                if band.size == 0:
-                    break
-                pixels = band.reshape(-1, 3)
-                distance = np.abs(pixels - np.asarray(fill, dtype=np.int16)).max(axis=1)
-                strong = np.where(distance >= BACKDROP_EDGE_DELTA)[0]
-                # An edge spans the side.  A handful of antialiased pixels at
-                # the rim of the fill are not the chip ending — without this the
-                # walk stops 1-4px out, on the glyph's own fringe.
-                if strong.size < max(2, int(pixels.shape[0] * BACKDROP_EDGE_SHARE)):
-                    continue
-                edges[side] = step
-                border_samples.append(tuple(int(value) for value in pixels[strong[0]]))
-                break
-
-        # A chip closes around its words on every side.  Two edges are a text
-        # sitting next to a badge or above a rule, and building a box for that
-        # paints a strip across the row.
-        if len(edges) < BACKDROP_MIN_SIDES:
-            continue
-        if max(edges.values()) > BACKDROP_MAX_PAD_PER_SIDE:
-            continue
-        if sum(edges.values()) > BACKDROP_MAX_TOTAL_PAD:
-            continue
-        left = x - edges.get("left", 0)
-        top = y - edges.get("top", 0)
-        right = x + box_width + edges.get("right", 0)
-        bottom = y + box_height + edges.get("bottom", 0)
-        patch = (
-            max(0, left),
-            max(0, top),
-            max(1, min(width, right) - max(0, left)),
-            max(1, min(height, bottom) - max(0, top)),
-        )
-        if patch[2] * patch[3] > canvas_area * BACKDROP_MAX_AREA_SHARE:
-            continue
-        # What is beyond the edge has to be a different colour, or the "chip"
-        # is just the surface the words were already printed on (a dark title
-        # on a dark page found its own gradient and made a dark rectangle).
-        beyond: list[tuple[int, int, int]] = []
-        for side in edges:
-            sample = {
-                "left": (
-                    slice(max(0, patch[1]), patch[1] + patch[3]),
-                    slice(max(0, patch[0] - 3), max(0, patch[0])),
-                ),
-                "right": (
-                    slice(patch[1], patch[1] + patch[3]),
-                    slice(patch[0] + patch[2], patch[0] + patch[2] + 3),
-                ),
-                "top": (
-                    slice(max(0, patch[1] - 3), max(0, patch[1])),
-                    slice(patch[0], patch[0] + patch[2]),
-                ),
-                "bottom": (
-                    slice(patch[1] + patch[3], patch[1] + patch[3] + 3),
-                    slice(patch[0], patch[0] + patch[2]),
-                ),
-            }[side]
-            chunk = image[sample]
-            if chunk.size:
-                beyond.append(tuple(int(value) for value in np.median(chunk.reshape(-1, 3), axis=0)))
-        if beyond:
-            outside = tuple(
-                int(np.median([sample[channel] for sample in beyond]))
-                for channel in range(3)
-            )
-            if max(abs(one - two) for one, two in zip(fill, outside)) < BACKDROP_FILL_DELTA:
-                continue
-        # Something already paints this surface — a button, a card, a chip that
-        # the plan did describe.  Adding a second one would only stack paint.
-        if any(
-            _rect_contains(box_, patch, tolerance=3)
-            and _same_fill(fill_, hex_of(fill), 6)
-            for box_, fill_ in existing
-        ):
-            continue
-
-        border_hex = ""
-        if border_samples:
-            median = tuple(
-                int(np.median([sample[channel] for sample in border_samples]))
-                for channel in range(3)
-            )
-            step = max(
-                abs(one - two) for one, two in zip(median, fill)
-            )
-            if BACKDROP_EDGE_DELTA <= step <= 120:
-                border_hex = hex_of(median)
-        patch_hex = hex_of(fill)
-        if not border_hex and _same_fill(patch_hex, "", 0):
-            continue
-
-        digest = hashlib.sha1(
-            f"{patch[0]}:{patch[1]}:{patch[2]}:{patch[3]}:{patch_hex}".encode("utf-8")
-        ).hexdigest()[:16]
-        style: dict[str, Any] = {"fillColor": patch_hex}
-        if border_hex:
-            style["borderColor"] = border_hex
-            style["borderWidth"] = 1
-        radius = 0
-        try:
-            radius = int(estimate_corner_radius(image, patch) or 0)
-        except Exception:  # noqa: BLE001 - a radius hint must never break a build
-            radius = 0
-        if radius:
-            style["borderRadius"] = radius
-        out.insert(
-            len(out) - 1,
-            {
-                "id": f"backdrop:{digest}",
-                "type": "container",
-                "x": patch[0],
-                "y": patch[1],
-                "width": patch[2],
-                "height": patch[3],
-                "text": "",
-                "style": style,
-                "role": "text-backdrop",
-                "name": "Text backdrop",
-                "contentRef": f"backdrop:{digest}",
-                "sceneOwnerId": f"backdrop:{digest}",
-                "imageMVP": {
-                    "source": "pixel-recovery",
-                    "role": "text-backdrop",
-                    "grouping_status": "recovered",
-                },
-            },
-        )
-        # Only a word that fits inside its chip is that chip's label.  A long
-        # row label that merely starts on one keeps its own reading and stays
-        # subject to the duplicate pass — otherwise it printed white words
-        # across the row.
-        span_left, span_right = _rendered_span(element)
-        if span_right - span_left <= patch[2] * 1.3:
-            element["badgeLabel"] = True
-        added += 1
-    if added:
-        elements[:] = out
-    return added
 
 
 #: Recovered marks: a logo is wider than an icon but still a mark, not a panel,
@@ -5330,16 +3285,6 @@ VISUAL_MIN_CONTRAST = 24
 VISUAL_MAX_REGIONS = 10
 
 
-def _overlap_share(
-    box: tuple[int, int, int, int],
-    other: tuple[int, int, int, int],
-) -> float:
-    """Share of ``box`` covered by ``other``."""
-    width = min(box[0] + box[2], other[0] + other[2]) - max(box[0], other[0])
-    height = min(box[1] + box[3], other[1] + other[3]) - max(box[1], other[1])
-    if width <= 0 or height <= 0:
-        return 0.0
-    return (width * height) / max(1, box[2] * box[3])
 
 
 #: A card can be three channels away from the page it sits on: marketplace's
@@ -5350,6 +3295,12 @@ SOFT_PANEL_MIN_DELTA = 6
 #: step between neighbours is under the eye's threshold.
 PAGE_BANDS = 8
 #: 四边中位色相差超过这个值，说明它们属于两个不同的面，不能取平均。
+#: 声明底色只要在画布内部占到这么多，它就是页面本身：边缘的异色是窗框/侧栏。
+#: 实测分布：AtomGit 49.9% / review 58.7% / FluxWeaver 78.7% / erp 83.0% /
+#: inventory2 91.9%。前两页确实需要重涂，后三页都是"三面深色窗框"，70% 分得开。
+PAGE_DECLARED_TOL = 8
+PAGE_DECLARED_SHARE = 0.70
+
 PAGE_EDGE_SPLIT = 8
 #: 分带底色与声明的页底色差小于这个值时，这条带子什么也没画，只是接缝。
 #: 取 6 而不是 10：wecom 的页底声明 #666666、实到 #5d6064，差 9 个通道——
@@ -5384,44 +3335,8 @@ SOFT_PANEL_EXISTING_IOA = 0.7
 SOFT_PANEL_MAX_REGIONS = 24
 
 
-def _panel_edge_share(mask, box: tuple[int, int, int, int]) -> float:
-    """Share of a box's one-pixel perimeter that is painted."""
-    import numpy as np
-
-    x, y, width, height = box
-    if width < 3 or height < 3:
-        return 0.0
-    top = mask[y, x : x + width]
-    bottom = mask[y + height - 1, x : x + width]
-    left = mask[y : y + height, x]
-    right = mask[y : y + height, x + width - 1]
-    sides = np.concatenate([top, bottom, left, right])
-    return float(sides.mean()) if sides.size else 0.0
 
 
-def _already_painted(
-    box: tuple[int, int, int, int],
-    fill: str,
-    covered: Sequence[tuple[tuple[int, int, int, int], str]],
-) -> bool:
-    """Whether an existing filled box already paints this patch in this colour.
-
-    Geometry alone is not enough: the sidebar paints #364150 across its whole
-    height, and the cyan highlight inside it is a *different* element that the
-    plan never had.  Covering is only "already there" when the colour agrees.
-    """
-    for other, other_fill in covered:
-        share = _overlap_share(box, other)
-        if share < SOFT_PANEL_EXISTING_IOA:
-            continue
-        if not other_fill:
-            # A picture: its pixels are the answer, not a fill.
-            if share >= 0.5:
-                return True
-            continue
-        if not fill or _same_fill(fill, other_fill, SOFT_PANEL_MIN_DELTA):
-            return True
-    return False
 
 
 #: A block of one flat colour is a button, a highlight, a chip.  It has to be
@@ -5524,766 +3439,26 @@ PILL_MAX_REGIONS = 20
 COLOUR_REGION_MAX = 40
 
 
-def _recover_colour_regions(
-    elements: list[dict[str, Any]],
-    image_path: str,
-    width: int,
-    height: int,
-    background: str,
-) -> int:
-    """Recover flat blocks of one colour that the plan never described.
-
-    Thresholding against the page merges everything into one blob: the sidebar,
-    the highlighted menu row inside it and the badge on top of that are one
-    component because they all differ from the page.  Segmenting *per colour*
-    separates them, and a fill that occupies more than 90% of its own bounding
-    box is a block — a button, a highlight bar, a chip — while text covers less
-    than half of its box and is dropped without a second thought.
-    """
-    try:
-        import numpy as np
-        from PIL import Image
-    except Exception:  # pragma: no cover - imaging stack is a hard dependency
-        return 0
-    try:
-        import cv2
-    except Exception:  # pragma: no cover - opencv is a pipeline dependency
-        return 0
-    try:
-        image = np.asarray(Image.open(image_path).convert("RGB"), dtype=np.int16)
-    except (OSError, ValueError):
-        return 0
-    if image.ndim != 3:
-        return 0
-    image = image[:height, :width]
-    page = np.asarray(_hex_rgb(background), dtype=np.int16) if background else None
-
-    quantised = (image // 12).astype(np.int32)
-    keys = quantised[:, :, 0] * 4096 + quantised[:, :, 1] * 64 + quantised[:, :, 2]
-    values, counts = np.unique(keys.reshape(-1), return_counts=True)
-    order = np.argsort(counts)[::-1]
-    colours: list[tuple[int, int, int]] = []
-    for position in order[:24]:
-        if int(counts[position]) < COLOUR_REGION_MIN_SAMPLES:
-            break
-        key = int(values[position])
-        sample = image.reshape(-1, 3)[keys.reshape(-1) == key]
-        colour = tuple(int(value) for value in np.median(sample, axis=0))
-        if page is not None and max(
-            abs(one - two) for one, two in zip(colour, tuple(page))
-        ) < SOFT_PANEL_MIN_DELTA:
-            continue
-        colours.append(colour)
-
-    covered: list[tuple[tuple[int, int, int, int], str]] = []
-    for element in elements:
-        box = _layout_rect(element)
-        if box is None:
-            continue
-        fill = _solid_fill(element)
-        if fill:
-            covered.append((box, fill))
-        elif element.get("imageBase64"):
-            covered.append((box, ""))
-
-    canvas_area = max(1, width * height)
-    found: list[tuple[int, tuple[int, int, int, int], str]] = []
-    for colour in colours:
-        target = np.asarray(colour, dtype=np.int16)
-        mask = (
-            np.abs(image - target).max(axis=2) <= COLOUR_REGION_TOLERANCE
-        ).astype(np.uint8)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((3, 3), dtype=np.uint8))
-        count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(mask, 8)
-        for index in range(1, count):
-            x, y, box_width, box_height, area = (
-                int(value) for value in stats[index, :5]
-            )
-            if area < COLOUR_REGION_MIN_PIXELS:
-                continue
-            if box_width < COLOUR_REGION_MIN_SIDE or box_height < COLOUR_REGION_MIN_SIDE:
-                continue
-            if box_width * box_height > canvas_area * COLOUR_REGION_MAX_SHARE:
-                continue
-            if area / max(1, box_width * box_height) < COLOUR_REGION_MIN_FILL:
-                continue
-            found.append(
-                (
-                    area,
-                    (x, y, box_width, box_height),
-                    "#{:02x}{:02x}{:02x}".format(*colour),
-                )
-            )
-    if not found:
-        return 0
-    found.sort(key=lambda item: item[0], reverse=True)
-    added = 0
-    for _area, box, fill in found:
-        if added >= COLOUR_REGION_MAX:
-            break
-        if _already_painted(box, fill, covered):
-            continue
-        if any(_iou(box, other) >= 0.8 for other, _fill in covered):
-            continue
-        digest = hashlib.sha1(
-            f"{box[0]}:{box[1]}:{box[2]}:{box[3]}:{fill}".encode("utf-8")
-        ).hexdigest()[:16]
-        elements.append(
-            {
-                "id": f"block:{digest}",
-                "type": "container",
-                "x": box[0],
-                "y": box[1],
-                "width": box[2],
-                "height": box[3],
-                "text": "",
-                "style": {"fillColor": fill},
-                "role": "panel",
-                "name": "Colour block",
-                "contentRef": f"block:{digest}",
-                "sceneOwnerId": f"block:{digest}",
-                "imageMVP": {
-                    "source": "pixel-recovery",
-                    "role": "panel",
-                    "grouping_status": "recovered",
-                },
-            }
-        )
-        covered.append((box, fill))
-        added += 1
-    return added
 
 
-def _recover_pill_shapes(
-    elements: list[dict[str, Any]],
-    image_path: str,
-    width: int,
-    height: int,
-    background: str,
-) -> int:
-    """Recover the capsules and rounded chips that carry words.
-
-    The solid-panel pass requires a block to fill 90% of its own box, which is
-    exactly what a capsule does not do: its four corners are rounded away, so it
-    lands at 0.80-0.90 and is dropped.  That is how a nav item loses its pill and
-    ends up as words lying directly on the page.
-
-    The shape is what identifies it, and the shape is measurable:
-
-    * all four corner patches are *not* the colour (roundness), while
-    * the left and right mid-edge are the colour (it spans the full width).
-
-    A line of text fails the second test; a square block fails the first.  The
-    fill share sits between the solid pass's 0.90 and a bare block, so the two
-    passes cannot both claim the same region.
-    """
-    try:
-        import numpy as np
-        from PIL import Image
-    except Exception:  # pragma: no cover - imaging stack is a hard dependency
-        return 0
-    try:
-        import cv2
-    except Exception:  # pragma: no cover - opencv is a pipeline dependency
-        return 0
-    if not background:
-        return 0
-    try:
-        image = np.asarray(Image.open(image_path).convert("RGB"), dtype=np.int16)
-    except (OSError, ValueError):
-        return 0
-    if image.ndim != 3:
-        return 0
-    image = image[:height, :width]
-    page = np.asarray(_hex_rgb(background), dtype=np.int16)
-
-    quantised = (image // 12).astype(np.int32)
-    keys = quantised[:, :, 0] * 4096 + quantised[:, :, 1] * 64 + quantised[:, :, 2]
-    values, counts = np.unique(keys.reshape(-1), return_counts=True)
-    order = np.argsort(counts)[::-1]
-
-    covered: list[tuple[tuple[int, int, int, int], str]] = []
-    for element in elements:
-        box = _layout_rect(element)
-        if box is None:
-            continue
-        fill = _solid_fill(element)
-        if fill:
-            covered.append((box, fill))
-        elif element.get("imageBase64"):
-            covered.append((box, ""))
-
-    found: list[tuple[int, tuple[int, int, int, int], str, int]] = []
-    for position in order[:24]:
-        if int(counts[position]) < COLOUR_REGION_MIN_SAMPLES:
-            break
-        key = int(values[position])
-        sample = image.reshape(-1, 3)[keys.reshape(-1) == key]
-        colour = tuple(int(value) for value in np.median(sample, axis=0))
-        if max(abs(one - two) for one, two in zip(colour, tuple(page))) < PILL_MIN_CONTRAST:
-            continue
-        target = np.asarray(colour, dtype=np.int16)
-        mask = (np.abs(image - target).max(axis=2) <= COLOUR_REGION_TOLERANCE).astype(
-            np.uint8
-        )
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((3, 3), dtype=np.uint8))
-        count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(mask, 8)
-        for index in range(1, count):
-            x, y, box_width, box_height, area = (int(value) for value in stats[index, :5])
-            if not (PILL_MIN_WIDTH <= box_width <= PILL_MAX_WIDTH):
-                continue
-            if not (PILL_MIN_HEIGHT <= box_height <= PILL_MAX_HEIGHT):
-                continue
-            share = area / max(1, box_width * box_height)
-            if not (PILL_MIN_FILL <= share <= PILL_MAX_FILL):
-                continue
-            if not _pill_corners_rounded(image, (x, y, box_width, box_height), target):
-                continue
-            if not _pill_spans_width(image, (x, y, box_width, box_height), target):
-                continue
-            radius = _pill_radius(image, (x, y, box_width, box_height), target, box_height)
-            found.append(
-                (
-                    area,
-                    (x, y, box_width, box_height),
-                    "#{:02x}{:02x}{:02x}".format(*colour),
-                    radius,
-                )
-            )
-
-    if not found:
-        return 0
-    found.sort(key=lambda item: item[0], reverse=True)
-    added = 0
-    for _area, box, fill_hex, radius in found[:PILL_MAX_REGIONS]:
-        if _already_painted(box, fill_hex, covered):
-            continue
-        digest = hashlib.sha1(
-            f"pill:{box[0]}:{box[1]}:{box[2]}:{box[3]}:{fill_hex}".encode("utf-8")
-        ).hexdigest()[:16]
-        elements.append(
-            {
-                "id": f"pill:{digest}",
-                "type": "container",
-                "x": box[0],
-                "y": box[1],
-                "width": box[2],
-                "height": box[3],
-                "text": "",
-                "style": {"fillColor": fill_hex, "borderRadius": radius},
-                "role": "panel",
-                "name": "Pill",
-                "contentRef": f"pill:{digest}",
-                "sceneOwnerId": f"pill:{digest}",
-                "imageMVP": {
-                    "source": "pixel-recovery",
-                    "role": "panel",
-                    "grouping_status": "recovered",
-                },
-            }
-        )
-        covered.append((box, fill_hex))
-        added += 1
-    return added
 
 
-def _pill_corners_rounded(image, box, target) -> bool:
-    """All four corners are off-colour: the rectangle has been rounded."""
-    import numpy as np
-
-    x, y, box_width, box_height = box
-    if box_width < 10 or box_height < 8:
-        return False
-    corners = (
-        (x + 1, y + 1),
-        (x + box_width - 4, y + 1),
-        (x + 1, y + box_height - 4),
-        (x + box_width - 4, y + box_height - 4),
-    )
-    for left, top in corners:
-        patch = image[top : top + 3, left : left + 3]
-        if patch.size == 0:
-            return False
-        if np.abs(patch - target).max(axis=2).min() <= PILL_CORNER_TOLERANCE:
-            # A corner still holds the fill: a square block, not a capsule.
-            return False
-    return True
 
 
-def _pill_spans_width(image, box, target) -> bool:
-    """The left and right mid-edge carry the fill: it runs the full width."""
-    import numpy as np
-
-    x, y, box_width, box_height = box
-    middle = y + box_height // 2
-    for column in (x + 1, x + box_width - 2):
-        patch = image[middle - 1 : middle + 2, column : column + 1]
-        if patch.size == 0:
-            return False
-        if np.abs(patch - target).max(axis=2).min() > COLOUR_REGION_TOLERANCE:
-            return False
-    return True
 
 
-def _pill_radius(image, box, target, box_height: int) -> int:
-    """Corner inset measured on the top row: how far in the fill starts."""
-    import numpy as np
-
-    x, y, box_width, _box_height = box
-    row = image[y + 1, x : x + box_width]
-    if row.size == 0:
-        return max(2, min(box_height // 2, 8))
-    inside = np.abs(row - target).max(axis=1) <= COLOUR_REGION_TOLERANCE
-    if not inside.any():
-        return max(2, min(box_height // 2, 8))
-    inset = int(np.argmax(inside))
-    return int(max(2, min(box_height // 2, inset, 24)))
 
 
-def _reflow_key(text: str) -> str:
-    """Words comparable across OCR and the model, punctuation included.
-
-    OCR prints a half-width colon where the model wrote a full-width one, so the
-    punctuation is folded as well; everything else is the fold the duplicate
-    passes already use.  Whitespace is dropped: a line break is exactly what is
-    being reconstructed.
-    """
-    folded = _tail_key({"text": text})
-    return folded.translate(
-        str.maketrans({"：": ":", "，": ",", "。": ".", "；": ";", "（": "(", "）": ")", "、": ","})
-    )
 
 
-def _reflow_paragraphs(
-    elements: list[dict[str, Any]],
-    ocr_observations: Sequence[Mapping[str, Any]] | None,
-    image_path: str | Path | None = None,
-    background: str | None = None,
-) -> int:
-    """Give a paragraph back the lines the picture actually has.
-
-    The plan models a card's description as one string in a one-line-tall box.
-    The picture wraps that string over two lines, so the browser prints one long
-    line, the patch pass fills the second line with a picture of it, and Figma —
-    which wraps inside the box — draws two lines on top of each other.  Three
-    renderers, three wrong answers, one cause: nobody went back to the OCR lines.
-
-    This pass does, and only when the lines agree with the node's own words: the
-    seed line has to overlap the box, the chain has to grow downwards in the same
-    horizontal band, and the joined text has to match the node at
-    ``PARAGRAPH_REFLOW_MIN_SIMILARITY``.  The node keeps the model's wording —
-    the OCR lines only say *where* to break it — because OCR misreads characters
-    ("Al" for "AI") and the model does not.
-    """
-    if not ocr_observations:
-        return 0
-    # A column of page colour between two blocks is the geometry that says they
-    # are not the same paragraph.  Read from the picture, so a three-column table
-    # or a single centred card behaves the same way.
-    picture = None
-    if image_path and background:
-        try:
-            import numpy as _np
-            from PIL import Image as _Image
-
-            picture = _np.asarray(_Image.open(image_path).convert("RGB"), dtype=_np.int16)
-        except (OSError, ValueError):
-            picture = None
-
-    def _separated(one: Sequence[int], two: Sequence[int]) -> bool:
-        if picture is None or not background:
-            return False
-        from src.app.services.structure.fidelity.pixel_probe import separated_by_page
-
-        return separated_by_page(picture, str(background), one, two)
-    import numpy as np
-
-    lines = []
-    for observation in ocr_observations:
-        box = observation.get("bbox")
-        text = str(observation.get("text") or "").strip()
-        if not text or not isinstance(box, (list, tuple)) or len(box) != 4:
-            continue
-        try:
-            x, y, w, h = (float(value) for value in box)
-        except (TypeError, ValueError):
-            continue
-        if w <= 0 or h <= 0:
-            continue
-        lines.append({"text": text, "key": _reflow_key(text), "box": (x, y, w, h)})
-    if not lines:
-        return 0
-
-    reflowed = 0
-    for element in elements:
-        if element.get("type") != "text" or not element.get("text"):
-            continue
-        if element.get("lines"):
-            continue
-        style = element.get("style") or {}
-        size = float(style.get("fontSize") or 0)
-        height = float(element.get("height") or 0)
-        if size <= 0 or height <= 0 or height > size * 1.7:
-            continue
-        node_key = _reflow_key(str(element.get("text") or ""))
-        if len(node_key) < PARAGRAPH_REFLOW_MIN_CHARS:
-            continue
-        box = _layout_rect(element)
-        if box is None:
-            continue
-        seed = _reflow_seed(lines, box, node_key)
-        if seed is None:
-            continue
-        chain = _reflow_chain(lines, seed, box, node_key, separated=_separated)
-        if len(chain) < 2:
-            continue
-        joined = "".join(line["key"] for line in chain)
-        from difflib import SequenceMatcher
-
-        if SequenceMatcher(None, joined, node_key).ratio() < PARAGRAPH_REFLOW_MIN_SIMILARITY:
-            continue
-        counts = [len(line["key"]) for line in chain]
-        parts = _split_by_lengths(str(element.get("text") or ""), counts)
-        if len(parts) < 2 or not all(parts):
-            continue
-        left = min(line["box"][0] for line in chain)
-        top = min(line["box"][1] for line in chain)
-        right = max(line["box"][0] + line["box"][2] for line in chain)
-        bottom = max(line["box"][1] + line["box"][3] for line in chain)
-        pitches = [
-            chain[index + 1]["box"][1] - chain[index]["box"][1]
-            for index in range(len(chain) - 1)
-        ]
-        pitch = float(np.median(pitches)) if pitches else float(height)
-        element["x"] = round(left, 1)
-        element["y"] = round(top, 1)
-        element["width"] = round(right - left, 1)
-        element["height"] = round(bottom - top, 1)
-        element["lines"] = parts
-        element["lineHeight"] = round(pitch, 1)
-        element["lineHeightPolicy"] = "observed"
-        element["textAnchor"] = "start"
-        element["reflowEvidence"] = {
-            "method": "ocr-lines",
-            "lines": len(chain),
-            "pitch": round(pitch, 1),
-            "similarity": round(
-                SequenceMatcher(None, joined, node_key).ratio(), 3
-            ),
-        }
-        reflowed += 1
-    return reflowed
 
 
-def _reflow_seed(
-    lines: Sequence[Mapping[str, Any]],
-    box: tuple[int, int, int, int],
-    node_key: str,
-) -> Mapping[str, Any] | None:
-    """The OCR line this node starts on: over the box's first line, first words agree."""
-    x, y, w, h = box
-    best = None
-    best_score = 0.0
-    for line in lines:
-        lx, ly, lw, lh = line["box"]
-        if ly > y + h * 0.8:
-            continue
-        if ly + lh < y + h * 0.2:
-            continue
-        overlap = min(x + w, lx + lw) - max(x, lx)
-        if overlap < min(w, lw) * PARAGRAPH_REFLOW_BAND_SHARE:
-            continue
-        key = str(line["key"])
-        if not key or not node_key.startswith(key[: max(4, len(key) // 2)]):
-            continue
-        score = len(key) / max(1, len(node_key))
-        if score > best_score:
-            best = line
-            best_score = score
-    return best
 
 
-def _reflow_chain(
-    lines: Sequence[Mapping[str, Any]],
-    seed: Mapping[str, Any],
-    box: tuple[int, int, int, int],
-    node_key: str,
-    separated: Any = None,
-) -> list[Mapping[str, Any]]:
-    """Follow the seed downwards while the lines still spell the node's words.
-
-    Geometry alone would happily eat the meta row under the paragraph ("TSX ·
-    4 小时前"), so every step also has to be the next piece of the sentence:
-    the remaining text must start with the candidate's words.  That is what
-    makes the chain stop at the paragraph's last line instead of the card's.
-    """
-    x, _y, w, _h = box
-    chain = [seed]
-    cursor = seed
-    consumed = len(str(seed["key"]))
-    while consumed < len(node_key) and len(chain) < PARAGRAPH_REFLOW_MAX_LINES:
-        current_bottom = cursor["box"][1] + cursor["box"][3]
-        remaining = node_key[consumed:]
-        candidates = []
-        for line in lines:
-            if line in chain:
-                continue
-            lx, ly, lw, lh = line["box"]
-            gap = ly - current_bottom
-            if gap < -cursor["box"][3] * 0.4 or gap > cursor["box"][3] * PARAGRAPH_REFLOW_MAX_GAP:
-                continue
-            overlap = min(x + w, lx + lw) - max(x, lx)
-            if overlap < lw * PARAGRAPH_REFLOW_BAND_SHARE:
-                continue
-            # Two columns of a layout are not one paragraph, whatever the words
-            # say: a strip of page between them is enough to say no.
-            if separated is not None and separated(cursor["box"], line["box"]):
-                continue
-            candidates.append((gap, line))
-        if not candidates:
-            break
-        candidates.sort(key=lambda item: item[0])
-        picked = None
-        for _gap, line in candidates:
-            key = str(line["key"])
-            if key and remaining.startswith(key):
-                picked = line
-                break
-        if picked is None:
-            # The last line of the picture may hold more than the model wrote;
-            # accept it when the remaining words are its prefix.
-            for _gap, line in candidates:
-                key = str(line["key"])
-                if key and len(remaining) >= 4 and key.startswith(remaining[: max(4, len(remaining) - 2)]):
-                    picked = line
-                    break
-        if picked is None:
-            break
-        chain.append(picked)
-        cursor = picked
-        consumed += len(str(picked["key"]))
-    return chain
 
 
-def _split_by_lengths(text: str, counts: Sequence[int]) -> list[str]:
-    """Cut the model's own words at the character counts the picture used."""
-    parts: list[str] = []
-    position = 0
-    consumed = 0
-    start = 0
-    for index, limit in enumerate(counts):
-        last = index == len(counts) - 1
-        target = consumed + limit
-        while position < len(text) and (last or consumed < target):
-            char = text[position]
-            position += 1
-            if not char.isspace():
-                consumed += 1
-        parts.append(text[start:position].strip())
-        start = position
-    return parts
 
 
-def _recover_page_fill(
-    elements: list[dict[str, Any]],
-    image_path: str,
-    width: int,
-    height: int,
-    background: str,
-) -> bool:
-    """Paint the canvas in the colours the screenshot's own margins are.
-
-    The plan declares a page colour, and a page is not always that colour:
-    review's ground is a pale blue gradient declared #fefefe, so every pixel
-    outside a card was 34 channels off and no rule downstream could see it —
-    the fill was "correct" by declaration.  The margin of the picture is the
-    only witness that cannot be wrong.
-
-    One rect would flatten the gradient into a step, so the ground is laid down
-    in horizontal bands, each sampling its own margins.  A page that really is
-    one colour produces identical bands and costs nothing.
-    """
-    try:
-        import numpy as np
-        from PIL import Image
-    except Exception:  # pragma: no cover - imaging stack is a hard dependency
-        return False
-    try:
-        image = np.asarray(Image.open(image_path).convert("RGB"), dtype=np.int16)
-    except (OSError, ValueError):
-        return False
-    if image.ndim != 3:
-        return False
-    image = image[:height, :width]
-    edges = [
-        image[0:4].reshape(-1, 3),
-        image[max(0, height - 4) : height].reshape(-1, 3),
-        image[:, 0:4].reshape(-1, 3),
-        image[:, max(0, width - 4) : width].reshape(-1, 3),
-    ]
-    medians = [np.median(edge, axis=0) for edge in edges if edge.size]
-    if not medians:
-        return False
-    # The page is one colour on all four sides.  A sidebar or a dark header owns
-    # one edge, and a page read off that edge paints the whole canvas wrong.
-    agreeing = [
-        median
-        for median in medians
-        if sum(
-            1
-            for other in medians
-            if float(np.abs(median - other).max()) <= 24
-        )
-        >= 3
-    ]
-    if not agreeing:
-        return False
-    declared = tuple(int(value) for value in _hex_rgb(background)) if background else None
-    spread = max(
-        (
-            float(np.abs(left - right).max())
-            for left in agreeing
-            for right in agreeing
-        ),
-        default=0.0,
-    )
-    if spread > PAGE_EDGE_SPLIT:
-        # The four edges are two different surfaces, not one page: marketplace is
-        # #1a1917 at top and bottom and #100f0d down both sides.  Averaging them
-        # produced #151412 — a colour that matches the declared background, so the
-        # whole calibration bailed out and the page kept its wrong base.  Vote
-        # instead, and break a tie towards the side the declaration got wrong.
-        votes = [
-            (
-                sum(
-                    1
-                    for other in agreeing
-                    if float(np.abs(median - other).max()) <= PAGE_EDGE_SPLIT
-                ),
-                0.0
-                if declared is None
-                else float(np.abs(median - np.asarray(declared, dtype=np.float64)).max()),
-                median,
-            )
-            for median in agreeing
-        ]
-        colour = tuple(
-            int(value) for value in max(votes, key=lambda vote: (vote[0], vote[1]))[2]
-        )
-    else:
-        colour = tuple(int(value) for value in np.median(agreeing, axis=0))
-    hexed = "#{:02x}{:02x}{:02x}".format(*colour)
-    if background and _same_fill(hexed, background, SOFT_PANEL_MIN_DELTA):
-        return False
-
-    # Bands: each one reads its own left and right margins — the page is what
-    # shows at the edges — but only the margin pixels nothing else owns.  review
-    # is the reason: its top band has a gradient on the left and a white card
-    # touching the right edge, so the median of the two was a colour that exists
-    # nowhere (#dee7fb against a truth of #f2f5fb).  Unowned interior pixels are
-    # not the page either — on the bottom band they are mostly a card — so the
-    # sample stays at the margins and simply excludes what has been painted.
-    strip = max(4, min(24, width // 40))
-    covered = np.zeros((height, width), dtype=bool)
-    for element in elements:
-        box = _layout_rect(element)
-        if box is None:
-            continue
-        x, y, w, h = box
-        x0, y0 = max(0, int(x)), max(0, int(y))
-        x1, y1 = min(width, int(x + w)), min(height, int(y + h))
-        if x1 <= x0 or y1 <= y0:
-            continue
-        if _solid_fill(element) or element.get("imageBase64"):
-            covered[y0:y1, x0:x1] = True
-
-    bands: list[tuple[int, int, str]] = []
-    previous: tuple[int, int, int] | None = None
-    for band in range(PAGE_BANDS):
-        top = height * band // PAGE_BANDS
-        bottom = height * (band + 1) // PAGE_BANDS
-        if bottom - top < 2:
-            continue
-        sides: list[tuple[int, int, int]] = []
-        for attempt in range(3):
-            width_strip = strip * (2**attempt)
-            for left_edge in (True, False):
-                if left_edge:
-                    crop = image[top:bottom, 0:width_strip]
-                    free = covered[top:bottom, 0:width_strip]
-                else:
-                    crop = image[top:bottom, max(0, width - width_strip) : width]
-                    free = covered[top:bottom, max(0, width - width_strip) : width]
-                pixels = crop[~free]
-                if pixels.size and pixels.reshape(-1, 3).shape[0] >= max(
-                    24, (bottom - top) // 4
-                ):
-                    median = np.median(pixels.reshape(-1, 3), axis=0)
-                    sides.append(tuple(int(value) for value in median))
-            if sides:
-                break
-        if not sides:
-            continue
-        # Two margins that disagree are two different surfaces: one of them is a
-        # card that reaches the edge.  Averaging them invents a colour, so the
-        # band takes the side that continues the band above it.
-        if len(sides) == 1:
-            band_colour = sides[0]
-        else:
-            left_colour, right_colour = sides[0], sides[-1]
-            if max(abs(a - b) for a, b in zip(left_colour, right_colour)) <= 8:
-                band_colour = left_colour
-            elif previous is not None:
-                band_colour = min(
-                    (left_colour, right_colour),
-                    key=lambda colour: max(
-                        abs(a - b) for a, b in zip(colour, previous)
-                    ),
-                )
-            else:
-                band_colour = left_colour
-        previous = band_colour
-        if declared is not None and max(
-            abs(band_colour[index] - declared[index]) for index in range(3)
-        ) < PAGE_BAND_MIN_DELTA:
-            continue
-        bands.append(
-            (top, bottom, "#{:02x}{:02x}{:02x}".format(*band_colour))
-        )
-    if not bands:
-        return False
-    if len({colour for _top, _bottom, colour in bands}) == 1:
-        bands = [(0, height, bands[0][2])]
-    placed = 0
-    for top, bottom, band_colour in bands:
-        digest = hashlib.sha1(
-            f"page:{band_colour}:{top}:{bottom}".encode("utf-8")
-        ).hexdigest()[:16]
-        elements.insert(
-            placed,
-            {
-                "id": f"page:{digest}",
-                "type": "container",
-                "x": 0,
-                "y": top,
-                "width": width,
-                "height": bottom - top,
-                "text": "",
-                "style": {"fillColor": band_colour},
-                "role": "page-ground",
-                "name": "Page ground",
-                "contentRef": f"page:{digest}",
-                "sceneOwnerId": f"page:{digest}",
-                "zIndex": -2,
-                "imageMVP": {
-                    "source": "pixel-recovery",
-                    "role": "page-ground",
-                    "grouping_status": "recovered",
-                },
-            },
-        )
-        placed += 1
-    return True
 
 
 def _recover_chip_outlines(
@@ -8707,6 +5882,12 @@ def _promote_ocr_text(
             # the wrong place, and OCR is where it actually is.  Moving it is
             # the repair; adding a second copy prints the row twice.
             if abs(other_rect[0] - left) > 6 or abs(other_rect[2] - box_width) > 8:
+                if abs(other_rect[0] - left) > max(box_width * 2, TEXT_SNAP_MAX_SHIFT):
+                    # 同名同行的**另一处**（marketplace 两张卡都有"看详情"）不是
+                    # "量歪了原点"。搬过去会把左边那颗字印到右边，再被去重删掉，
+                    # 左边那颗按钮就空了。当成"已经印过"，什么都不动。
+                    blocked = True
+                    break
                 element["x"] = left
                 element["y"] = top
                 element["width"] = box_width
@@ -9663,6 +6844,193 @@ def _fit_text_to_box(elements: list[dict[str, Any]]) -> int:
         }
         fitted += 1
     return fitted
+
+
+#: 大字号文本按行框居中时，墨迹会偏高这么多 em：行框给上伸部留的位置比下伸部多。
+#: CSDN 那个 51px 的标题实测偏高 5px，0.10em 正好把它拉回去。
+DISPLAY_INK_BIAS = 0.10
+#: 独立开关：关掉它，大标题就继续按行框居中（消融用）。
+DISPLAY_INK_ENABLED = True
+#: 只有这么大的字才值得校准。正文的同类偏差不到 2px，落在字形自己的抗锯齿里。
+DISPLAY_INK_MIN_SIZE = 28.0
+#: 差得比这还多就不是度量问题，是排版结构问题（换行、段落框），不碰。
+DISPLAY_INK_MAX_SHIFT = 10
+
+
+#: 位图裁片里原图的文字笔画要不要擦掉。不擦的话，底图上的字与顶层矢量字
+#: 会因为字形差错开一两像素，两条边同时看得见——Gmail 的"写邮件"、CSDN 的
+#: "立即开盒"和 Logo 区的双影都是这么来的。
+ERASE_TEXT_IN_BITMAPS = True
+#: 位图与文字的重叠占文字面积这么多，才认为这块位图"背着"这段字。
+ERASE_TEXT_MIN_SHARE = 0.3
+#: 取色环带的外扩像素：3px 足够跳过抗锯齿，又不会把邻近图形算进来。
+ERASE_TEXT_RING = 3
+#: 位图面积至少是文字面积这么多倍，才当它是"背着字的底板"。15×12 的小图标与
+#: 旁边的标签有 30% 重叠是常事，抹掉它就等于把图标删了（worklog 实测 −0.06）。
+ERASE_TEXT_MIN_AREA_RATIO = 4.0
+
+
+def _erase_text_from_bitmaps(
+    elements: list[dict[str, Any]],
+    image_path: str,
+    width: int,
+    height: int,
+) -> int:
+    """把位图裁片里那些"已经有矢量字"的原图文字抹平。
+
+    按钮底图、插画裁片、残差补丁都是从原图直接裁的，上面本来就印着字。顶层再
+    画一遍可编辑 TEXT，两张字叠在一起：字形差不了一两像素，笔画边缘就成了双影。
+    这里在裁片内部按文字框（外扩 2px）用**外圈环带的中位色**填平，底图只剩干净
+    的圆角背景、渐变和图标，文字 100% 由矢量节点呈现。
+
+    只擦"有矢量字站在上面"的地方，且只擦位图内部；位图之外一个像素都不动。
+    """
+    import base64
+    import io
+
+    import numpy as np
+    from PIL import Image
+
+    texts: list[tuple[int, int, int, int]] = []
+    for element in elements:
+        if str(element.get("type") or "") != "text":
+            continue
+        if not str(element.get("text") or "").strip():
+            continue
+        box = _layout_rect(element)
+        if box is not None:
+            texts.append(box)
+    if not texts:
+        return 0
+    try:
+        image = np.asarray(Image.open(image_path).convert("RGB"), dtype=np.uint8)
+    except (OSError, ValueError):
+        return 0
+
+    erased = 0
+    for element in elements:
+        payload = element.get("imageBase64")
+        if not payload:
+            continue
+        # 抠过图的裁片是"一个物体"，不是"一块底板"：往它里面涂底色会把 alpha
+        # 洗成不透明矩形，正好抵消掉抠图。而且这段字属于物体本身，不该抹。
+        if element.get("alphaMatte"):
+            continue
+        box = _layout_rect(element)
+        if box is None:
+            continue
+        # 分母必须是**文字**：一张 244×112 的按钮底图里只印着 90×36 的两个字，
+        # 按位图自身算重叠只有 0.12，按文字算才是 1.0。要求的是"这段字被这块
+        # 位图背着"，不是"这张位图里满是字"。
+        hits = [text for text in texts if _overlap_share(text, box) >= ERASE_TEXT_MIN_SHARE]
+        if not hits:
+            continue
+        bitmap_area = float(box[2]) * float(box[3])
+        hits = [
+            text
+            for text in hits
+            if bitmap_area >= ERASE_TEXT_MIN_AREA_RATIO * float(text[2]) * float(text[3])
+        ]
+        if not hits:
+            continue
+        x0, y0 = max(0, int(box[0])), max(0, int(box[1]))
+        x1 = min(width, int(box[0]) + int(box[2]))
+        y1 = min(height, int(box[1]) + int(box[3]))
+        if x1 <= x0 or y1 <= y0:
+            continue
+        patch = image[y0:y1, x0:x1].copy()
+        patch_h, patch_w = patch.shape[:2]
+        touched = False
+        for text in hits:
+            left = int(text[0]) - x0
+            top = int(text[1]) - y0
+            right = left + int(text[2])
+            bottom = top + int(text[3])
+            pad = 2
+            inner_l, inner_t = max(0, left - pad), max(0, top - pad)
+            inner_r, inner_b = min(patch_w, right + pad), min(patch_h, bottom + pad)
+            if inner_r <= inner_l or inner_b <= inner_t:
+                continue
+            ring_l = max(0, inner_l - ERASE_TEXT_RING)
+            ring_t = max(0, inner_t - ERASE_TEXT_RING)
+            ring_r = min(patch_w, inner_r + ERASE_TEXT_RING)
+            ring_b = min(patch_h, inner_b + ERASE_TEXT_RING)
+            region = patch[ring_t:ring_b, ring_l:ring_r]
+            if region.size == 0:
+                continue
+            keep = np.ones(region.shape[:2], dtype=bool)
+            keep[
+                inner_t - ring_t : inner_b - ring_t,
+                inner_l - ring_l : inner_r - ring_l,
+            ] = False
+            ring = region[keep]
+            if ring.size < 3:
+                # 环带被裁片边界吃掉了：退回用整块裁片的中位色，总比留着双影强。
+                ring = patch.reshape(-1, 3)
+            fill = np.median(ring, axis=0)
+            patch[inner_t:inner_b, inner_l:inner_r] = fill.astype(np.uint8)
+            touched = True
+        if not touched:
+            continue
+        buffer = io.BytesIO()
+        Image.fromarray(patch).save(buffer, format="PNG")
+        element["imageBase64"] = base64.b64encode(buffer.getvalue()).decode("ascii")
+        element.setdefault("fitEvidence", {})["textErased"] = len(hits)
+        erased += 1
+    return erased
+
+
+def _align_display_ink_centres(
+    elements: list[dict[str, Any]],
+    image_path: str,
+    width: int,
+    height: int,
+) -> int:
+    """把大标题的**墨迹中心**对到原图的墨迹中心。
+
+    文本框的 y 是从 OCR 框或容器内边距算出来的，落在"行框"上；而原图上量得到
+    的只有墨迹。行框给上伸部留的位置比下伸部多，于是同一段文字按行框居中会比
+    原图高约 0.1em——51px 的标题就是 5px，并排图上一眼可见，而字号本身是对的。
+
+    只动 y，只动单行且字号 >= 28px 的文本：改大范围等于重排整页，收益却只落在
+    标题这一个量级上。
+    """
+    from src.app.services.structure.fidelity.style_resolver import measure_ink_center
+
+    moved = 0
+    for element in elements:
+        if str(element.get("type") or "") != "text":
+            continue
+        text = str(element.get("text") or "")
+        if not text.strip() or "\n" in text:
+            continue
+        style = element.get("style") or {}
+        size = float(style.get("fontSize") or 0.0)
+        if size < DISPLAY_INK_MIN_SIZE:
+            continue
+        box = _layout_rect(element)
+        if box is None:
+            continue
+        centre = measure_ink_center(image_path, box)
+        if centre is None:
+            continue
+        # 渲染端把单行文本在行框里居中，而行框的墨迹中心比几何中心高 bias*size。
+        predicted = float(box[1]) + box[3] / 2.0 - DISPLAY_INK_BIAS * size
+        delta = centre - predicted
+        if abs(delta) < 0.75 or abs(delta) > DISPLAY_INK_MAX_SHIFT:
+            continue
+        new_y = int(round(float(element.get("y") or 0) + delta))
+        if new_y < 0 or new_y + int(element.get("height") or 0) > height:
+            continue
+        element.setdefault("fitEvidence", {})["inkCentre"] = {
+            "from": round(float(element.get("y") or 0), 1),
+            "to": new_y,
+            "delta": round(delta, 2),
+            "measured": round(centre, 1),
+        }
+        element["y"] = new_y
+        moved += 1
+    return moved
 
 
 def _clamp_table_fonts(elements: list[dict[str, Any]]) -> int:
@@ -11155,9 +8523,23 @@ def _recover_page_fill(
         )
         >= 3
     ]
-    if not agreeing:
-        return False
+    # 四条边互不一致时不要放弃：那正是"整页渐变"的样子。整页单色这一步跳过，
+    # 直接交给下面的分带——每一带读自己的边距，渐变就被一叠色带跟住了。
     declared = tuple(int(value) for value in _hex_rgb(background)) if background else None
+    # 声明的底色本来就占据画布内部的大头时，边上的深色是窗框/侧栏，不是页面：
+    # inventory2 的上/左/右三边都是深色窗框，只有底边是白的，四边投票会投出一块
+    # 深蓝底把整页刷黑（渲染均值 69，原图 213）。此时不重涂。
+    if declared is not None:
+        interior = image[height // 8 : height * 7 // 8, width // 8 : width * 7 // 8]
+        if interior.size:
+            share = float(
+                (
+                    np.abs(interior - np.asarray(declared, dtype=np.int16)).max(axis=2)
+                    <= PAGE_DECLARED_TOL
+                ).mean()
+            )
+            if share >= PAGE_DECLARED_SHARE:
+                return False
     spread = max(
         (
             float(np.abs(left - right).max())
@@ -11166,7 +8548,9 @@ def _recover_page_fill(
         ),
         default=0.0,
     )
-    if spread > PAGE_EDGE_SPLIT:
+    if not agreeing:
+        colour = None
+    elif spread > PAGE_EDGE_SPLIT:
         # The four edges are two different surfaces, not one page: marketplace is
         # #1a1917 at top and bottom and #100f0d down both sides.  Averaging them
         # produced #151412 — a colour that matches the declared background, so the
@@ -11191,9 +8575,10 @@ def _recover_page_fill(
         )
     else:
         colour = tuple(int(value) for value in np.median(agreeing, axis=0))
-    hexed = "#{:02x}{:02x}{:02x}".format(*colour)
-    if background and _same_fill(hexed, background, SOFT_PANEL_MIN_DELTA):
-        return False
+    if colour is not None:
+        hexed = "#{:02x}{:02x}{:02x}".format(*colour)
+        if background and _same_fill(hexed, background, SOFT_PANEL_MIN_DELTA):
+            return False
 
     # Bands: each one reads its own left and right margins — the page is what
     # shows at the edges — but only the margin pixels nothing else owns.  review
@@ -11606,6 +8991,329 @@ def _recover_soft_panels(
                 "height": box[3],
                 "text": "",
                 "style": style,
+                "role": "panel",
+                "name": "Panel",
+                "contentRef": f"panel:{digest}",
+                "sceneOwnerId": f"panel:{digest}",
+                "imageMVP": {
+                    "source": "pixel-recovery",
+                    "role": "panel",
+                    "grouping_status": "recovered",
+                },
+            }
+        )
+        covered.append((box, fill_hex))
+        added += 1
+    return added
+
+
+#: 面的内部色差超过它就有坡度，必须分带铺；平的才用一块填。
+SOFT_SURFACE_BAND_SPREAD = 6
+#: 分带条数沿用页面底色的那套。
+SOFT_SURFACE_BANDS = 8
+#: 开关。实测（CSDN 1920x1008，开/关各跑一次）：
+#:   整页 within30 94.50 → 94.13，mean 11.14 → 11.24
+#:   左栏 mean 31.97 → 27.09，但 within30 只动 84.06 → 84.48
+#:   右栏 within30 91.58 → 89.23，礼盒下方 75.52 → 67.92
+#: 也就是说：这些"缺掉的暖色面"确实存在，但它与页面底色的差只有 12~18，本来
+#: 就在 within30 以内；那几个热点里真正坏掉的是字重与词间距（`字符型` 被加粗、
+#: `byte(8) short(16)` 的间距被拉错）。补一层底只改 mean、不改 within30，还要
+#: 多一层元素和一处软投影被抹平的风险，所以默认关闭。
+SOFT_SURFACE_ENABLED = False
+
+
+#: OCR 吸附的最大位移：超过它就是"另一处同样的字"，不是量歪的原点。
+TEXT_SNAP_MAX_SHIFT = 64
+#: 一个文字底板自称是彩色按钮时，按彩度取回它真实的轮廓：胶囊的圆角与渐变都
+#: 会让"单一颜色 + 直角矩形"的复原变成一个扎眼的红方块。
+PILL_SATURATION_MIN = 40
+PILL_HUE_TOLERANCE = 14
+PILL_SEARCH_PAD = 48
+PILL_MAX_GROWTH = 8.0
+PILL_MIN_GROWTH = 1.10
+
+
+def _complete_saturated_backdrops(
+    elements: list[dict[str, Any]],
+    image_path: str,
+    width: int,
+    height: int,
+) -> int:
+    """Resize a saturated text-backdrop to the button it is standing in for.
+
+    CSDN's "＋创作" button is a red *gradient* pill.  The plan had no container
+    for it, so a text-backdrop was cut from the most common colour — a 64x45
+    square of flat #f75930 over a 100x55 rounded shape.  The result is a hard
+    red rectangle with square corners on a peach page: the single worst block on
+    the page (within30 25.9).
+
+    Saturation survives a gradient where an exact colour does not: every pixel of
+    that pill is strongly red whatever its lightness.  So the shape is recovered
+    from hue+saturation, the box is resized to it, and the corners are rounded by
+    half the height.  The fill stays flat — the renderer has no gradients — but a
+    flat pill on the right shape is 20 channels closer than a flat square on the
+    wrong one.
+    """
+    try:
+        import cv2
+        import numpy as np
+        from PIL import Image
+    except Exception:  # pragma: no cover
+        return 0
+    try:
+        image = np.asarray(Image.open(image_path).convert("RGB"), dtype=np.uint8)
+    except (OSError, ValueError):
+        return 0
+    if image.ndim != 3:
+        return 0
+    image = image[:height, :width]
+    hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV).astype(np.int16)
+    completed = 0
+    for element in elements:
+        if str(element.get("role") or "") != "text-backdrop":
+            continue
+        fill = _solid_fill(element)
+        if not fill:
+            continue
+        rgb = _hex_rgb(fill) if isinstance(fill, str) else tuple(fill)
+        if max(rgb) - min(rgb) < PILL_SATURATION_MIN:
+            # 浅色底板是给浅色底板用的，不动。
+            continue
+        box = _layout_rect(element)
+        if box is None:
+            continue
+        x, y, box_width, box_height = box
+        if box_width < 8 or box_height < 8:
+            continue
+        hue = int(round(cv2.cvtColor(np.uint8([[[rgb[0], rgb[1], rgb[2]]]]), cv2.COLOR_RGB2HSV)[0, 0, 0]))
+        left, top = max(0, x - PILL_SEARCH_PAD), max(0, y - PILL_SEARCH_PAD)
+        right, bottom = min(width, x + box_width + PILL_SEARCH_PAD), min(height, y + box_height + PILL_SEARCH_PAD)
+        window = hsv[top:bottom, left:right]
+        distance = np.abs(window[:, :, 0].astype(np.int16) - hue)
+        distance = np.minimum(distance, 180 - distance)
+        mask = (
+            (distance <= PILL_HUE_TOLERANCE)
+            & (window[:, :, 1] >= 90)
+            & (window[:, :, 2] >= 70)
+        ).astype(np.uint8)
+        if not mask.any():
+            continue
+        count, labels, stats, _centroids = cv2.connectedComponentsWithStats(mask, 8)
+        if count <= 1:
+            continue
+        cx = min(mask.shape[1] - 1, max(0, (x + box_width // 2) - left))
+        cy = min(mask.shape[0] - 1, max(0, (y + box_height // 2) - top))
+        chosen = int(labels[cy, cx])
+        if chosen == 0:
+            best, chosen = 0, 0
+            for index in range(1, count):
+                bx, by, bw, bh, area = (int(v) for v in stats[index])
+                overlap = max(0, min(x + box_width, left + bx + bw) - max(x, left + bx)) * max(
+                    0, min(y + box_height, top + by + bh) - max(y, top + by)
+                )
+                if overlap > best:
+                    best, chosen = overlap, index
+        if chosen == 0:
+            continue
+        bx, by, bw, bh, area = (int(v) for v in stats[chosen])
+        nx, ny = left + bx, top + by
+        if bw * bh < PILL_MIN_GROWTH * box_width * box_height:
+            continue
+        if bw * bh > PILL_MAX_GROWTH * box_width * box_height:
+            continue
+        if bw < box_width or bh < box_height:
+            continue
+        piece = image[ny : ny + bh, nx : nx + bw][labels[by : by + bh, bx : bx + bw] == chosen]
+        if piece.size == 0:
+            continue
+        colour = np.median(piece, axis=0)
+        element["x"], element["y"] = float(nx), float(ny)
+        element["width"], element["height"] = float(bw), float(bh)
+        style = element.setdefault("style", {})
+        style["fillColor"] = "#{:02x}{:02x}{:02x}".format(*(int(v) for v in colour))
+        style["borderRadius"] = round(min(bw, bh) / 2.0, 1)
+        element.setdefault("fitEvidence", {})["saturatedPill"] = {
+            "from": [x, y, box_width, box_height],
+            "to": [nx, ny, bw, bh],
+        }
+        completed += 1
+    return completed
+
+
+def _band_beats_page(patch, colour, page) -> bool:
+    """Would this fill describe the pixels better than the page colour does?
+
+    A bottom element can only be judged against what it replaces, and what it
+    replaces is the page.  Strictly better, not "not worse": a surface that ties
+    is a surface that bought nothing and still costs a layer.
+    """
+    import numpy as np
+
+    if patch is None or patch.size == 0:
+        return False
+    flat = patch.reshape(-1, 3).astype(np.float64)
+    if flat.shape[0] < 64:
+        return False
+    target = np.asarray(colour, dtype=np.float64).reshape(1, 3)
+    mine = float(np.abs(flat - target).mean())
+    theirs = float(np.abs(flat - np.asarray(page, dtype=np.float64).reshape(1, 3)).mean())
+    return mine < theirs
+
+
+def _recover_soft_surfaces(
+    elements: list[dict[str, Any]],
+    image_path: str,
+    width: int,
+    height: int,
+    background: str,
+    observations: Sequence[Mapping[str, Any]] | None = None,
+) -> int:
+    """Lay in the borderless, slightly-off-page surfaces the layout is built from.
+
+    CSDN is the case: a warm #f5eee6 rail and a #fff6f0 column sitting on a
+    #fdfcfa page.  Neither probe could see them — ``_region_boxes`` quantises
+    each ramp into a dozen buckets and no bucket becomes a rectangle, and
+    ``_recover_soft_panels`` thresholds on max channel difference, so JPEG noise
+    merges every blob into one that its size cap then refuses.
+
+    What is painted depends on what the surface *is*:
+
+    * it touches the canvas edge -> it is the ground there, and it is laid down
+      in bands (a ramp has no single colour), with role ``page-ground`` so it can
+      never join a frame;
+    * it floats -> it is a card, and it becomes one container.
+    """
+    try:
+        import numpy as np
+        from PIL import Image
+    except Exception:  # pragma: no cover
+        return 0
+    from src.app.services.structure.physical_perception import (
+        page_colour,
+        probe_soft_surfaces,
+    )
+
+    try:
+        image = np.asarray(Image.open(image_path).convert("RGB"), dtype=np.int16)
+    except (OSError, ValueError):
+        return 0
+    if image.ndim != 3 or not background:
+        return 0
+    image = image[:height, :width]
+    texts = [
+        list(obs.get("bbox") or [])
+        for obs in (observations or [])
+        if isinstance(obs, Mapping) and len(obs.get("bbox") or []) >= 4
+    ]
+    if not texts:
+        texts = [
+            list(_layout_rect(element) or [])
+            for element in elements
+            if element.get("type") == "text" and _layout_rect(element)
+        ]
+    page = page_colour(image)
+    try:
+        surfaces = probe_soft_surfaces(image, page, texts, width, height)
+    except Exception:  # pragma: no cover - perception is best effort here
+        return 0
+
+    covered: list[tuple[tuple[int, int, int, int], str]] = []
+    for element in elements:
+        box = _layout_rect(element)
+        if box is None:
+            continue
+        fill = _solid_fill(element)
+        if fill:
+            covered.append((box, fill))
+        elif element.get("imageBase64"):
+            covered.append((box, ""))
+
+    page_rgb = np.asarray(page, dtype=np.int16)
+    added = 0
+    for surface in surfaces[:6]:
+        x, y, box_width, box_height = (int(value) for value in surface["bbox"])
+        if box_width < 24 or box_height < 24:
+            continue
+        patch = image[y : y + box_height, x : x + box_width]
+        # 坡度决定铺法：一块平涂压不住一条 800px 长的渐变，分带才跟得住。
+        medians = [
+            np.median(patch[row : row + max(1, box_height // SOFT_SURFACE_BANDS)].reshape(-1, 3), axis=0)
+            for row in range(0, box_height, max(1, box_height // SOFT_SURFACE_BANDS))
+        ]
+        spread = 0.0
+        for one in medians:
+            for two in medians:
+                spread = max(spread, float(np.abs(np.asarray(one) - np.asarray(two)).max()))
+        if surface["touchesEdge"] or spread > SOFT_SURFACE_BAND_SPREAD:
+            step = max(1, box_height // SOFT_SURFACE_BANDS)
+            for band in range(0, box_height, step):
+                bottom = min(box_height, band + step)
+                rows = patch[band:bottom].reshape(-1, 3)
+                if rows.size == 0:
+                    continue
+                colour = np.median(rows, axis=0)
+                fill_hex = "#{:02x}{:02x}{:02x}".format(*(int(value) for value in colour))
+                if max(
+                    abs(one - two)
+                    for one, two in zip(
+                        tuple(int(value) for value in colour), _hex_rgb(background)
+                    )
+                ) < SOFT_PANEL_MIN_DELTA:
+                    continue
+                box = (x, y + band, box_width, bottom - band)
+                if _already_painted(box, fill_hex, covered):
+                    continue
+                # 自证门：这块面必须比它要替换掉的页面底色更接近原图。一块带
+                # 软投影的卡片，平涂往往比"什么都不画"还远——那就别画。实测
+                # CSDN 右栏：铺上去 within30 91.6→89.2，这一条直接把它挡了。
+                if not _band_beats_page(patch[band:bottom], colour, page_rgb):
+                    continue
+                digest = hashlib.sha1(
+                    f"ground:{box[0]}:{box[1]}:{box[2]}:{box[3]}:{fill_hex}".encode("utf-8")
+                ).hexdigest()[:16]
+                elements.append(
+                    {
+                        "id": f"ground:{digest}",
+                        "type": "container",
+                        "x": box[0],
+                        "y": box[1],
+                        "width": box[2],
+                        "height": box[3],
+                        "text": "",
+                        "style": {"fillColor": fill_hex},
+                        "role": "page-ground",
+                        "name": "Ground",
+                        "contentRef": f"ground:{digest}",
+                        "sceneOwnerId": f"ground:{digest}",
+                        "imageMVP": {
+                            "source": "pixel-recovery",
+                            "role": "page-ground",
+                            "grouping_status": "recovered",
+                        },
+                    }
+                )
+                covered.append((box, fill_hex))
+                added += 1
+            continue
+        fill_hex = str(surface["fill"])
+        box = (x, y, box_width, box_height)
+        if _already_painted(box, fill_hex, covered):
+            continue
+        if not _band_beats_page(patch, np.asarray(_hex_rgb(fill_hex), dtype=np.float64), page_rgb):
+            continue
+        digest = hashlib.sha1(
+            f"panel:{box[0]}:{box[1]}:{box[2]}:{box[3]}:{fill_hex}".encode("utf-8")
+        ).hexdigest()[:16]
+        elements.append(
+            {
+                "id": f"panel:{digest}",
+                "type": "container",
+                "x": box[0],
+                "y": box[1],
+                "width": box[2],
+                "height": box[3],
+                "text": "",
+                "style": {"fillColor": fill_hex},
                 "role": "panel",
                 "name": "Panel",
                 "contentRef": f"panel:{digest}",
@@ -12515,6 +10223,7 @@ def _trim_to_fill_boundary(
         fill = _solid_fill(elements[container])
         if own is None or not fill or _same_fill(fill, background, PLANE_SURFACE_DELTA):
             continue
+
         members = [
             index
             for index in children.get(container, [])
@@ -12623,7 +10332,15 @@ CONTAINER_MERGE_FILL_DELTA = 6
 #: 层序分层：每层留这么多个槽位，同层内按面积降序。
 LAYER_STRIDE = 1000
 #: 不透明的东西盖住文本框这么多，就算"吞字"。
+#: 面积口径保留，但不再是唯一入口：一条横穿字的带子面积可能只有三成，
+#: 视觉上却是"下半行没了"。0.5 让 AtomGit 的标题被浅粉卡切掉半截仍然通过。
 OCCLUSION_TEXT_COVER = 0.5
+#: 带状口径：盖住字宽的这个比例、字高的这个比例，就算埋了这颗字。
+OCCLUSION_TEXT_BAND_X = 0.20
+OCCLUSION_TEXT_BAND_Y = 0.30
+#: 带状判据只用于"纯装饰容器"。帧容器与补丁仍按面积判：前者降层会掉帧，
+#: 后者是原图像素，裁它会把一块补丁拆成几块（实测 inventory 因此 10→9 帧）。
+OCCLUSION_TEXT_COVER_STRICT = 0.5
 #: 文本框里墨迹占到这个比例，说明原图这个位置确实有字。
 TEXT_VISIBLE_INK = 0.008
 #: 补丁被裁到只剩这么点，就不值得留了——整块删掉比留个碎片更干净。
@@ -12974,6 +10691,27 @@ def _opaque(element: Mapping[str, Any]) -> bool:
     return bool(_background_fill(element))
 
 
+def _buries_text(
+    box: tuple[int, int, int, int], text_box: tuple[int, int, int, int]
+) -> bool:
+    """Does this element hide a *part* of the word, not just 50% of its area?
+
+    A card that clips the bottom half of a title covers 37% of the text box and
+    100% of the line the reader needs.  Area alone calls that "not occluded".
+    So the test asks the two questions a reader asks: how much of the width is
+    behind it, and how much of the height.
+    """
+    width = min(box[0] + box[2], text_box[0] + text_box[2]) - max(box[0], text_box[0])
+    height = min(box[1] + box[3], text_box[1] + text_box[3]) - max(box[1], text_box[1])
+    if width <= 0 or height <= 0:
+        return False
+    if width / max(1.0, text_box[2]) >= OCCLUSION_TEXT_BAND_X and height / max(
+        1.0, text_box[3]
+    ) >= OCCLUSION_TEXT_BAND_Y:
+        return True
+    return (width * height) / max(1.0, text_box[2] * text_box[3]) >= OCCLUSION_TEXT_COVER
+
+
 def _cover_share(
     outer: tuple[int, int, int, int], inner: tuple[int, int, int, int]
 ) -> float:
@@ -13131,9 +10869,23 @@ def _guard_text_occlusion(
                 if ranks.get(other, -1) <= ranks[text_index]:
                     continue
                 box = _layout_rect(element)
-                if box is None or _cover_share(box, text_box) < OCCLUSION_TEXT_COVER:
+                if box is None:
                     continue
                 role = str(element.get("role") or "")
+                # 带状判据只对"非帧的装饰块压帧内的字"生效：帧批次把压在闭包上的
+                # 非成员挤到后面，正是 AtomGit 标题被浅粉卡切掉半截的形状。压字块
+                # 本身是帧、或字不在帧里时仍走面积口径——放宽到那两种会让
+                # inventory 10→9、FluxWeaver 5（floor 6）。
+                decoration_over_member = (
+                    not element.get("layoutChildren")
+                    and not element.get("imageBase64")
+                    and str(elements[text_index].get("id") or "") in framed
+                )
+                if decoration_over_member:
+                    if not _buries_text(box, text_box):
+                        continue
+                elif _cover_share(box, text_box) < OCCLUSION_TEXT_COVER_STRICT:
+                    continue
                 if element.get("imageBase64") and role in ("patch", "mark"):
                     blockers = [
                         candidate
@@ -13169,8 +10921,20 @@ def _guard_text_occlusion(
                     report["unresolved"] += 1
                     continue
                 before = _accepted_frames(elements) if framed else 0
+                if role == "text-backdrop" and _rect_contains(box, text_box, tolerance=4):
+                    # 底板装得下这颗字，它就是这颗字的底：降到"字下面、所属卡片
+                    # 上面"。按通用规则降到 card-1 会把底挪到卡片背后，白字落在
+                    # 白卡上——FluxWeaver 的"刷新"就是这么变成一圈空蓝框的。
+                    owner_z = int(elements[owner].get("zIndex") or 0) if owner is not None else None
+                    if owner_z is not None and word_z - 1 <= owner_z:
+                        report["unresolved"] += 1
+                        continue
+                    floor_z = word_z
                 element["zIndex"] = floor_z - 1
                 if framed and _accepted_frames(elements) < before:
+                    # 帧数是硬红线：降层掉帧就放弃。实测摘掉容器帧身份再降会让
+                    # inventory 从 10 帧掉到 9，所以这条不做——需要的是让判据
+                    # 只命中"本来就不是帧"的装饰块（AtomGit 那块浅粉卡正是）。
                     element["zIndex"] = own_z
                     report["unresolved"] += 1
                     continue
@@ -13302,6 +11066,26 @@ def attach_layout_frames(elements: list[dict[str, Any]]) -> int:
             continue
         members.setdefault(owner, []).append(index)
 
+    # 一层"胶水"：**透明**、且只装着一个成员的容器。它永远成不了帧（成帧要
+    # 两个成员），但归属被它占着，孩子就不在父帧的闭包里——wecom 的弹窗因此
+    # 被判 `covers-other-element`：那条长文本挂在一条透明的单成员 row 下面。
+    #
+    # 只溶透明的：不透明的那类里，有些单成员容器靠一个 layout spec 仍然能成为
+    # 帧（实测把不透明的也算进来，inventory 10→8、inventory2 14→12）。
+    glue = [
+        index
+        for index, kids in members.items()
+        if str(elements[index].get("type")) == "container"
+        and len(kids) < 2
+        and not _background_fill(elements[index])
+    ]
+    for index in glue:
+        parent = owners[index]
+        for child in members.pop(index, []):
+            owners[child] = parent
+            if parent is not None:
+                members.setdefault(parent, []).append(child)
+
     built = 0
     # Innermost first: a parent may only become a frame once every container
     # among its members is already a frame.
@@ -13326,56 +11110,71 @@ def attach_layout_frames(elements: list[dict[str, Any]]) -> int:
         ]
         for owner, kids in members.items()
     }
-    for owner in order:
-        if owner in duplicates:
-            continue
+    def build_all(allow_blocked_child: bool) -> int:
+        """One pass over the members map, innermost first.
 
-        children = members[owner]
-        container = elements[owner]
-        if str(container.get("type")) != "container":
-            continue
-        if container.get("imageBase64") or container.get("text"):
-            continue
-        parent_box = _widen_to_members(owner, children, elements, rects)
-        boxes = [rects[child] for child in children if rects[child]]
-        if not boxes or parent_box is None:
-            continue
-        spec: dict[str, Any] | None = _stack_layout(parent_box, boxes)  # type: ignore[arg-type]
-        ordered_children = list(children)
-        if spec is None:
-            # General candidate.  Pass 1 stays first because it is stricter
-            # and cheaper, but nothing depends on it any more: XY-cut covers
-            # every layout that has a gutter on some axis.
-            fallback = _xy_cut_layout(parent_box, children, rects)
-            if fallback is not None:
-                spec, ordered_children = fallback
-        if _has_nested_container(children, elements, structural):
-            continue
-        if spec is None and len(children) < 2:
-            # A plain frame still needs two members for the renderer to treat
-            # it as a grouping boundary rather than a stray duplicate.
-            continue
-        # No straddling veto here.  An overlay that covers this container is
-        # lifted during the paint-order pass that follows, and only then does
-        # the renderer have the final say.  Vetoing earlier deadlocked the two:
-        # the overlay blocked the frame, and without the frame the overlay was
-        # never lifted.
-        # Auto Layout is progressive enhancement, not the price of admission.
-        # A container that no formula can describe — a merged-cell table, a
-        # banner with a badge, a free collage — still becomes a frame, just
-        # one whose children keep their absolute coordinates.  Wrapping it
-        # costs nothing: the renderer pins every child to its measured
-        # position, so the export is pixel-identical, and the layer tree keeps
-        # the grouping a designer expects.  Only the renderer's Z-order gates
-        # can reject it, and it does so safely.
-        if spec is not None:
-            container["layout"] = spec
-        else:
-            container.pop("layout", None)
-        container["layoutChildren"] = [
-            {"id": str(elements[child].get("id") or "")} for child in ordered_children
-        ]
-        built += 1
+        ``allow_blocked_child`` exists because a child that can never become a
+        frame must not veto its parent forever.  It is deliberately not used
+        here: running the pass twice re-parented elements the first pass had
+        already settled, and AtomGit lost a frame doing it.  The exemption
+        belongs in ``_has_nested_container``, which asks the narrower question.
+        """
+        made = 0
+        for owner in order:
+            if owner in duplicates:
+                continue
+            if elements[owner].get("layoutChildren"):
+                continue
+
+            children = members[owner]
+            container = elements[owner]
+            if str(container.get("type")) != "container":
+                continue
+            if container.get("imageBase64") or container.get("text"):
+                continue
+            parent_box = _widen_to_members(owner, children, elements, rects)
+            boxes = [rects[child] for child in children if rects[child]]
+            if not boxes or parent_box is None:
+                continue
+            spec: dict[str, Any] | None = _stack_layout(parent_box, boxes)  # type: ignore[arg-type]
+            ordered_children = list(children)
+            if spec is None:
+                # General candidate.  Pass 1 stays first because it is stricter
+                # and cheaper, but nothing depends on it any more: XY-cut covers
+                # every layout that has a gutter on some axis.
+                fallback = _xy_cut_layout(parent_box, children, rects)
+                if fallback is not None:
+                    spec, ordered_children = fallback
+            if not allow_blocked_child and _has_nested_container(children, elements, structural):
+                continue
+            if spec is None and len(children) < 2:
+                # A plain frame still needs two members for the renderer to treat
+                # it as a grouping boundary rather than a stray duplicate.
+                continue
+            # No straddling veto here.  An overlay that covers this container is
+            # lifted during the paint-order pass that follows, and only then does
+            # the renderer have the final say.  Vetoing earlier deadlocked the two:
+            # the overlay blocked the frame, and without the frame the overlay was
+            # never lifted.
+            # Auto Layout is progressive enhancement, not the price of admission.
+            # A container that no formula can describe — a merged-cell table, a
+            # banner with a badge, a free collage — still becomes a frame, just
+            # one whose children keep their absolute coordinates.  Wrapping it
+            # costs nothing: the renderer pins every child to its measured
+            # position, so the export is pixel-identical, and the layer tree keeps
+            # the grouping a designer expects.  Only the renderer's Z-order gates
+            # can reject it, and it does so safely.
+            if spec is not None:
+                container["layout"] = spec
+            else:
+                container.pop("layout", None)
+            container["layoutChildren"] = [
+                {"id": str(elements[child].get("id") or "")} for child in ordered_children
+            ]
+            made += 1
+        return made
+
+    built = build_all(False)
     return built
 
 
@@ -13549,6 +11348,10 @@ def compile_scene_plan_to_design(
         # badge threshold, and the difference between a layout and a pile.
         _recover_page_fill(elements, image_path, width, height, background)
         _recover_soft_panels(elements, image_path, width, height, background)
+        if SOFT_SURFACE_ENABLED:
+            _recover_soft_surfaces(
+                elements, image_path, width, height, background, ocr_observations
+            )
         _recover_colour_regions(elements, image_path, width, height, background)
         # Capsules whose corners are rounded away fall under the solid pass's
         # fill share and are not a panel either; they are what a nav item sits in.
@@ -13586,6 +11389,10 @@ def compile_scene_plan_to_design(
     # 在 30px 行高里直接印到了邻行上。
     _fit_text_to_box(elements)
     _clamp_table_fonts(elements)
+    # 字号定稿之后、约束之前：大标题的墨迹中心对回原图。晚于这一步的
+    # _constrain_children 会把越界的 y 推回去，正好替这次校准兜底。
+    if DISPLAY_INK_ENABLED:
+        _align_display_ink_centres(elements, image_path, width, height)
     # 图片裁片与它旁边的文字：补全被切断的形状 / 把裁片裁到文字开始处，
     # 并清掉落在文字上的冒名控件。
     if _SETTLE_PICTURES_ENABLED:
@@ -13621,7 +11428,14 @@ def compile_scene_plan_to_design(
     # grown edge straight back.  (_extend_solid_edges owns that job now; the
     # card snap moved behind the frame lock and only paints.)
     _extend_solid_edges(elements, image_path, width, height, background)
+    # 位图的最后一件事：把已经有矢量字站在上面的原图文字抹掉。放在这里是因为
+    # 到这一步图片框与文字框都不再变；再早会被后面的裁切、吸附改回去。
+    if ERASE_TEXT_IN_BITMAPS:
+        _erase_text_from_bitmaps(elements, image_path, width, height)
     written_frames = attach_layout_frames(elements)
+    # 标签底板是那颗字的底，不是压在它上面的层：先把它归进那颗字所在的帧，
+    # 后面所有按"帧批次"排序的步骤才会把它排在字之前。
+    _adopt_label_plates(elements)
     # A frame's members must paint as one contiguous unit; an overlay that
     # lands inside that interval belongs on top of it, not in the middle.
     _lift_frame_overlays(
@@ -13637,9 +11451,20 @@ def compile_scene_plan_to_design(
     # under.  Check the final order, not the one the boxes were authored in.
     _audit_filled_occluders(elements, background)
     layout_frames = _keep_renderable_frames(elements, written_frames)
+    # 帧到这里就锁死了：谁是谁的成员、谁在第几帧都不再变。对齐放在这里，只做
+    # 横向平移——不改 y、不改宽高、不加删成员，成员还在原帧里，帧数就不可能变。
+    # 这是"感知层吸附掉帧"那笔账的解法：同一个标尺，换个时机用。
+    align_stats = align_frame_columns(elements)
+    align_stats["baselines"] = align_baselines(elements)
+    align_stats["inkSpan"] = calibrate_ink_span(elements)
+    # 帧已锁：这三处只改字号，不动成员、不动框、不动层序。
+    align_stats["inline"] = _fit_locked_text_geometry(elements)
     # 帧结构已经锁定（谁是谁的成员、谁在第几帧，都不会再变）。装饰层从这里开始
     # 只画不改结构：卡片的 1px 轮廓、被切开的两张卡之间的底板、芯片外那一圈细线。
     # 放在锁之后，加多少笔都不会掉帧或增帧——这是之前 13→17 帧的真因。
+    # 帧已经锁死之后才动底板：这个补全只改一个圆角矩形的几何与填充，但它在锁帧
+    # 之前跑会把 inventory2 从 14 帧改成 13——一个"画得更准"的改动不该动结构。
+    _complete_saturated_backdrops(elements, image_path, width, height)
     decoration = _decorate_locked_frames(
         elements, image_path, width, height, background
     )
@@ -13697,6 +11522,7 @@ def compile_scene_plan_to_design(
                     ),
                     "layoutFrames": layout_frames,
                 },
+                "postFrameAlign": dict(align_stats),
                 "layers": {
                     "backgroundsMerged": merged_backgrounds,
                     "depthsWritten": layers_written,

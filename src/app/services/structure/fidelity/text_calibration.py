@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import copy
 import statistics
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from src.app.services.structure.fidelity.contracts import normalize_match_text
@@ -1468,6 +1468,39 @@ def _ink_convergence_gray(path: str):
         return np.asarray(handle.convert("L"), dtype=np.int16)
 
 
+def _ink_span(gray, box, pad: int = 4) -> tuple[int, int] | None:
+    """Ink width and height inside ``box`` expanded by ``pad``.
+
+    Same mask as ``_ink_height``, but it also reports the horizontal extent.
+    Height alone saturates on a crisp render: the reference screenshot's glyph
+    edges are blurred over two rows while ours are one, so a body that is a
+    third too narrow still measures "eleven rows against twelve" and looks
+    correct to the ratio.  Width aggregates forty glyphs and moves with the
+    point size, which is what a horizontal line of text needs.
+    """
+    import numpy as np
+
+    height, width = gray.shape
+    x, y, w, h = (int(v) for v in box)
+    left = max(0, x - pad)
+    top = max(0, y - pad)
+    right = min(width, x + w + pad)
+    bottom = min(height, y + h + pad)
+    if right - left < 3 or bottom - top < 3:
+        return None
+    crop = gray[top:bottom, left:right]
+    border = np.concatenate([crop[0, :], crop[-1, :], crop[:, 0], crop[:, -1]])
+    background = float(np.median(border))
+    mask = np.abs(crop.astype(np.int16) - background) > 40
+    if int(mask.sum()) < 3:
+        return None
+    rows = np.where(mask.any(axis=1))[0]
+    columns = np.where(mask.any(axis=0))[0]
+    if rows.size == 0 or columns.size == 0:
+        return None
+    return int(columns[-1] - columns[0] + 1), int(rows[-1] - rows[0] + 1)
+
+
 def _ink_height(gray, box, pad: int = 4) -> int | None:
     """Ink extent inside ``box`` expanded by ``pad`` on every side.
 
@@ -1493,6 +1526,145 @@ def _ink_height(gray, box, pad: int = 4) -> int | None:
         return None
     rows, _cols = np.where(mask)
     return int(rows.max() - rows.min() + 1)
+
+
+#: 一组单元格（表体 / 表头带）至少这么多格，才谈得上"同一套字号"。
+TABLE_COLUMN_MIN_CELLS = 3
+
+
+def _table_groups(
+    design: dict[str, Any],
+) -> list[tuple[dict[str, Any], list[dict[str, Any]]]]:
+    """The sets of cells that must share one size: a table body, a header band.
+
+    Grouping is structural, not positional.  An earlier version took the topmost
+    y-band of a table to be its header and excluded it — which is wrong the
+    moment the header band is a *separate* element (the physical plan puts it
+    there), because then the table's topmost band is its first data row.  That
+    row was left out of the group, stayed at 11.5pt while the rest went to 16.5,
+    and got its own per-cell calibration on top.
+
+    So: a body is every text child of a ``table`` element, and a header band is
+    every text child of a ``table-header`` element.  Cells the *plan* marks as
+    headers (``table-header:`` content refs, which is how the grounding-style
+    plans write them) are dropped from the body group even when they are
+    children of the table.
+    """
+    by_id = {
+        str(element.get("id") or ""): element for element in design.get("elements") or []
+    }
+
+    def text_children(owner: Mapping[str, Any]) -> list[dict[str, Any]]:
+        out = []
+        for child in owner.get("layoutChildren") or []:
+            cell = by_id.get(str(child.get("id") or ""))
+            if cell is None or str(cell.get("type") or "") != "text":
+                continue
+            if not str(cell.get("text") or "").strip():
+                continue
+            out.append(cell)
+        return out
+
+    groups: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
+    for owner in design.get("elements") or []:
+        role = str(owner.get("role") or "")
+        if role == "table":
+            cells = [
+                cell
+                for cell in text_children(owner)
+                if not str(cell.get("contentRef") or "").startswith("table-header:")
+            ]
+        elif role == "table-header":
+            # 表头带整条一起定：它是同一行、同一级，字号没有理由一格一个。
+            cells = text_children(owner)
+        else:
+            continue
+        if len(cells) >= TABLE_COLUMN_MIN_CELLS:
+            groups.append((owner, cells))
+    return groups
+
+
+def _element_box(element: Mapping[str, Any]) -> tuple[int, int, int, int] | None:
+    try:
+        return (
+            int(round(float(element.get("x") or 0))),
+            int(round(float(element.get("y") or 0))),
+            int(round(float(element.get("width") or 0))),
+            int(round(float(element.get("height") or 0))),
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def _align_table_body_fonts(
+    groups: Sequence[tuple[dict[str, Any], list[dict[str, Any]]]],
+    measured: Mapping[int, tuple[float, float, float]],
+    reference,
+    rendered,
+) -> list[dict[str, Any]]:
+    """One body size per table: median ink ratio applied to the median size.
+
+    Ink convergence works per element, and a table cell is the worst possible
+    subject for that: the rendered window is a tight box around one short line,
+    so a pixel of slack moves the measured ink height by 10% and that one cell
+    takes a 1.5x step while its neighbour takes none.  FluxWeaver came out with
+    the first row at 17.25, the rows below at 11.5, and the numbers column at
+    11.5 next to 17.25 dates — the same table body in three sizes.
+
+    A table body is set in one size, so the estimate uses every body cell at
+    once: the median ink ratio over the median original size.  Individual noise
+    averages out, and one number comes out for the whole body.
+
+    What this deliberately does not model is a table that sets one row or one
+    column larger on purpose.  The header band is excluded (it is a different
+    level), and that is the only such case common enough to be worth handling.
+    """
+    changes: list[dict[str, Any]] = []
+    for _owner, cells in groups:
+        ratios: list[float] = []
+        sizes: list[float] = []
+        for cell in cells:
+            sample = measured.get(id(cell))
+            if sample is None:
+                continue
+            size, reference_height, rendered_height = sample
+            if size > 0:
+                sizes.append(size)
+            box = _element_box(cell)
+            if box is None:
+                continue
+            # 渲染侧用自己的框量：读回节点的框是 Figma 算出来的，短一截就会
+            # 把邻行的墨算进来，同一列因此测出两种比例。
+            rendered_span = _ink_span(rendered, box)
+            reference_span = _ink_span(reference, box)
+            if not rendered_span or not reference_span:
+                continue
+            if rendered_span[0] >= 8 and reference_span[0] >= 8:
+                ratios.append(reference_span[0] / float(rendered_span[0]))
+        if not ratios or not sizes:
+            continue
+        ratios.sort()
+        sizes.sort()
+        scale = max(0.7, min(1.5, ratios[len(ratios) // 2]))
+        base = sizes[len(sizes) // 2]
+        target = max(8.0, min(96.0, round(base * scale * 4) / 4))
+        for cell in cells:
+            size = float((cell.get("style") or {}).get("fontSize") or 0)
+            if size <= 0 or abs(target - size) < 0.25:
+                continue
+            cell.setdefault("style", {})["fontSize"] = target
+            if isinstance(cell.get("styleEvidence"), dict):
+                cell["styleEvidence"]["fontSize"] = target
+            changes.append(
+                {
+                    "text": str(cell.get("text") or "")[:20],
+                    "from": size,
+                    "to": target,
+                    "scale": round(scale, 3),
+                    "reason": "table-body-median-ink",
+                }
+            )
+    return changes
 
 
 def calibrate_ink_convergence_from_render(
@@ -1541,6 +1713,11 @@ def calibrate_ink_convergence_from_render(
 
     used: set[int] = set()
     adjustments: list[dict[str, Any]] = []
+    # 表格正文格不单独缩放：一格一条短行，量出来的墨迹高差 1px 就是 10%，
+    # 逐格缩放必然让同一列出现两种字号。它们的比集中到列上算。
+    groups = _table_groups(design)
+    table_cells = {id(cell): cell for _owner, cells in groups for cell in cells}
+    column_samples: dict[int, tuple[float, float, float]] = {}
     skipped = 0
     unmatched = 0
     for element in design.get("elements") or []:
@@ -1578,6 +1755,13 @@ def calibrate_ink_convergence_from_render(
         if not reference_height or not rendered_height or rendered_height < 3:
             skipped += 1
             continue
+        if id(element) in table_cells:
+            column_samples[id(element)] = (
+                float(size),
+                float(reference_height),
+                float(rendered_height),
+            )
+            continue
         ratio = reference_height / float(rendered_height)
         if 0.85 <= ratio <= 1.175:
             skipped += 1
@@ -1600,12 +1784,18 @@ def calibrate_ink_convergence_from_render(
                 "rendered_ink": rendered_height,
             }
         )
+    aligned = (
+        _align_table_body_fonts(groups, column_samples, reference, rendered)
+        if column_samples
+        else []
+    )
     report = {
         "schema_version": "grounding-ink-convergence-calibration/1.0",
-        "status": "applied" if adjustments else "not-needed",
-        "adjusted_count": len(adjustments),
+        "status": "applied" if adjustments or aligned else "not-needed",
+        "adjusted_count": len(adjustments) + len(aligned),
         "skipped_count": skipped,
         "unmatched_count": unmatched,
         "adjustments": adjustments,
+        "column-aligned": aligned,
     }
     return design, report

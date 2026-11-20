@@ -307,11 +307,22 @@ def estimate_corner_radius(
     return _quantize_radius(value, w, h)
 
 
+#: 宽高比超过它的东西不可能是胶囊：胶囊的半径是 h/2，而 h/2 的圆角在一条
+#: 19:1 的行上读起来是"两端被别的层啃掉了"，不是"故意做成半圆"。表格行、
+#: 通栏底纹、分割条都落在这一侧。
+PILL_MAX_ASPECT = 8.0
+
+
 def _quantize_radius(value: int, width: int, height: int) -> int:
     if value <= 1:
         return 0
     short = max(1, min(width, height))
+    aspect = max(width, height) / float(short)
     if value >= max(6, int(round(short * 0.42))):
+        if aspect > PILL_MAX_ASPECT:
+            # 长条不套胶囊：退回一个不改变形状的直角。实测 FluxWeaver 的表格行
+            # 829x42 被判成 999，五条行带各自成了半圆，也是 13 帧里多出来的那批。
+            return 0
         return 999  # capsule / pill; Figma clamps to half the short side
     for step in _QUANTIZED_RADII:
         if value <= step:

@@ -97,10 +97,22 @@ def _control_text_anchor(
 
 
 def _estimated_run_width(text: str, font_size: float) -> float:
-    """Rough advance width: CJK is one em, Latin is about 0.55 em."""
-    cjk = sum(1 for char in text if ord(char) > 0x2E80)
-    other = len(text) - cjk
-    return cjk * font_size + other * font_size * 0.55
+    """Advance width, from the same measurement the compiler already uses.
+
+    The compiler fits a box with ``font_metrics.text_width`` (PIL, the real Noto
+    Sans SC); the renderer used to decide "does this overflow" with a flat
+    0.55em guess for every Latin character.  Two different rulers meant the two
+    halves of the pipeline could disagree about whether a string fits, and the
+    same text was fitted in one place and wrapped in the other.
+    """
+    try:
+        from src.app.services.structure.fidelity.font_metrics import text_width
+
+        return float(text_width(text, font_size))
+    except Exception:  # pragma: no cover - imaging stack is a hard dependency
+        cjk = sum(1 for char in text if ord(char) > 0x2E80)
+        other = len(text) - cjk
+        return cjk * font_size + other * font_size * 0.55
 
 
 def _text_overflows_box(spec: dict[str, Any], style: dict[str, Any]) -> bool:
@@ -425,6 +437,12 @@ class PrototypeAdapter(ABC):
                     }
                     self.create_rectangle(bg_spec, parent_id=parent_id)
                 text_spec = self._text_render_spec(spec, spec_out, origin)
+                # 对齐方式只活在 style 里，插件读的是顶层 params.textAlign——
+                # 不提上来，右对齐的日期列在 Figma 端永远是 LEFT（真机实测
+                # 79 个文本节点全 LEFT，而设计稿里 19 个是 right）。
+                align = str((spec.get("style") or {}).get("textAlign") or "").lower()
+                if align in ("left", "right", "center", "end"):
+                    text_spec["textAlign"] = align
                 single_line = _single_line_text({**spec, **style})
                 if single_line:
                     text_spec["singleLine"] = True

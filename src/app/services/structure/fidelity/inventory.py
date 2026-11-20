@@ -647,6 +647,10 @@ def _select_contiguous_boundaries(
     values: list[int],
     expected_count: int,
 ) -> list[int]:
+    if expected_count <= 1:
+        # 只有一列时没有"相邻间距"可评，能量函数无从算起：直接取第一个。
+        # 不特判就会走到 gaps 为空、mean_gap = 0/0 的分支。
+        return list(values[:expected_count])
     if len(values) <= expected_count:
         return values
     candidates = []

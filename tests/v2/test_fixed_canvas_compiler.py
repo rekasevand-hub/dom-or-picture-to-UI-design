@@ -869,7 +869,9 @@ def test_compiler_uses_source_grid_for_table_decorations(
     )
 
     assert verticals == [20, 80, 380]
-    assert horizontals == [120, 150, 220]
+    # 文档顺序就是绘制顺序（_order_layers 按 paint_order 落盘），它不保证
+    # 从上到下；这条断言要的是"用的是原图的网格线坐标"，所以比集合。
+    assert sorted(horizontals) == [120, 150, 220]
     assert header["height"] == 30
 
 
