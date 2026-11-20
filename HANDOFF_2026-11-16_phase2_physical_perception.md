@@ -51,7 +51,7 @@ PY=C:/Users/lzq/.conda/envs/omni/python.exe
 
 | 服务 | 端口 | 启动命令 | 谁需要它 |
 |---|---|---|---|
-| OmniParser | `127.0.0.1:8000` | `$PY -m src.app.services.omniparser.omniparser_server --omniparser-root OmniParser/OmniParser-master --som-model-path OmniParser/OmniParser-master/weights/icon_detect/model.pt --caption-model-path OmniParser/OmniParser-master/weights/icon_caption_florence --device cpu --box-threshold 0.05` | 只用 `physical_prepare.py`（感知阶段） |
+| OmniParser | `127.0.0.1:8000` | `$PY -m src.app.services.omniparser.omniparser_server --omniparser-root OmniParser/OmniParser-master --som-model-path OmniParser/OmniParser-master/weights/icon_detect/model.pt --caption-model-path OmniParser/OmniParser-master/weights/icon_caption_florence --box-threshold 0.05` | 只用 `physical_prepare.py`（感知阶段） |
 | Figma bridge | `ws://localhost:8765` | `$PY -m src.app.services.bridge_server` | 只用 `figma_replay.py`（真机回环） |
 
 Figma 侧还要在桌面端 Figma 里跑起插件，bridge 才连得上；插件加载的是**主检出**

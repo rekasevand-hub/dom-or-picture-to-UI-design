@@ -48,6 +48,9 @@ output/
 uploads/
 *.log
 
+# 金标截图的工作副本（真源在 samples/image_screenshots/）
+samples/base/
+
 # D: persistent content-addressed VLM perception cache
 .vision_cache/
 
