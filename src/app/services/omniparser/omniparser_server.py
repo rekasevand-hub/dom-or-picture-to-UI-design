@@ -29,13 +29,35 @@ import os
 os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
-# 当前环境没有 CUDA，无法安装 flash_attn；让 transformers 认为 flash_attn 不可用，
-# 从而回退到标准 attention 实现。
-import importlib
+# Florence-2 的远程代码用 flash_attn 加速注意力，但它是可选依赖。这里要让
+# transformers 整条链路上都认为它不可用，回退到标准 attention。
+#
+# 两处都得管，因为它们走的是不同判据：
+#   1) is_flash_attn_2_available() —— 建模代码运行时的分支开关；
+#   2) dynamic_module_utils.check_imports() —— 加载远程代码**之前**按 modeling
+#      文件声明的依赖逐个 find_spec，见不到 flash_attn 直接抛 ImportError。
+# 只做第 1 条会在第 2 步就死掉（这正是之前必须靠 PYTHONPATH 里放一个空壳包
+# 才能启动的原因）。把 flash_attn 从第 2 步的依赖表里摘掉，就不需要外部空壳了。
 import transformers.utils.import_utils as _import_utils
+from transformers import dynamic_module_utils as _dynamic_modules
 
 _import_utils.is_flash_attn_2_available = lambda: False
 _import_utils.is_flash_attn_greater_or_equal_2_10 = lambda: False
+
+_original_check_imports = _dynamic_modules.check_imports
+
+
+def _check_imports_allow_missing_flash_attn(module_file: str):
+    """check_imports 的包装：只放过 flash_attn 这一项，其余依赖照旧要装。"""
+    try:
+        return _original_check_imports(module_file)
+    except ImportError as exc:
+        if "flash_attn" not in str(exc):
+            raise
+        return []
+
+
+_dynamic_modules.check_imports = _check_imports_allow_missing_flash_attn
 
 import argparse
 import asyncio

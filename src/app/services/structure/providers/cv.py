@@ -54,10 +54,84 @@ def _b64_of(path: str) -> str:
 class CVProvider(BaseProvider):
     name = "cv"
 
-    def __init__(self, cfg: "Config | None" = None) -> None:
+    #: 正式入口走三路物理分权感知。关掉它只用于对照实验：旧链路把 OmniParser 的
+    #: `content`（"hamburger"、"star"）当文本写进矩形，正是阶段二消灭的幻觉胶囊。
+    #: 旧实现保留为兜底，pyhsical 感知整体抛错时（缺 easyocr、模型不在等）仍能出图。
+    USE_PHYSICAL_PERCEPTION = True
+
+    def __init__(self, cfg: "Config | None" = None, *, strict: bool = False) -> None:
         self.cfg = cfg
+        # strict 供 --route physical 使用：物理感知失败就报错，不悄悄退回旧链路。
+        # 非 strict 保留旧的兜底语义，供 auto/cv 使用。
+        self.strict = strict
 
     def run(self, ctx: ProviderContext) -> dict:
+        if self.USE_PHYSICAL_PERCEPTION:
+            if self.strict:
+                return self._run_physical(ctx)
+            try:
+                return self._run_physical(ctx)
+            except Exception as exc:  # noqa: BLE001 - 旧链路是兜底，不该因它断掉入口
+                graph = self._run_legacy(ctx)
+                graph.setdefault("provenance", {}).setdefault("fallbacks", []).append(
+                    f"physical-perception-failed:{type(exc).__name__}"
+                )
+                return graph
+        return self._run_legacy(ctx)
+
+    def _run_physical(self, ctx: ProviderContext) -> dict:
+        """三路分权感知：OCR 出字、OmniParser 出图标、CV 出容器。
+
+        与 ``scripts/physical_prepare.py`` 同一个函数，因此正式入口和评测脚本
+        不会产出两套不同的设计稿。
+        """
+        from src.app.services.structure.physical_perception import build_physical_plan
+
+        url = os.environ.get("OMNIPARSER_URL", "http://127.0.0.1:8000")
+        plan, report = build_physical_plan(
+            ctx.image_path,
+            omniparser_url=url,
+            width=ctx.image_w,
+            height=ctx.image_h,
+        )
+        graph = new_graph(ctx.image_path, ctx.image_w, ctx.image_h, "physical")
+        # 必须把 plan 原样挂成 scenePlan：build_image_design 只有看到它才会走
+        # compile_scene_plan_to_design（新编译器 + 成帧）。少了这一行，生产入口
+        # 会退回"逐个元素平铺"的老分支——产出没有一帧，五套标尺与容器树全不生效。
+        # scripts/physical_prepare.py 一直是挂的，两边必须一致。
+        graph["scenePlan"] = plan
+        graph["provenance"]["perception"] = report.as_dict()
+        for node in plan.get("nodes") or []:
+            box = [int(value) for value in node["bbox"]]
+            kind = str(node.get("type"))
+            if kind == "container":
+                add_container(
+                    graph,
+                    box,
+                    role=str(node.get("role") or ""),
+                    source="physical:cv",
+                )
+            elif kind == "text":
+                add_element(
+                    graph,
+                    box,
+                    type_="text",
+                    text=str(node.get("text") or ""),
+                    source="physical:ocr",
+                )
+            elif kind in ("image", "table"):
+                # 图标与表格都进元素池，但**不带语义文字**：caption 只住在图层名里。
+                add_element(
+                    graph,
+                    box,
+                    type_="rectangle",
+                    text="",
+                    source=f"physical:{kind}",
+                )
+        assign_parent_depth(graph)
+        return graph
+
+    def _run_legacy(self, ctx: ProviderContext) -> dict:
         root = resolve_container_pipeline_root()
         cp = root / "container_pipeline"
         omni = _resolve_omni(root)

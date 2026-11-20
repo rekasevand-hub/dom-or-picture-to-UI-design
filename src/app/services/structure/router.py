@@ -54,7 +54,10 @@ def grounding_fallback_reason(exc: BaseException) -> str | None:
 def route_order(
     input_kind: str, requested: str | None, cfg: "Config", have_dom: bool
 ) -> list[str]:
-    valid = {"dom", "grounding", "cv"}
+    # physical = 三路物理分权感知（build_physical_plan），cv 是它带旧链路兜底的
+    # 同一个 provider。grounding 是第一阶段的全图 VLM 路线，只在显式要求时使用：
+    # 它绕开 physical_perception 与编译器，产出的稿子与阶段二不是一套东西。
+    valid = {"dom", "grounding", "cv", "physical"}
     if requested and requested not in valid:
         raise ValueError(f"未知路线: {requested}")
     dom_ok = (input_kind == "url") and have_dom
@@ -65,10 +68,10 @@ def route_order(
             )
         return [requested]
     if input_kind == "url" and have_dom:
-        chain = ["dom", "grounding", "cv"]
+        chain = ["dom", "physical"]
     else:
-        chain = []
-        if cfg.vision_api_key:
-            chain.append("grounding")
-        chain.append("cv")
+        # 截图没有 DOM，物理感知是唯一主链。grounding 不再进入自动链：它是旧的
+        # 全图 VLM 路线，会把阶段二的三路分权与编译优化整段绕过去，而 CLI 上看
+        # 不出区别——这正是"跑完发现 arrow-right/like/search 又回来了"的来源。
+        chain = ["cv"]
     return chain

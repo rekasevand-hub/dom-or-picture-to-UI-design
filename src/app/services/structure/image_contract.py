@@ -7,6 +7,7 @@ import copy
 import difflib
 import hashlib
 import html
+import os
 import re
 import unicodedata
 from collections.abc import Mapping, Sequence
@@ -137,6 +138,91 @@ def select_ocr_languages(graph: Mapping[str, Any]) -> list[str]:
     if any(any("\u4e00" <= char <= "\u9fff" for char in text) for text in texts):
         return ["ch_sim", "en"]
     return ["en"]
+
+
+#: OCR 后端。``rapidocr`` 快且准（review 的 40px 大标题、marketplace 的价格都读对，
+#: 整页 1.3~1.8s）；``easyocr`` 是原来的实现，留作回退。
+#: 依赖缺失时自动降级，绝不因为一个可选包把整条链路打死。
+OCR_BACKEND = (os.environ.get("OCR_BACKEND") or "rapidocr").strip().lower()
+_RAPIDOCR_ENGINE: Any = None
+
+
+def _rapidocr(image_path: str | Path) -> list[dict[str, Any]] | None:
+    """Read the page with RapidOCR, or ``None`` when it is not installed."""
+    global _RAPIDOCR_ENGINE
+    try:
+        from rapidocr_onnxruntime import RapidOCR
+    except Exception:  # noqa: BLE001 - optional dependency
+        return None
+    import cv2
+    import numpy as np
+
+    if _RAPIDOCR_ENGINE is None:
+        _RAPIDOCR_ENGINE = RapidOCR()
+    image = cv2.imread(str(image_path))
+    if image is None:
+        return []
+    try:
+        result, _elapse = _RAPIDOCR_ENGINE(image)
+    except Exception:  # noqa: BLE001 - a broken engine must not kill the run
+        return None
+    observations: list[dict[str, Any]] = []
+    for item in result or []:
+        try:
+            polygon, text, confidence = item[0], item[1], item[2]
+        except (IndexError, TypeError):
+            continue
+        points = np.asarray(polygon, dtype=float).reshape(-1, 2)
+        if points.size < 8:
+            continue
+        x0 = int(max(0, np.floor(points[:, 0].min())))
+        y0 = int(max(0, np.floor(points[:, 1].min())))
+        x1 = int(min(image.shape[1], np.ceil(points[:, 0].max())))
+        y1 = int(min(image.shape[0], np.ceil(points[:, 1].max())))
+        normalized = str(text or "").strip()
+        if not normalized or x1 - x0 < 2 or y1 - y0 < 2:
+            continue
+        observations.append(
+            {
+                "text": normalized,
+                "bbox": [x0, y0, x1 - x0, y1 - y0],
+                "confidence": float(confidence),
+                "engine": "rapidocr",
+            }
+        )
+    return observations
+
+
+def extract_ocr_observations(
+    image_path: str | Path,
+    *,
+    languages: list[str] | None = None,
+    backend: str | None = None,
+) -> list[dict[str, Any]]:
+    """Read text candidates from the screenshot, whichever backend is available.
+
+    The return shape is the contract every caller already reads: ``text``,
+    ``bbox`` ``[x, y, w, h]``, ``confidence`` and ``engine``.  Order of attempts
+    is the configured backend first, then the other one — so a machine without
+    onnxruntime still runs, and a machine with both uses the better one.
+    """
+    wanted = (backend or OCR_BACKEND or "rapidocr").strip().lower()
+    order = [wanted] + [name for name in ("rapidocr", "easyocr") if name != wanted]
+    for name in order:
+        if name == "rapidocr":
+            observations = _rapidocr(image_path)
+        elif name == "easyocr":
+            try:
+                observations = extract_easyocr_observations(
+                    image_path, languages=languages
+                )
+            except Exception:  # noqa: BLE001 - easyocr may be absent
+                observations = None
+        else:
+            observations = None
+        if observations is not None:
+            return observations
+    return []
 
 
 def extract_easyocr_observations(
@@ -574,7 +660,9 @@ def recover_image_text_candidates(
     """Run the text supplement step and retain its candidate evidence."""
     try:
         languages = select_ocr_languages(graph)
-        observations = extract_easyocr_observations(
+        # 同一个后端开关：素材补字与感知层读的必须是同一双眼睛，否则同一段
+        # 文字在两处会得到两种读法。
+        observations = extract_ocr_observations(
             image_path,
             languages=languages,
         )

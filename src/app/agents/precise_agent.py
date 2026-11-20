@@ -58,6 +58,9 @@ def _build_provider(cfg, route):
         return DomProvider()
     if route == "grounding":
         return GroundingProvider(cfg)
+    if route == "physical":
+        # 与 cv 同一条链，但不允许回退：失败要看得见。
+        return CVProvider(cfg, strict=True)
     return CVProvider(cfg)
 
 
