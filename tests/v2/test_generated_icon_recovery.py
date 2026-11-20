@@ -100,7 +100,10 @@ class GeneratedIconRecoveryTests(unittest.TestCase):
             io.BytesIO(base64.b64decode(first["imageBase64"]))
         ).convert("RGBA")
         self.assertEqual(generated.size, (24, 24))
-        self.assertLess(min(generated.getchannel("A").get_flattened_data()), 255)
+        alpha = generated.getchannel("A")
+        # Pillow 12 exposes get_flattened_data(), earlier builds only getdata().
+        read = getattr(alpha, "get_flattened_data", None) or alpha.getdata
+        self.assertLess(min(read()), 255)
 
     def test_non_icon_elements_are_untouched(self) -> None:
         design = {

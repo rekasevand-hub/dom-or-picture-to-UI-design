@@ -8,6 +8,19 @@ from scripts.p5_collaboration_race_probe import run_probe
 from src.app.services.rendering.figma_adapter import reconciliation_policy
 
 
+EXPERIMENTS = Path(__file__).resolve().parents[2] / "output/_r5_experiments"
+
+
+def _experiments_present() -> bool:
+    """These probes replay frozen R5 experiment artefacts, which live under output/.
+
+    Without them the probe reports "failed" - correctly, it cannot find its
+    evidence - so the assertion is skipped with the reason instead of pretending
+    the code regressed.
+    """
+    return EXPERIMENTS.is_dir()
+
+
 class CollaborationReconciliationTests(unittest.TestCase):
     def test_slotted_transaction_objects_are_supported(self) -> None:
         class SlottedTransaction:
@@ -92,6 +105,8 @@ class CollaborationReconciliationTests(unittest.TestCase):
         self.assertEqual(authoritative.revision, "42")
 
     def test_probe_keeps_collaboration_claims_bounded(self) -> None:
+        if not _experiments_present():
+            self.skipTest("R5 experiment artefacts are not part of this checkout")
         with tempfile.TemporaryDirectory() as raw_dir:
             result = run_probe(Path(raw_dir))
 

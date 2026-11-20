@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import os
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -74,7 +75,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument(
         "--route",
-        choices=("auto", "grounding", "cv"),
+        choices=("auto", "physical", "grounding", "cv"),
         default="auto",
     )
     parser.add_argument("--origin-x", type=float, default=22000)
@@ -491,16 +492,29 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     emission_report = None
     if args.emission_contract != "off":
-        emission_report = audit_emission(
-            inventory=_read_json(pipeline_output / "10_content_inventory.json"),
-            scene_plan=_read_json(pipeline_output / "11_scene_plan.json"),
-            design=design,
-            quality=native_text_quality,
-        )
-        emission_report["mode"] = args.emission_contract
-        emission_report["registrationRepairApplied"] = (
-            args.emission_contract == "repair"
-        )
+        inventory = _optional_json(pipeline_output / "10_content_inventory.json")
+        scene_plan = _optional_json(pipeline_output / "11_scene_plan.json")
+        if inventory is None or scene_plan is None:
+            # 发射审计是 grounding 路线的账本（content inventory -> scene plan ->
+            # design）。物理感知链路不产出这两份清单，那是路线差异，不是缺件：
+            # 报"不适用"，别把整趟跑挂在这里。
+            emission_report = {
+                "schema_version": "emission-contract/1.0",
+                "status": "not-applicable",
+                "mode": args.emission_contract,
+                "reason": "this route emits no content inventory",
+            }
+        else:
+            emission_report = audit_emission(
+                inventory=inventory,
+                scene_plan=scene_plan,
+                design=design,
+                quality=native_text_quality,
+            )
+            emission_report["mode"] = args.emission_contract
+            emission_report["registrationRepairApplied"] = (
+                args.emission_contract == "repair"
+            )
         _write_json(output / "emission_contract.json", emission_report)
 
     report = build_image_acceptance_report(
@@ -552,6 +566,37 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             _write_json(output / "perception_coverage.json", perception_report)
     _write_json(output / "acceptance.json", report)
+    # 一行说清楚这一趟到底跑了哪条感知链。--route auto 会自己挑，只有把命中的
+    # 路线打出来，"以为是物理链路、其实跑了旧 grounding"才不会再发生。
+    pipeline = report.get("pipeline") or {}
+    visual = report.get("visual") or {}
+    frames = sum(
+        1 for item in design.get("elements") or [] if item.get("layoutChildren")
+    )
+    print(
+        "[route] requested=%s hit=%s input=%s nodes=%s frames=%s elements=%s arbiter=%s"
+        % (
+            args.route,
+            pipeline.get("route"),
+            pipeline.get("input_kind"),
+            (pipeline.get("grounding_fidelity") or {}).get("scene_nodes"),
+            frames,
+            pipeline.get("frame_design_elements"),
+            "on" if int(os.environ.get("ARBITER_MAX_ROUNDS") or 1) > 1 else "off",
+        ),
+        flush=True,
+    )
+    print(
+        "[score] figma within30=%s within15=%s mean=%s ink=%s over30=%s%%"
+        % (
+            round(float(visual.get("within30_pct") or 0), 2),
+            "-",
+            round(float(visual.get("mean") or 0), 3),
+            round(float(visual.get("ink_mean") or 0), 2),
+            round(float(visual.get("over30_pct") or 0), 2),
+        ),
+        flush=True,
+    )
     print(json.dumps(report, ensure_ascii=True))
     if (
         args.strict_emission

@@ -347,6 +347,29 @@ def _arbitrate(design: dict, picture: str | Path, out: Path, tag: str, render_pa
         elements[:] = shadow
         _render(design, out)
         report["rolledBack"].append({"type": ticket.type, "why": gate.failures, "detail": ticket.note[:40]})
+    # 离散工单只能表达"加粗、补边、加一行字"。剩下的零点几个点往往是"这一行
+    # 偏了 3px"，那需要定量补丁加单调回滚；它默认是关的，因为每一轮都要多画
+    # K 次整页，而且只有配上真模型才有意义。
+    if arbiter.ARBITER_MAX_ROUNDS > 1:
+        vision = _vision_callable()
+        if vision is not None:
+            def draw(items):
+                return np.asarray(Image.open(_render(design, out)).convert("RGB"))
+
+            report["refine"] = arbiter.refine(
+                elements,
+                truth,
+                draw,
+                propose=lambda orders, strips: vision(
+                    arbiter.round_prompt(orders), strips
+                ),
+                propose_wireframe=lambda candidates, panels: vision(
+                    arbiter.wireframe_prompt(candidates), panels
+                ),
+                rounds=arbiter.ARBITER_MAX_ROUNDS,
+            )
+        else:
+            report["refine"] = {"skipped": "no-vision"}
     frozen.save(frozen_path)
     return report
 

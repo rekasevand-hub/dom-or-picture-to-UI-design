@@ -13,7 +13,14 @@ if [ ! -x "$PY" ] && [ ! -f "$PY" ]; then
 fi
 
 cd "$ROOT"
-export GROUNDING_FIDELITY_MODE=high
-export IMAGE_ENRICHMENT_MODE=apply
 
-exec "$PY" scripts/image_figma_mvp.py "$@"
+# 默认走阶段二的三路物理分权感知：build_physical_plan（CV 容器 + OCR 文字 +
+# OmniParser 图标）-> fixed_canvas_compiler -> Figma Bridge。
+#
+# GROUNDING_FIDELITY_MODE=high / IMAGE_ENRICHMENT_MODE=apply 是第一阶段的
+# 全图 VLM grounding 路线要的开关，默认不再注入：那条路会把 physical_perception
+# 与编译器优化整段绕过去，而 CLI 上完全看不出来。真的要走老路线时显式：
+#   IMAGE_ROUTE=grounding GROUNDING_FIDELITY_MODE=high IMAGE_ENRICHMENT_MODE=apply #     bash scripts/run_image_pipeline.sh --image ... --truth ... --out ...
+ROUTE="${IMAGE_ROUTE:-physical}"
+
+exec "$PY" scripts/image_figma_mvp.py --route "$ROUTE" "$@"

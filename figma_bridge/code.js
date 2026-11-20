@@ -832,7 +832,7 @@ async function createText(params) {
       text.resize(boxWidth, Math.max(1, Number(params.height) || text.height));
     } catch (err) {}
     const align = params.textAlign === "center" ? "CENTER"
-                : params.textAlign === "end" ? "RIGHT" : "LEFT";
+                : (params.textAlign === "end" || params.textAlign === "right") ? "RIGHT" : "LEFT";
     try { text.textAlignHorizontal = align; } catch (err) {}
     text.x = params.x || 0;
     text.y = lines.length > 1
@@ -849,6 +849,14 @@ async function createText(params) {
     // text line box, so keep its top edge instead of centering it in the
     // larger element box.
     text.x = params.x || 0;
+    // 但"从行框左缘起排"不等于"忽略对齐"：右对齐的日期列、金额列，盒子左缘
+    // 固定而字宽比盒子窄/宽，插件必须按盒子宽把字推到右缘，否则整列左溢。
+    const startBox = Number(params.width) || 0;
+    const startAlign = String(params.textAlign || "").toLowerCase();
+    if (startBox > 0) {
+      if (startAlign === "right" || startAlign === "end") text.x += startBox - text.width;
+      else if (startAlign === "center") text.x += (startBox - text.width) / 2;
+    }
     text.y = Array.isArray(params.lines) && params.lines.length === 1
       ? (params.y || 0)
       : (params.y || 0) + ((params.height || 0) - text.height) / 2;
@@ -865,7 +873,10 @@ async function createText(params) {
     let tx = params.x || 0;
     const boxWidth = Number(params.width) || 0;
     const align = String(params.textAlign || "").toLowerCase();
-    if (boxWidth > text.width + 0.5) {
+    // 不能拿 boxWidth 和 text.width 比大小来决定要不要对齐：OCR 框是墨迹紧框，
+    // Figma 渲染的字常比它宽 1%~5%，一旦 text.width >= boxWidth，右对齐与居中
+    // 就被整段跳过，文字钉在左缘向右溢出。只要盒子有宽度就得算。
+    if (boxWidth > 0) {
       if (align === "center") tx += (boxWidth - text.width) / 2;
       else if (align === "right" || align === "end") tx += boxWidth - text.width;
     }

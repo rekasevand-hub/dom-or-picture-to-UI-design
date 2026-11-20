@@ -34,11 +34,20 @@ class GroundingUnavailableError(RuntimeError):
 
 
 class ImageRouteFallbackTests(unittest.TestCase):
-    def test_image_auto_prefers_grounding_then_cv(self) -> None:
+    def test_image_auto_uses_physical_perception_only(self) -> None:
+        # grounding 是第一阶段的全图 VLM 路线，会绕开 physical_perception 与编译器；
+        # 它不再进入自动链，只有显式 --route grounding 才会用到。
         cfg = SimpleNamespace(vision_api_key="configured")
         self.assertEqual(
             route_order("image", None, cfg, have_dom=False),
-            ["grounding", "cv"],
+            ["cv"],
+        )
+
+    def test_explicit_physical_route_does_not_fall_back(self) -> None:
+        cfg = SimpleNamespace(vision_api_key="configured")
+        self.assertEqual(
+            route_order("image", "physical", cfg, have_dom=False),
+            ["physical"],
         )
 
     def test_missing_vlm_config_starts_with_cv(self) -> None:
@@ -55,7 +64,7 @@ class ImageRouteFallbackTests(unittest.TestCase):
         )
         self.assertEqual(
             route_order("image", None, cfg, have_dom=False),
-            ["grounding", "cv"],
+            ["cv"],
         )
 
     def test_service_unavailability_allows_fallback(self) -> None:

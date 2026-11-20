@@ -24,6 +24,24 @@ from src.app.services.structure.capture import (
 from src.config.settings import Config
 
 
+def _webkit_installed() -> bool:
+    """The one test that drives a real browser needs the engine on disk.
+
+    Everything else here is pure protocol (state classification, defaults,
+    normalisation) and runs without it, so the skip is per test and not per
+    module: an environment without Playwright should cost exactly one case.
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception:  # pragma: no cover - optional dependency
+        return False
+    try:
+        with sync_playwright() as started:
+            return Path(started.webkit.executable_path).is_file()
+    except Exception:  # pragma: no cover - engine not downloadable here
+        return False
+
+
 class BrowserEngineTests(unittest.TestCase):
     def test_default_engine_remains_chromium(self) -> None:
         self.assertEqual(DEFAULT_BROWSER_ENGINE, "chromium")
@@ -82,6 +100,7 @@ class BrowserEngineTests(unittest.TestCase):
         self.assertEqual(state["kind"], PAGE_STATE_CONTENT)
         self.assertTrue(state["signals"]["screenshot_error"])
 
+    @unittest.skipUnless(_webkit_installed(), "playwright webkit is not installed")
     def test_non_rendered_svg_clip_geometry_is_not_captured(self) -> None:
         from playwright.sync_api import sync_playwright
 

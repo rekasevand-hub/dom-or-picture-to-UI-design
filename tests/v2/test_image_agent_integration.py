@@ -219,10 +219,13 @@ class ImageAgentIntegrationTests(unittest.TestCase):
                 "src.app.agents.precise_agent._build_provider",
                 side_effect=[_RejectingProvider(), _ImageProvider()],
             ) as build_provider:
-                with self.assertRaises(ValueError):
+                with self.assertRaises((ValueError, RuntimeError)):
                     PreciseAgent(cfg).run(image=str(path), route="auto", tool="svg")
 
+        # 截图只有一条路线（物理感知）。失败就报错，不去试别的路线——这正是
+        # "不许悄悄退回旧 grounding" 的那条约束。
         self.assertEqual(build_provider.call_count, 1)
+        self.assertEqual(build_provider.call_args.args[1], "cv")
 
     def test_image_auto_missing_vlm_config_records_grounding_fallback(
         self,

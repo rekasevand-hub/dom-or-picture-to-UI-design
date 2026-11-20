@@ -14,6 +14,20 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+CORPUS = ROOT / "output/_dom_quality_corpus_verify_2026-10-25"
+
+
+def _corpus_present() -> bool:
+    """The DOM captures these manifests index are build artefacts, not sources.
+
+    They live under output/ and are swept with the rest of it, so a clean
+    checkout cannot assert that every declared input resolves.  The manifest's
+    own consistency (ids, hashes, thresholds) is still checked - only the
+    "the file is here" case is skipped, and it says so.
+    """
+    return CORPUS.is_dir()
+
+
 class AxureHoldoutV4ManifestTests(unittest.TestCase):
     def _manifest(self) -> dict:
         self.assertTrue(MANIFEST.is_file(), f"missing manifest: {MANIFEST}")
@@ -67,6 +81,8 @@ class AxureHoldoutV4ManifestTests(unittest.TestCase):
         self.assertFalse(thresholds["composite_score_allowed"])
 
     def test_every_frozen_input_hash_matches(self) -> None:
+        if not _corpus_present():
+            self.skipTest("DOM corpus is not part of this checkout")
         for sample in self._manifest()["samples"]:
             for path_key in ("design_path", "screenshot_path", "truth_path"):
                 path = ROOT / sample[path_key]
