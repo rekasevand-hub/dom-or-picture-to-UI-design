@@ -1748,3 +1748,1088 @@ class DesignGate:
     @property
     def passed(self) -> bool:
         return not self.failures
+
+
+# --------------------------------------------------------------------------
+# 闭环精修：误差热力图 -> Top-K 工单 -> 定量补丁 -> 单调回滚
+#
+# 上面所有仲裁都是"一轮、离散动作"：加粗、补边、加一行字。离散动作的好处是
+# 不可能把页面改坏，坏处是它表达不了"这一行往左偏了 3px、字号大了 1.5pt"——
+# 而那恰好是最后 5% 误差里最常见的一类。
+#
+# 这一层补上那个缺口，代价是必须先解决一个老问题：模型一旦能改坐标，就能
+# 把页面改坏。所以每个补丁落笔后立刻重画、重测，只有该处误差**严格下降**才
+# 提交；帧数少了、文字压上了、整页变差了，一律回滚。模型可以猜，页面不会信。
+# --------------------------------------------------------------------------
+
+import os  # noqa: E402 - 只有这一层读环境变量，放在段首比顶部更清楚
+
+#: 精修轮数。1 = 保持旧行为（一轮离散仲裁）；2~3 打开定量精修。
+ARBITER_MAX_ROUNDS = int(os.environ.get("ARBITER_MAX_ROUNDS") or 1)
+#: 每轮最多修几处。同时给模型看三处是它还能分清上下文的极限，再多就开始猜。
+ROUND_TOP_K = 3
+#: 误差热力图的格子边长。24px 让一张 200px 的卡落进一格半：再小会把同一个
+#: 缺陷拆成两张工单，再大又会把两处不相干的缺陷并成一张。
+HEAT_CELL = 24
+#: 一个连通块至少要有这么多坏像素才参与合并。它只用来滤掉抗锯齿碎屑——排序
+#: 靠的是误差总量，所以门槛可以很松；定高了会把 3px 偏移留下的细带一起滤掉。
+HEAT_MIN_BAD_PIXELS = 12
+#: 工单区块向外扩多少像素：只看缺陷本身看不出它偏了多少，得给它参照物。
+ROUND_PAD = 12
+#: 裁片放大倍数与刻度间隔（原图像素）。1px 的偏移在 1× 下看不出来。
+ROUND_ZOOM = 2
+RULER_TICK = 10
+#: 描边宽度：裁片四周留出刻度用的白边。
+RULER_MARGIN = 26
+#: 定量补丁允许动的字段，以及每个字段的钳位区间（都是**增量**）。
+PATCH_LIMITS: dict[str, tuple[float, float]] = {
+    "dx": (-64.0, 64.0),
+    "dy": (-64.0, 64.0),
+    "dw": (-64.0, 64.0),
+    "dh": (-64.0, 64.0),
+    "fontSize": (-24.0, 24.0),
+    "fontWeight": (-400.0, 400.0),
+    "letterSpacing": (-2.0, 8.0),
+}
+#: 单条工单允许改的字段上限：一次动七个字段就是在重画，不是在修。
+PATCH_MAX_FIELDS = 3
+#: 局部误差要"真的"下降才算数。浮点噪声级别的改善（< 0.02 个灰度级）说明这条
+#: 补丁对画面没有作用，收下它只会在报告里写下一个并不存在的修复。
+ROI_MIN_GAIN = 0.02
+#: 整页误差允许因为一条补丁上涨的比例（相对）。没有这条，模型只要把字挪出
+#: 工单包围盒，局部误差就会"下降"——修好一处、弄坏一片。
+PAGE_DRIFT_TOLERANCE = 0.005
+
+
+@dataclass
+class WorkOrder:
+    """一处要按像素量修掉的地方，绑定到一个可修改的节点。"""
+
+    index: int
+    ref: str
+    box: list[int]
+    element_id: str = ""
+    kind: str = "geometry"
+    error: float = 0.0
+    patch: dict[str, float] = field(default_factory=dict)
+    note: str = ""
+    status: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "index": self.index,
+            "ref": self.ref,
+            "bbox": list(self.box),
+            "kind": self.kind,
+            "error": round(self.error, 1),
+        }
+
+
+def _array(image) -> Any:
+    import numpy as np
+
+    array = np.asarray(image)
+    if array.ndim == 2:
+        array = np.stack([array] * 3, axis=2)
+    return array[..., :3].astype(np.int16)
+
+
+def heat_grid(truth, drawn, cell: int = HEAT_CELL) -> Any:
+    """Mean |dI| per square cell: where the page is wrong, at a scale you can name."""
+    import numpy as np
+
+    a, b = _array(truth), _array(drawn)
+    if a.shape != b.shape:
+        raise ValueError(f"heat map needs equal shapes: {a.shape} vs {b.shape}")
+    height, width = a.shape[:2]
+    rows, columns = height // cell, width // cell
+    if rows < 1 or columns < 1:
+        return np.zeros((1, 1), dtype=np.float32)
+    distance = np.abs(a - b).max(axis=2)[: rows * cell, : columns * cell]
+    return distance.reshape(rows, cell, columns, cell).mean(axis=(1, 3))
+
+
+def _owner_of(elements: Sequence[Mapping[str, Any]], box: Sequence[int]) -> int:
+    """The node that best explains this error block: smallest one it mostly lies in.
+
+    "Smallest" matters.  A hot block inside a card intersects the card, the
+    page shell and the text that is actually wrong; the text is the only one of
+    the three a coordinate patch should touch.
+    """
+    x, y, w, h = (int(value) for value in list(box)[:4])
+    best, best_area = -1, None
+    for index, element in enumerate(elements):
+        if element.get("type") not in ("text", "container", "image", "button", "input"):
+            continue
+        if str(element.get("role") or "") in ("patch", "mark", "page-ground"):
+            continue
+        ex, ey, ew, eh = (float(element.get(key) or 0) for key in ("x", "y", "width", "height"))
+        if ew <= 0 or eh <= 0:
+            continue
+        overlap_w = min(x + w, ex + ew) - max(x, ex)
+        overlap_h = min(y + h, ey + eh) - max(y, ey)
+        if overlap_w <= 0 or overlap_h <= 0:
+            continue
+        intersection = overlap_w * overlap_h
+        # 块要落在这个节点的范围里（或节点落在块里），不是擦一下就算。
+        if intersection < 0.25 * min(w * h, ew * eh):
+            continue
+        if best_area is None or ew * eh < best_area:
+            best, best_area = index, ew * eh
+    return best
+
+
+def error_blocks(
+    truth,
+    drawn,
+    elements: Sequence[Mapping[str, Any]],
+    *,
+    gap: int = 8,
+    pad: int = ROUND_PAD,
+) -> list[tuple[float, list[int], int]]:
+    """The worst error clusters, one per node, dearest first.
+
+    A cluster is labelled on the thresholded difference, not on a coarse grid:
+    a three-pixel shift leaves two thin bands — one where the ink is missing,
+    one where it was painted — and they are one defect.  Grid cells split them
+    and then neither half clears any density threshold, which is exactly how the
+    first version nominated nothing at all.
+
+    So the two bands are clustered separately and then *joined by the node they
+    belong to*: whatever a patch can move defines the work order, not what the
+    pixels happened to touch.
+    """
+    import cv2
+    import numpy as np
+
+    a, b = _array(truth), _array(drawn)
+    if a.shape != b.shape:
+        return []
+    height, width = a.shape[:2]
+    distance = np.abs(a - b).max(axis=2)
+    bad = (distance > 30).astype(np.uint8)
+    if not bad.any():
+        return []
+    grown = cv2.dilate(bad, np.ones((gap, gap), np.uint8))
+    count, labels, _stats, _centroids = cv2.connectedComponentsWithStats(grown, 8)
+    grouped: dict[int, list[float]] = {}
+    for index in range(1, count):
+        mask = labels == index
+        hot = (bad[mask] > 0)
+        if int(hot.sum()) < HEAT_MIN_BAD_PIXELS:
+            continue
+        xs = np.where(mask.any(axis=0))[0]
+        ys = np.where(mask.any(axis=1))[0]
+        if xs.size == 0 or ys.size == 0:
+            continue
+        x0 = max(0, int(xs[0]) - pad)
+        y0 = max(0, int(ys[0]) - pad)
+        x1 = min(width, int(xs[-1]) + 1 + pad)
+        y1 = min(height, int(ys[-1]) + 1 + pad)
+        if x1 - x0 < 6 or y1 - y0 < 6:
+            continue
+        owner = _owner_of(elements, (x0, y0, x1 - x0, y1 - y0))
+        if owner < 0:
+            # 没有节点对得上：这是背景误差，改坐标修不掉它。
+            continue
+        weight = float(distance[mask & (bad > 0)].sum())
+        entry = grouped.setdefault(owner, [0.0, x0, y0, x1, y1])
+        entry[0] += weight
+        entry[1] = min(entry[1], x0)
+        entry[2] = min(entry[2], y0)
+        entry[3] = max(entry[3], x1)
+        entry[4] = max(entry[4], y1)
+    found = [
+        (weight, [int(x0), int(y0), int(x1 - x0), int(y1 - y0)], owner)
+        for owner, (weight, x0, y0, x1, y1) in grouped.items()
+    ]
+    found.sort(key=lambda item: -item[0])
+    return found
+
+
+def nominate_rounds(
+    truth,
+    drawn,
+    elements: Sequence[Mapping[str, Any]],
+    *,
+    k: int = ROUND_TOP_K,
+) -> list[WorkOrder]:
+    """The worst k nodes, with the box a patch has to improve."""
+    import numpy as np
+
+    blocks = error_blocks(truth, drawn, elements)
+    if not blocks:
+        return []
+    distance = np.abs(_array(truth) - _array(drawn)).max(axis=2)
+    orders: list[WorkOrder] = []
+    for _weight, box, owner in blocks:
+        if len(orders) >= k:
+            break
+        element = elements[owner]
+        x, y, w, h = box
+        block = distance[y : y + h, x : x + w]
+        if block.size == 0:
+            continue
+        orders.append(
+            WorkOrder(
+                index=len(orders),
+                ref=str(element.get("contentRef") or element.get("id") or ""),
+                box=list(box),
+                element_id=str(element.get("id") or ""),
+                kind="text" if element.get("type") == "text" else "geometry",
+                error=round(float(block.mean()), 1),
+            )
+        )
+    orders.sort(key=lambda item: -item.error)
+    for position, order in enumerate(orders):
+        order.index = position
+    return orders
+
+
+def ruler_panel(truth, drawn, box: Sequence[int], *, zoom: int = ROUND_ZOOM,
+                tick: int = RULER_TICK) -> Any:
+    """One 2x side-by-side strip inside a ruler, so a pixel offset can be read.
+
+    Without the ruler the model can say "the text sits low" and not by how much.
+    Ten source pixels per tick, labelled every five ticks: at 2x that is a mark
+    every 20 screen pixels, which reads as a scale rather than as noise.  The
+    ticks are in **source** coordinates, so the number the model reads is the
+    number the patch has to use.
+    """
+    import cv2
+    import numpy as np
+
+    x, y, w, h = (int(value) for value in box)
+    height, width = _array(truth).shape[:2]
+    x0, y0 = max(0, x), max(0, y)
+    x1, y1 = min(width, x + w), min(height, y + h)
+    if x1 - x0 < 4 or y1 - y0 < 4:
+        return np.full((16, 16, 3), 255, dtype=np.uint8)
+    left = cv2.resize(_array(truth)[y0:y1, x0:x1].astype(np.uint8), None,
+                      fx=zoom, fy=zoom, interpolation=cv2.INTER_NEAREST)
+    right = cv2.resize(_array(drawn)[y0:y1, x0:x1].astype(np.uint8), None,
+                       fx=zoom, fy=zoom, interpolation=cv2.INTER_NEAREST)
+    return _wrap_ruler(_side_by_side(left, right), zoom=zoom, tick=tick)
+
+
+def _side_by_side(left, right):
+    import numpy as np
+
+    gap = np.full((left.shape[0], 10, 3), 255, dtype=np.uint8)
+    return np.concatenate([left, gap, right], axis=1)
+
+
+def _wrap_ruler(panel, *, zoom: int = ROUND_ZOOM, tick: int = RULER_TICK):
+    """刻度边框：单位是原图像素，模型读到的数就是补丁要填的数。"""
+    import cv2
+    import numpy as np
+
+    frame = np.full(
+        (panel.shape[0] + 2 * RULER_MARGIN, panel.shape[1] + 2 * RULER_MARGIN, 3),
+        255,
+        dtype=np.uint8,
+    )
+    frame[RULER_MARGIN : RULER_MARGIN + panel.shape[0], RULER_MARGIN : RULER_MARGIN + panel.shape[1]] = panel
+    ink = (74, 74, 74)
+    step = max(1, int(tick)) * zoom
+    for offset in range(0, panel.shape[1] + 1, step):
+        column = RULER_MARGIN + offset
+        cv2.line(frame, (column, RULER_MARGIN - 6), (column, RULER_MARGIN - 1), ink, 1)
+        cv2.line(frame, (column, RULER_MARGIN + panel.shape[0] + 1),
+                 (column, RULER_MARGIN + panel.shape[0] + 6), ink, 1)
+        source = offset // zoom
+        if source % (int(tick) * 5) == 0:
+            cv2.putText(frame, str(source), (column + 1, RULER_MARGIN - 9),
+                        cv2.FONT_HERSHEY_PLAIN, 0.7, ink, 1, cv2.LINE_AA)
+    for offset in range(0, panel.shape[0] + 1, step):
+        row = RULER_MARGIN + offset
+        cv2.line(frame, (RULER_MARGIN - 6, row), (RULER_MARGIN - 1, row), ink, 1)
+        cv2.line(frame, (RULER_MARGIN + panel.shape[1] + 1, row),
+                 (RULER_MARGIN + panel.shape[1] + 6, row), ink, 1)
+        source = offset // zoom
+        if source % (int(tick) * 5) == 0:
+            cv2.putText(frame, str(source), (2, row + 3),
+                        cv2.FONT_HERSHEY_PLAIN, 0.7, ink, 1, cv2.LINE_AA)
+    # ROI 本身画一圈细线：模型要能分清"工单范围"和"刻度范围"。
+    cv2.rectangle(
+        frame,
+        (RULER_MARGIN, RULER_MARGIN),
+        (RULER_MARGIN + panel.shape[1] - 1, RULER_MARGIN + panel.shape[0] - 1),
+        (188, 188, 188),
+        1,
+    )
+    return frame
+
+
+def round_prompt(orders: Sequence[WorkOrder]) -> str:
+    """The one question this layer asks, and the only shapes an answer may take."""
+    listing = json.dumps([order.as_dict() for order in orders], ensure_ascii=False)
+    return (
+        f"图 1..{len(orders)} 是{len(orders)}处误差最大区域的 2× 对照（左原图、右当前渲染），"
+        "每张外围有刻度：**单位是原图像素**，每小格 10px。\n"
+        f"工单清单：{listing}\n"
+        "只回答这些区域该怎么按像素微调，不要解释。所有数值都是**增量**，可以为负：\n"
+        '{"patches":[{"index":0,"dx":0,"dy":0,"dw":0,"dh":0,'
+        '"fontSize":0,"fontWeight":0,"letterSpacing":0,"note":"..."}]}\n'
+        "dx/dy 正数向右向下；dw/dh 是宽高增量；fontSize 是**磅值增量**（1px 字高约 0.75pt）；"
+        "fontWeight 是 100 的倍数增量；letterSpacing 是绝对像素值。\n"
+        "只填你从刻度上读得出的那几个字段，其余省略。一行最多填 3 个字段。"
+        "读不出来就不要报这一处——报错一条，整轮都会被回滚。"
+    )
+
+
+def parse_round_patches(payload: Mapping[str, Any]) -> dict[int, dict[str, float]]:
+    """Clamp and keep only the quantitative fields, per work order."""
+    out: dict[int, dict[str, float]] = {}
+    for raw in payload.get("patches") or []:
+        if not isinstance(raw, Mapping):
+            continue
+        try:
+            index = int(raw.get("index"))
+        except (TypeError, ValueError):
+            continue
+        patch: dict[str, float] = {}
+        for name, (low, high) in PATCH_LIMITS.items():
+            if name not in raw:
+                continue
+            try:
+                value = float(raw[name])
+            except (TypeError, ValueError):
+                continue
+            if value == 0.0:
+                continue
+            patch[name] = max(low, min(high, value))
+        if patch:
+            out[index] = dict(sorted(patch.items(), key=lambda item: -abs(item[1]))[:PATCH_MAX_FIELDS])
+    return out
+
+
+def _structural_indices(elements: Sequence[Mapping[str, Any]]) -> set[int]:
+    """Elements whose *own* box is structure: the frame containers.
+
+    A leaf member may be nudged — the frame guard measures whether the frame
+    still holds (``frames-lost`` rolls the patch back), so geometry on a word is
+    a proposal the guards can judge.  A frame *container* is a different thing:
+    moving it re-parents its members, which is not a correction but a rewrite.
+    """
+    return {
+        index
+        for index, element in enumerate(elements)
+        if element.get("layoutChildren")
+    }
+
+
+def apply_quantitative(
+    element: dict[str, Any],
+    patch: Mapping[str, float],
+    *,
+    frozen: bool = False,
+) -> dict[str, float] | None:
+    """Move and restyle one node by the numbers, or refuse.
+
+    Geometry is refused for frame members: a frame's children are pinned to
+    measured positions, and nudging one is how a page goes from thirteen frames
+    to twelve.  Typography is always allowed — it cannot move a member.
+    """
+    geometry = {"dx", "dy", "dw", "dh"} & set(patch)
+    if geometry and frozen:
+        return None
+    applied: dict[str, float] = {}
+    if "dx" in patch or "dy" in patch:
+        element["x"] = round(float(element.get("x") or 0) + float(patch.get("dx", 0.0)), 1)
+        element["y"] = round(float(element.get("y") or 0) + float(patch.get("dy", 0.0)), 1)
+        applied["dx"] = float(patch.get("dx", 0.0))
+        applied["dy"] = float(patch.get("dy", 0.0))
+    if "dw" in patch or "dh" in patch:
+        width = max(1.0, float(element.get("width") or 0) + float(patch.get("dw", 0.0)))
+        height = max(1.0, float(element.get("height") or 0) + float(patch.get("dh", 0.0)))
+        element["width"], element["height"] = round(width, 1), round(height, 1)
+        applied["dw"] = float(patch.get("dw", 0.0))
+        applied["dh"] = float(patch.get("dh", 0.0))
+    style = element.get("style")
+    if style is None and {"fontSize", "fontWeight", "letterSpacing"} & set(patch):
+        style = element["style"] = {}
+    if style is not None:
+        if "fontSize" in patch:
+            size = float(style.get("fontSize") or 14.0) + float(patch["fontSize"])
+            style["fontSize"] = round(max(8.0, min(200.0, size)) * 2) / 2
+            applied["fontSize"] = float(patch["fontSize"])
+        if "fontWeight" in patch:
+            weight = int(style.get("fontWeightValue") or 400) + int(patch["fontWeight"])
+            weight = max(100, min(900, int(round(weight / 100.0)) * 100))
+            style["fontWeightValue"] = weight
+            style["fontWeight"] = "bold" if weight >= 700 else "normal"
+            applied["fontWeight"] = float(patch["fontWeight"])
+        if "letterSpacing" in patch:
+            style["letterSpacing"] = round(float(patch["letterSpacing"]), 2)
+            applied["letterSpacing"] = float(patch["letterSpacing"])
+    if not applied:
+        return None
+    element.setdefault("arbiterEvidence", {})["quantitative"] = applied
+    return applied
+
+
+def roi_error(truth, drawn, box: Sequence[int]) -> float:
+    """Mean |dI| inside one box — the only number a patch is allowed to move."""
+    import numpy as np
+
+    a, b = _array(truth), _array(drawn)
+    if a.shape != b.shape:
+        return float("inf")
+    height, width = a.shape[:2]
+    x, y, w, h = (int(value) for value in list(box)[:4])
+    x0, y0 = max(0, x), max(0, y)
+    x1, y1 = min(width, x + w), min(height, y + h)
+    if x1 - x0 < 2 or y1 - y0 < 2:
+        return float("inf")
+    return float(np.abs(a[y0:y1, x0:x1] - b[y0:y1, x0:x1]).max(axis=2).mean())
+
+
+def page_error(truth, drawn) -> float:
+    import numpy as np
+
+    a, b = _array(truth), _array(drawn)
+    if a.shape != b.shape:
+        return float("inf")
+    return float(np.abs(a - b).max(axis=2).mean())
+
+
+def count_frames(elements: Sequence[Mapping[str, Any]]) -> int:
+    return sum(1 for element in elements if element.get("layoutChildren"))
+
+
+def covered_texts(elements: Sequence[Mapping[str, Any]]) -> int:
+    """Words an opaque node paints over — the question `_guard_text_occlusion` asks.
+
+    That pass *repairs* what it finds, so it cannot also serve as the before and
+    after measurement a rollback needs: it mutates.  This counts the finding
+    instead, with the same rule (half the word covered by something opaque
+    painted after it), so a patch that buries a label is caught by the number
+    and not by the repair it would have triggered.
+    """
+    ranks = paint_ranks(list(elements))
+    covered = 0
+    for index, element in enumerate(elements):
+        if element.get("type") != "text" or not str(element.get("text") or "").strip():
+            continue
+        box = _rect(element)
+        rank = ranks.get(index, 0)
+        for other_index, other in enumerate(elements):
+            if str(other.get("type") or "") == "text" or not _is_opaque(other):
+                continue
+            if ranks.get(other_index, 0) <= rank:
+                continue
+            if _cover_share(_rect(other), box) >= OCCLUSION_COVER:
+                covered += 1
+                break
+    return covered
+
+
+def audit_structure(elements: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+    """The three numbers a quantitative patch may not make worse."""
+    return {
+        "frames": count_frames(elements),
+        "collisions": count_collisions(elements),
+        "covered": covered_texts(elements),
+    }
+
+
+def refine(
+    elements: list[dict[str, Any]],
+    truth,
+    draw: Callable[[list[dict[str, Any]]], Any],
+    *,
+    propose: Callable[[Sequence[WorkOrder], Sequence[Any]], Mapping[str, Any]] | None,
+    rounds: int = ARBITER_MAX_ROUNDS,
+    k: int = ROUND_TOP_K,
+    audit: Callable[[Sequence[Mapping[str, Any]]], Mapping[str, int]] | None = None,
+    propose_wireframe: Callable[[Sequence[Any], Sequence[Any]], Mapping[str, Any]] | None = None,
+    structure: bool = True,
+) -> dict[str, Any]:
+    """Closed loop: nominate, ask, patch, re-draw, keep only what improved.
+
+    ``draw`` re-renders the elements and returns pixels.  It is injected rather
+    than imported so this layer has no opinion about SVG, Figma, or anything
+    else: the same guard runs over whatever the target happens to be, and the
+    tests can drive it with a painter they control.
+
+    ``propose`` is the model.  ``None`` means no key; the loop then does nothing
+    at all — an unavailable referee must not be mistaken for an approving one.
+    """
+    import copy
+
+    inspect = audit or audit_structure
+    report: dict[str, Any] = {"rounds": 0, "orders": 0, "kept": 0, "rolledBack": 0, "log": []}
+    if propose is None or rounds <= 0:
+        report["skipped"] = "no-vision" if propose is None else "rounds<=0"
+        return report
+    frozen = _structural_indices(elements)
+    for round_index in range(int(rounds)):
+        # 结构先于像素：一个容器套错了两层，再怎么调字也调不好。所以每轮先做
+        # 一次线框仲裁，改完的结构直接进入后面的定量补丁。
+        if structure and propose_wireframe is not None:
+            report.setdefault("structure", []).append(
+                refine_structure(
+                    elements,
+                    truth,
+                    draw,
+                    propose=propose_wireframe,
+                    k=k,
+                    audit=inspect,
+                )
+            )
+        drawn = draw(list(elements))
+        orders = nominate_rounds(truth, drawn, elements, k=k)
+        if not orders:
+            report["log"].append({"round": round_index, "orders": [], "note": "converged"})
+            break
+        report.setdefault("nominations", []).append(
+            {
+                "round": round_index,
+                "orders": [order.as_dict() for order in orders],
+            }
+        )
+        strips = [ruler_panel(truth, drawn, order.box) for order in orders]
+        answer = propose(orders, strips) or {}
+        patches = parse_round_patches(answer)
+        if not patches:
+            report["log"].append({"round": round_index, "orders": len(orders), "note": "no-patch"})
+            break
+        report["rounds"] = round_index + 1
+        report["orders"] += len(orders)
+        page_before = page_error(truth, drawn)
+        before_state = inspect(elements)
+        for order in orders:
+            patch = patches.get(order.index)
+            if not patch:
+                continue
+            index = next(
+                (
+                    position
+                    for position, element in enumerate(elements)
+                    if str(element.get("id") or "") == order.element_id
+                ),
+                None,
+            )
+            if index is None:
+                order.status = "rolled-back:node-gone"
+                order.patch = dict(patch)
+                report["rolledBack"] += 1
+                report["log"].append(
+                    {
+                        "round": round_index,
+                        "ref": order.ref,
+                        "proposed": dict(patch),
+                        "status": order.status,
+                        "roi": None,
+                    }
+                )
+                continue
+            snapshot = copy.deepcopy(elements[index])
+            before = roi_error(truth, drawn, order.box)
+            applied = apply_quantitative(elements[index], patch, frozen=index in frozen)
+            if applied is None:
+                geometry = {"dx", "dy", "dw", "dh"} & set(patch)
+                order.status = (
+                    "rolled-back:refused-geometry-on-frame-member"
+                    if geometry and index in frozen
+                    else "rolled-back:refused-no-op"
+                )
+                order.patch = dict(patch)
+                report["rolledBack"] += 1
+                report["log"].append(
+                    {
+                        "round": round_index,
+                        "ref": order.ref,
+                        "proposed": dict(patch),
+                        "status": order.status,
+                        "roi": None,
+                    }
+                )
+                continue
+            order.patch = dict(applied)
+            after_drawn = draw(list(elements))
+            after = roi_error(truth, after_drawn, order.box)
+            page_after = page_error(truth, after_drawn)
+            after_state = inspect(elements)
+            failures = []
+            if before - after < ROI_MIN_GAIN:
+                failures.append("roi-not-better")
+            if int(after_state.get("frames", 0)) < int(before_state.get("frames", 0)):
+                failures.append("frames-lost")
+            if int(after_state.get("collisions", 0)) > int(before_state.get("collisions", 0)):
+                failures.append("new-collision")
+            if int(after_state.get("covered", 0)) > int(before_state.get("covered", 0)):
+                failures.append("text-buried")
+            if page_after > page_before * (1.0 + PAGE_DRIFT_TOLERANCE):
+                failures.append("page-worse")
+            if failures:
+                elements[index] = snapshot
+                order.status = "rolled-back:" + ",".join(failures)
+                report["rolledBack"] += 1
+                report["log"].append(
+                    {
+                        "round": round_index,
+                        "ref": order.ref,
+                        "patch": order.patch,
+                        "status": order.status,
+                        "roi": [round(before, 2), round(after, 2)],
+                    }
+                )
+                continue
+            order.status = "kept"
+            report["kept"] += 1
+            report["log"].append(
+                {
+                    "round": round_index,
+                    "ref": order.ref,
+                    "patch": order.patch,
+                    "status": "kept",
+                    "roi": [round(before, 2), round(after, 2)],
+                }
+            )
+        if report["kept"] == 0 and round_index == 0:
+            # 一条都没留住：再问一次只会重复同样的答案。
+            break
+    return report
+
+
+# --------------------------------------------------------------------------
+# 容器级 Split / Merge：线框仲裁
+#
+# 上面两层都假设"容器是画对的"。可容器也会错，而且错法只有两种：一层被画成
+# 两层，或者两层被并成一层。前者在感知层刚被那条"禁止跨贯穿缝合并"挡住一次，
+# 但那是页面级几何，遇到没见过的版式仍可能判错；后者是同一套标尺的另一面。
+#
+# 所以这一层的动作集只有两个，候选由几何确定性地提名，模型只回答"是/否"——
+# 和上面一样，它没有发明结构的权力。落笔之后照样重画重测，改坏就回滚。
+# --------------------------------------------------------------------------
+
+#: 切分带的最小高度/宽度：比这更薄的是描边，不是一层。
+WIREFRAME_MIN_BAND = 8
+#: 切分带里要有多少行/列与容器填充色不同：容器在替页面画一块它没有的底。
+WIREFRAME_FILL_TOLERANCE = 8
+#: 切分带内允许的色差：超过它就不是一条平整的缝，切了会切在内容上。
+WIREFRAME_BAND_STD = 6.0
+#: 两侧各要至少几个孩子，否则切出来的是一个空壳。
+WIREFRAME_MIN_SIDE_CHILDREN = 1
+
+
+@dataclass
+class Wireframe:
+    """一处结构缺陷：一个容器该切开，或两个容器该并上。"""
+
+    index: int
+    op: str
+    refs: list[str]
+    axis: str
+    at: float
+    box: list[int]
+    reason: str = ""
+    status: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "index": self.index,
+            "op": self.op,
+            "refs": list(self.refs),
+            "axis": self.axis,
+            "at": round(self.at, 1),
+            "bbox": list(self.box),
+            "why": self.reason,
+        }
+
+
+def _fill_rgb(element: Mapping[str, Any]) -> tuple[int, int, int] | None:
+    style = element.get("style") or {}
+    raw = str(style.get("fillColor") or style.get("backgroundColor") or "")
+    if not raw.startswith("#") or len(raw) not in (4, 7):
+        return None
+    digits = raw[1:]
+    if len(digits) == 3:
+        digits = "".join(ch * 2 for ch in digits)
+    try:
+        return tuple(int(digits[index : index + 2], 16) for index in (0, 2, 4))  # type: ignore[return-value]
+    except ValueError:
+        return None
+
+
+def _members(elements: Sequence[Mapping[str, Any]], container: Mapping[str, Any]) -> list[int]:
+    by_id = {str(element.get("id") or ""): index for index, element in enumerate(elements)}
+    out = []
+    for child in container.get("layoutChildren") or []:
+        if isinstance(child, Mapping):
+            index = by_id.get(str(child.get("id") or ""))
+            if index is not None:
+                out.append(index)
+    return out
+
+
+def _rect(element: Mapping[str, Any]) -> list[int]:
+    return [
+        int(float(element.get("x") or 0)),
+        int(float(element.get("y") or 0)),
+        int(float(element.get("width") or 0)),
+        int(float(element.get("height") or 0)),
+    ]
+
+
+def _uniform_band(image, rows: range, left: int, right: int, fill) -> tuple[bool, float, float]:
+    """Is this strip of the picture a flat seam that the container is faking?"""
+    import numpy as np
+
+    strip = _array(image)[rows.start : rows.stop, left:right]
+    if strip.size == 0:
+        return False, 0.0, 0.0
+    median = np.median(strip.reshape(-1, 3), axis=0)
+    spread = float(strip.reshape(-1, 3).std(axis=0).max())
+    distance = 0.0
+    if fill is not None:
+        distance = float(np.abs(median - np.asarray(fill, dtype=np.float64)).max())
+    return spread <= WIREFRAME_BAND_STD and distance > WIREFRAME_FILL_TOLERANCE, spread, distance
+
+
+def nominate_wireframes(
+    elements: Sequence[Mapping[str, Any]],
+    truth,
+    *,
+    k: int = ROUND_TOP_K,
+) -> list[Wireframe]:
+    """Containers that paint over a seam, and pairs separated by nothing of their own."""
+    found: list[Wireframe] = []
+    frames = [index for index, element in enumerate(elements) if element.get("layoutChildren")]
+    for index in frames:
+        container = elements[index]
+        kids = _members(elements, container)
+        if len(kids) < 2 * WIREFRAME_MIN_SIDE_CHILDREN:
+            continue
+        fill = _fill_rgb(container)
+        x, y, w, h = _rect(container)
+        boxes = [(kid, _rect(elements[kid])) for kid in kids]
+        # 只看横向切分带：一列卡片的左右切分在版面上比上下少一个数量级，
+        # 而误合并几乎总是纵向的（同宽卡片被粘成一条）。
+        ordered = sorted(boxes, key=lambda item: item[1][1] + item[1][3] / 2.0)
+        for position in range(len(ordered) - 1):
+            above = ordered[position][1]
+            below = ordered[position + 1][1]
+            start = above[1] + above[3]
+            end = below[1]
+            if end - start < WIREFRAME_MIN_BAND:
+                continue
+            ok, spread, distance = _uniform_band(truth, range(max(y, start), min(y + h, end)), x, x + w, fill)
+            if not ok:
+                continue
+            found.append(
+                Wireframe(
+                    index=len(found),
+                    op="split",
+                    refs=[str(container.get("id") or "")],
+                    axis="y",
+                    at=(start + end) / 2.0,
+                    box=[x, max(y, start), w, min(y + h, end) - max(y, start)],
+                    reason=f"band {end - start}px, spread {spread:.1f}, fill差 {distance:.0f}",
+                )
+            )
+            break
+    # 合并候选：两个同跨度容器，中间夹着的元素不属于任何一方——那是被劈开的一层。
+    containers = [
+        index
+        for index, element in enumerate(elements)
+        if element.get("type") == "container"
+    ]
+    for first in containers:
+        for second in containers:
+            if second <= first:
+                continue
+            a, b = _rect(elements[first]), _rect(elements[second])
+            if abs(a[0] - b[0]) > 2 or abs(a[2] - b[2]) > 2:
+                continue
+            gap_start, gap_end = min(a[1] + a[3], b[1] + b[3]), max(a[1], b[1])
+            if gap_end - gap_start < 0:
+                continue
+            if gap_end - gap_start == 0:
+                # 无缝相接的两块：那就是一块，没有孩子夹在中间可依据。
+                continue
+            inside = [
+                kid
+                for kid in range(len(elements))
+                if elements[kid].get("type") != "container"
+                and _rect(elements[kid])[1] >= gap_start - 1
+                and _rect(elements[kid])[1] + _rect(elements[kid])[3] <= gap_end + 1
+                and _rect(elements[kid])[0] >= a[0] - 1
+                and _rect(elements[kid])[0] + _rect(elements[kid])[2] <= a[0] + a[2] + 1
+            ]
+            if not inside:
+                continue
+            # 缝必须被这些元素整个盖住：盖不满，合并后容器的底色就会从两侧漏出来，
+            # 那是把一个结构问题换成一个像素问题。实测：缝宽 80、夹着 40 宽的芯片，
+            # 合并后该带误差从 0 涨到 110。
+            covered_width = sum(_rect(elements[kid])[2] for kid in inside)
+            if covered_width < 0.95 * a[2]:
+                continue
+            found.append(
+                Wireframe(
+                    index=len(found),
+                    op="merge",
+                    refs=[str(elements[first].get("id") or ""), str(elements[second].get("id") or "")],
+                    axis="y",
+                    at=(gap_start + gap_end) / 2.0,
+                    box=[a[0], gap_start, a[2], max(1, gap_end - gap_start)],
+                    reason=f"gap {gap_end - gap_start}px 夹着 {len(inside)} 个元素",
+                )
+            )
+    found.sort(key=lambda item: -item.box[3])
+    for position, item in enumerate(found[:k]):
+        item.index = position
+    return found[:k]
+
+
+def wireframe_panel(truth, drawn, elements: Sequence[Mapping[str, Any]], wireframe: Wireframe):
+    """2× 对照 + 线框：容器一圈、成员各一圈，让"谁套着谁"在图上就能读出来。"""
+    import cv2
+    import numpy as np
+
+    x, y, w, h = wireframe.box
+    height, width = _array(truth).shape[:2]
+    pad = ROUND_PAD
+    x0, y0 = max(0, x - pad), max(0, y - pad)
+    x1, y1 = min(width, x + w + pad), min(height, y + h + pad)
+    if x1 - x0 < 8 or y1 - y0 < 8:
+        return np.full((24, 24, 3), 255, dtype=np.uint8)
+    panels = []
+    for picture in (truth, drawn):
+        crop = cv2.resize(
+            _array(picture)[y0:y1, x0:x1].astype(np.uint8), None,
+            fx=ROUND_ZOOM, fy=ROUND_ZOOM, interpolation=cv2.INTER_NEAREST,
+        )
+        panels.append(crop)
+    drawn_wire = False
+    for panel in panels:
+        colour = (36, 96, 220) if not drawn_wire else (220, 60, 36)
+        for ref in wireframe.refs:
+            host = next((item for item in elements if str(item.get("id") or "") == ref), None)
+            if host is None:
+                continue
+            hx, hy, hw, hh = _rect(host)
+            cv2.rectangle(
+                panel,
+                (int((hx - x0) * ROUND_ZOOM), int((hy - y0) * ROUND_ZOOM)),
+                (int((hx + hw - x0) * ROUND_ZOOM), int((hy + hh - y0) * ROUND_ZOOM)),
+                colour,
+                1,
+            )
+            for kid in _members(elements, host):
+                kx, ky, kw, kh = _rect(elements[kid])
+                cv2.rectangle(
+                    panel,
+                    (int((kx - x0) * ROUND_ZOOM), int((ky - y0) * ROUND_ZOOM)),
+                    (int((kx + kw - x0) * ROUND_ZOOM), int((ky + kh - y0) * ROUND_ZOOM)),
+                    (120, 120, 120),
+                    1,
+                )
+        if wireframe.op == "split":
+            row = int((wireframe.at - y0) * ROUND_ZOOM)
+            cv2.line(panel, (0, row), (panel.shape[1] - 1, row), (20, 160, 20), 1)
+        drawn_wire = True
+    return _wrap_ruler(_side_by_side(panels[0], panels[1]))
+
+
+def wireframe_prompt(candidates: Sequence[Wireframe]) -> str:
+    listing = json.dumps([item.as_dict() for item in candidates], ensure_ascii=False)
+    return (
+        f"图 1..{len(candidates)} 是{len(candidates)}处结构可疑区域的 2× 对照：左原图、右当前渲染，"
+        "蓝框是容器、灰框是它的成员，绿线是建议的切分位置；外围刻度单位是原图像素。\n"
+        f"候选：{listing}\n"
+        "对每一处只回答：这个容器的范围对不对？只接受两种动作——\n"
+        '{"wireframes":[{"index":0,"op":"split","at":312,"reason":"..."}]}\n'
+        '{"wireframes":[{"index":1,"op":"merge","reason":"..."}]}\n'
+        "op=split 表示候选给出的那条线应该切开（at 可微调，单位原图像素）；"
+        "op=merge 表示两个容器是同一层；不需要动的直接省略。不要发明候选以外的动作。"
+    )
+
+
+def parse_wireframe_answers(payload: Mapping[str, Any]) -> dict[int, dict[str, Any]]:
+    out: dict[int, dict[str, Any]] = {}
+    for raw in payload.get("wireframes") or []:
+        if not isinstance(raw, Mapping):
+            continue
+        try:
+            index = int(raw.get("index"))
+        except (TypeError, ValueError):
+            continue
+        op = str(raw.get("op") or "")
+        if op not in ("split", "merge"):
+            continue
+        out[index] = {"op": op}
+    return out
+
+
+def apply_split(elements: list[dict[str, Any]], wireframe: Wireframe) -> bool:
+    """在缝处切开：上段止于缝的上沿，下段始于缝的下沿。
+
+    简单地把盒子一分为二（上半 + 下半）像素一点都不会变——两半仍然连在一起，
+    缝还是被涂着的。要修的是"容器替页面画了一条它没有的底"，所以切完必须让
+    那条缝露出来：上段到缝的上沿为止，下段从缝的下沿开始。
+    """
+    import copy
+
+    ref = wireframe.refs[0] if wireframe.refs else ""
+    index = next(
+        (position for position, item in enumerate(elements) if str(item.get("id") or "") == ref),
+        None,
+    )
+    if index is None:
+        return False
+    container = elements[index]
+    x, y, w, h = _rect(container)
+    band_top = max(y, int(round(wireframe.box[1])))
+    band_bottom = min(y + h, int(round(wireframe.box[1] + wireframe.box[3])))
+    if band_top <= y or band_bottom >= y + h:
+        # 缝贴着头或尾：切出来是一段空壳，不是两层。
+        return False
+    kids = _members(elements, container)
+    above, below = [], []
+    for kid in kids:
+        kx, ky, kw, kh = _rect(elements[kid])
+        (above if ky + kh / 2.0 < band_top else below).append(kid)
+    if len(above) < WIREFRAME_MIN_SIDE_CHILDREN or len(below) < WIREFRAME_MIN_SIDE_CHILDREN:
+        return False
+    lower = copy.deepcopy(container)
+    lower["id"] = f"{ref}:split"
+    lower["y"] = float(band_bottom)
+    lower["height"] = float(y + h - band_bottom)
+    lower.pop("layout", None)
+    lower["layoutChildren"] = [{"id": str(elements[kid].get("id") or "")} for kid in below]
+    container["height"] = float(band_top - y)
+    container.pop("layout", None)
+    container["layoutChildren"] = [{"id": str(elements[kid].get("id") or "")} for kid in above]
+    elements.insert(index + 1, lower)
+    return True
+
+
+def apply_merge(elements: list[dict[str, Any]], wireframe: Wireframe) -> bool:
+    """两个同跨度容器并成一个；被并掉的那个只留下成员，成员不动。"""
+    ids = list(wireframe.refs)
+    if len(ids) < 2:
+        return False
+    upper = next((item for item in elements if str(item.get("id") or "") == ids[0]), None)
+    lower = next((item for item in elements if str(item.get("id") or "") == ids[1]), None)
+    if upper is None or lower is None or upper is lower:
+        return False
+    a, b = _rect(upper), _rect(lower)
+    if abs(a[0] - b[0]) > 2 or abs(a[2] - b[2]) > 2:
+        return False
+    top = min(a[1], b[1])
+    bottom = max(a[1] + a[3], b[1] + b[3])
+    merged: list[dict[str, str]] = []
+    for host in (upper, lower):
+        for kid in host.get("layoutChildren") or []:
+            if isinstance(kid, Mapping):
+                merged.append({"id": str(kid.get("id") or "")})
+    upper["y"] = float(top)
+    upper["height"] = float(bottom - top)
+    upper.pop("layout", None)
+    upper["layoutChildren"] = merged
+    elements.remove(lower)
+    return True
+
+
+def check_wireframe(
+    elements: Sequence[Mapping[str, Any]],
+    wireframe: Wireframe,
+    *,
+    before: Mapping[str, int],
+    after: Mapping[str, int],
+    band_error: tuple[float, float],
+) -> list[str]:
+    """The invariants a structural edit may not break.
+
+    A split is only worth doing if the band it exposes was being painted wrong;
+    a merge is only safe if it does not start painting over what used to show
+    through.  Everything else — members, frames, buried words — is absolute.
+    """
+    failures: list[str] = []
+    if int(after.get("covered", 0)) > int(before.get("covered", 0)):
+        failures.append("text-buried")
+    if int(after.get("collisions", 0)) > int(before.get("collisions", 0)):
+        failures.append("new-collision")
+    expected = int(before.get("frames", 0)) + (1 if wireframe.op == "split" else -1)
+    if int(after.get("frames", 0)) != expected:
+        failures.append("frames-wrong")
+    before_error, after_error = band_error
+    if wireframe.op == "split":
+        if not after_error < before_error:
+            failures.append("band-not-better")
+    elif after_error > before_error:
+        failures.append("band-worse")
+    return failures
+
+
+def refine_structure(
+    elements: list[dict[str, Any]],
+    truth,
+    draw: Callable[[list[dict[str, Any]]], Any],
+    *,
+    propose: Callable[[Sequence[Wireframe], Sequence[Any]], Mapping[str, Any]] | None,
+    k: int = ROUND_TOP_K,
+    audit: Callable[[Sequence[Mapping[str, Any]]], Mapping[str, int]] | None = None,
+) -> dict[str, Any]:
+    """One structural pass: nominate, ask, apply, re-draw, keep only what held."""
+    import copy
+
+    inspect = audit or audit_structure
+    report: dict[str, Any] = {"candidates": 0, "kept": 0, "rolledBack": 0, "log": []}
+    if propose is None:
+        report["skipped"] = "no-vision"
+        return report
+    drawn = draw(list(elements))
+    candidates = nominate_wireframes(elements, truth, k=k)
+    report["candidates"] = len(candidates)
+    if not candidates:
+        return report
+    panels = [wireframe_panel(truth, drawn, elements, item) for item in candidates]
+    answers = parse_wireframe_answers(propose(candidates, panels) or {})
+    for candidate in candidates:
+        answer = answers.get(candidate.index)
+        if not answer or answer.get("op") != candidate.op:
+            candidate.status = "declined"
+            continue
+        snapshot = copy.deepcopy(elements)
+        before_state = inspect(elements)
+        before_error = roi_error(truth, drawn, candidate.box)
+        applied = (
+            apply_split(elements, candidate)
+            if candidate.op == "split"
+            else apply_merge(elements, candidate)
+        )
+        if not applied:
+            elements[:] = snapshot
+            candidate.status = "rolled-back:not-applicable"
+            report["rolledBack"] += 1
+            continue
+        after_drawn = draw(list(elements))
+        after_state = inspect(elements)
+        after_error = roi_error(truth, after_drawn, candidate.box)
+        failures = check_wireframe(
+            elements,
+            candidate,
+            before=before_state,
+            after=after_state,
+            band_error=(before_error, after_error),
+        )
+        if failures:
+            elements[:] = snapshot
+            candidate.status = "rolled-back:" + ",".join(failures)
+            report["rolledBack"] += 1
+        else:
+            candidate.status = "kept"
+            report["kept"] += 1
+        report["log"].append(
+            {
+                "op": candidate.op,
+                "refs": candidate.refs,
+                "status": candidate.status,
+                "band": [round(before_error, 2), round(after_error, 2)],
+            }
+        )
+    return report
